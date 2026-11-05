@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..schema import SchemaViolation
 from ..tokenfilter import TokenFilter
+from . import meter
 
 LOCAL_TIMEOUT_SECONDS = 8.0
 CLAUDE_TIMEOUT_SECONDS = 120
@@ -168,6 +169,7 @@ class VisionGrounder:
                 close()
 
     def ground(self, png_bytes: bytes, target_text: str) -> GroundResult | None:
+        meter.count_local("grounder")
         tf = TokenFilter()
         filtered = tf.filter_stream(self._tokens(png_bytes, target_text))
         if not filtered:
@@ -191,6 +193,7 @@ class ClaudeCodeGrounder:
         # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
         # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
         # headless mode (real run: every screenshot check failed with "permission denied").
+        meter.charge_paid("grounder")
         workdir = tempfile.mkdtemp(prefix="o-ground-")
         path = os.path.join(workdir, "screen.png")
         try:
@@ -219,6 +222,7 @@ class ClaudeCodeGrounder:
             payload = json.loads(proc.stdout)
         except json.JSONDecodeError as e:
             raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
+        meter.add_cost(payload)
         result = payload.get("result") if isinstance(payload, dict) else None
         if not isinstance(result, str):
             raise SchemaViolation("claude cli output has no string result")
@@ -502,6 +506,8 @@ class Grounder:
                 continue
             try:
                 result = backend.ground(png_bytes, text)
+            except meter.ModelCallCapReached:
+                raise
             except Exception as e:
                 self.last_errors.append(f"{backend.name}: {e}")
                 continue

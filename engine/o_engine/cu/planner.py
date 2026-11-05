@@ -30,6 +30,7 @@ from openai import OpenAI
 
 from ..schema import SchemaViolation
 from ..tokenfilter import TokenFilter
+from . import meter
 from .treeutil import _get
 
 LOCAL_TIMEOUT_SECONDS = 30.0
@@ -274,6 +275,7 @@ class LocalModelClient:
         self.client = OpenAI(base_url=self.base_url, api_key="local", timeout=timeout, max_retries=0)
 
     def complete(self, system: str, user: str) -> str:
+        meter.count_local("planner")
         stream = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -313,6 +315,7 @@ class ClaudeCodeClient:
         return [self.claude_path, "-p", "--output-format", "json"]
 
     def complete(self, system: str, user: str) -> str:
+        meter.charge_paid("planner")
         try:
             proc = subprocess.run(
                 self._command(), input=system + "\n\n" + user, capture_output=True, text=True, timeout=self.timeout
@@ -325,6 +328,7 @@ class ClaudeCodeClient:
             payload = json.loads(proc.stdout)
         except json.JSONDecodeError as e:
             raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
+        meter.add_cost(payload)
         result = payload.get("result") if isinstance(payload, dict) else None
         if not isinstance(result, str):
             raise SchemaViolation("claude cli output has no string result")
@@ -350,6 +354,8 @@ class ModelClient:
                 continue
             try:
                 text = backend.complete(system, user)
+            except meter.ModelCallCapReached:
+                raise
             except Exception as e:
                 errors.append(f"{getattr(backend, 'name', type(backend).__name__)}: {e}")
                 continue
@@ -462,6 +468,8 @@ class Planner:
         notes_text = self._notes_for(app) if notes is None else notes
         try:
             raw = json.loads(self.complete_json(MILESTONES_SYSTEM_PROMPT, build_milestones_prompt(goal, app, notes_text, memory)))
+        except meter.ModelCallCapReached:
+            raise
         except Exception:
             return fallback
         rows = raw.get("milestones") if isinstance(raw, dict) else raw
@@ -774,6 +782,8 @@ class BestOfN:
         self.rank_calls += 1
         try:
             obj = json.loads(self.planner.complete_json(RANK_SYSTEM_PROMPT, user))
+        except meter.ModelCallCapReached:
+            raise
         except Exception:
             return _fallback_winner(candidates)
         ranking = obj.get("ranking") if isinstance(obj, dict) else None

@@ -52,6 +52,18 @@ Wave 3 (same topology):
   ``BACKEND_API_DOC`` and the slot-0 backend's display; a failing or skipping builder never changes ``ok``.
 * memory extraction uses the planner client's ``local_only()`` view when it has one, so a vLLM outage
   never turns into a CLI-fallback call per turn; with no local backend extraction is skipped.
+
+Cost bounds (real run: 84 paid Claude calls across two jobs, mostly per-turn replans + screen checks):
+
+* ``run_cu_job`` opens a ``cu.meter.JobMeter`` capped at ``max_model_calls`` paid calls (setting
+  ``cuMaxModelCalls``, default 12). At the cap no further paid call is made: ``judge`` routes to
+  ``report`` instead of ``heal``, the milestone loop stops before planning another turn, and a call
+  refused mid-node ends the job as a report. ``model_calls`` / ``cost_usd`` / ``turns`` are in every
+  JobState.
+* milestone ``done_when`` questions and ``screenshot_assert`` steps are non-final judge questions
+  (``Judge.judge(..., tree=..., final=False)``): local VLM, else the focused window's a11y text, else
+  deferred. When anything was deferred, one final goal check (``final=True``, the only screen check
+  allowed to reach the paid fallback) decides the job before it is reported ok.
 """
 from __future__ import annotations
 
@@ -65,6 +77,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .. import genui
 from ..actionlog import ActionLog
+from . import meter as cu_meter
 from .feasibility import check_feasibility
 from .memory import WorkingMemory, extract as extract_memory
 from .treeutil import TREE_SUMMARY_LINES, _get, summarize_tree  # noqa: F401  (re-exported)
@@ -107,6 +120,7 @@ JOBSTATE_FIELDS: tuple[str, ...] = (
     "id", "label", "phase", "attempt", "max_attempts", "cached", "steps",
     "diagnostic", "verify", "done", "ok", "error",
     "procedure_id", "candidates", "scores", "infeasible",
+    "turns", "model_calls", "cost_usd",
 )
 
 
@@ -272,15 +286,19 @@ def run_records(run: Any, script: Any) -> list[dict]:
     return rows
 
 
-def _judge_answer(judge: Any, png: bytes | None, question: str) -> dict:
-    """Normalise whatever the judge returns to ``{ok, reason, source}``."""
-    for method in ("ask", "judge", "check", "__call__"):
+def _judge_answer(judge: Any, png: bytes | None, question: str, tree: Any = None, final: bool = True) -> dict:
+    """Normalise whatever the judge returns to ``{ok, reason, source}``. ``tree``/``final`` reach a judge
+    that accepts them (``cu.judge.Judge``); other judges are asked the plain question."""
+    for method in ("judge", "ask", "check", "__call__"):
         fn = getattr(judge, method, None)
         if callable(fn):
             break
     else:
         return {"ok": True, "reason": "no judge", "source": "none"}
-    raw = fn(png, question)
+    if _accepts_kwarg(fn, "final") and _accepts_kwarg(fn, "tree"):
+        raw = fn(png, question, tree=tree, final=final)
+    else:
+        raw = fn(png, question)
     if isinstance(raw, tuple):
         ok_val = bool(raw[0]) if raw else False
         return {"ok": ok_val, "reason": str(raw[1]) if len(raw) > 1 else "", "source": getattr(judge, "last_source", "judge")}
@@ -518,8 +536,21 @@ def _combine_scripts(planner: Any, app: str, goal: str, scripts: list) -> tuple[
         return scripts[-1], False
 
 
+def _cap_reason(m: Any) -> str:
+    return (f"stopped: engine-side model-call cap reached ({m.paid_calls} of cuMaxModelCalls={m.max_paid} "
+            f"Claude calls, ${m.cost_usd:.3f}); raise cuMaxModelCalls or run a local vLLM to continue")
+
+
 def job_state(state: dict) -> dict:
     out = {k: state.get(k) for k in JOBSTATE_FIELDS}
+    m = cu_meter.current()
+    if m is not None:
+        out["model_calls"] = m.snapshot()
+        out["cost_usd"] = round(m.cost_usd, 6)
+    else:
+        out["model_calls"] = dict(out["model_calls"] or {})
+        out["cost_usd"] = float(out["cost_usd"] or 0.0)
+    out["turns"] = int(out["turns"] or 0)
     out["steps"] = list(out["steps"] or [])
     out["scores"] = list(out["scores"] or [])
     out["cached"] = bool(out["cached"])
@@ -796,7 +827,8 @@ def build_cu_graph(deps: CUDeps):
         if isinstance(done_when, str):
             if deps.judge is None:
                 return {"ok": True, "reason": "no judge configured", "source": "none"}
-            return _judge_answer(deps.judge, _screenshot(deps.backend_factory(0)), done_when)
+            backend = deps.backend_factory(0)
+            return _judge_answer(deps.judge, _screenshot(backend), done_when, tree=backend.tree, final=False)
         return _a11y_check(deps.backend_factory(0), done_when)
 
     def remember(state: CUState, memory: Any, records: list[dict], turn: int) -> Any:
@@ -856,6 +888,11 @@ def build_cu_graph(deps: CUDeps):
                 if mi >= len(milestones):
                     decided = {"ok": True, "reason": f"{len(milestones)} milestone(s) done", "source": verdict["source"]}
                     break
+            m = cu_meter.current()
+            if m is not None and m.exhausted and not verdict["ok"]:
+                decided = {"ok": False, "source": "budget", "cap": True,
+                           "reason": f"milestone {mi} not done after {turn} turn(s); {_cap_reason(m)}"}
+                break
             if turn >= max_turns:
                 decided = {"ok": False, "source": verdict["source"],
                            "reason": f"milestone {mi} ({str(_get(milestones[mi], 'goal') or '')[:80]}) not done after "
@@ -865,6 +902,9 @@ def build_cu_graph(deps: CUDeps):
             enter(state, "plan", config, turn=turn, milestone=mi)
             steps_before = len(steps)
             script = next_turn_script(state, milestones[mi], mi, memory, turn)
+        m = cu_meter.current()
+        if decided["ok"] and m is not None and m.deferred:
+            decided = final_goal_check(state, decided, m)
         combined, storable = _combine_scripts(deps.planner, state["app"], state["goal"], passed)
         if not storable:
             log.record("note", f"{job_id}: milestone turns do not combine into one procedure; nothing will be stored",
@@ -874,6 +914,23 @@ def build_cu_graph(deps: CUDeps):
                 "script": combined if (decided["ok"] and storable) else script, "milestone_index": mi,
                 "turns": turn, "memory": memory, "turn_scripts": passed, "steps_before_turn": steps_before,
                 "storable": storable}
+
+    def final_goal_check(state: CUState, decided: dict, m: Any) -> dict:
+        """Some milestone or screen check was deferred (no local judge): one final goal question decides."""
+        if deps.judge is None:
+            return decided
+        backend = deps.backend_factory(0)
+        try:
+            answer = _judge_answer(deps.judge, _screenshot(backend), _goal_question(state["goal"]),
+                                   tree=backend.tree, final=True)
+        except cu_meter.ModelCallCapReached:
+            return {"ok": False, "source": "budget", "cap": True,
+                    "reason": f"{decided['reason']}, but the final goal check could not run; {_cap_reason(m)}"}
+        log.record("verify", f"{state['id']}: final goal check {'passed' if answer['ok'] else 'failed'} "
+                   f"({m.deferred} check(s) deferred)", job_id=state["id"], deferred=m.deferred, **answer)
+        if answer["ok"]:
+            return {"ok": True, "source": answer["source"], "reason": f"{decided['reason']}; final goal check: {answer['reason']}"}
+        return {"ok": False, "source": answer["source"], "reason": f"final goal check failed: {answer['reason']}"}
 
     def declared_verdict(state: CUState, run: dict) -> dict | None:
         """a11y ``assert`` steps re-checked live, then ``state_assert`` steps through ``StateJudge.verify``
@@ -932,14 +989,19 @@ def build_cu_graph(deps: CUDeps):
             if not declared["ok"] and failed_index is None:
                 failed_index = current_last
         elif deps.judge is not None:
-            png = _screenshot(deps.backend_factory(0))
-            answer = _judge_answer(deps.judge, png, _goal_question(state["goal"]))
+            backend = deps.backend_factory(0)
+            answer = _judge_answer(deps.judge, _screenshot(backend), _goal_question(state["goal"]),
+                                   tree=backend.tree, final=True)
             result = {"ok": answer["ok"], "error": None if answer["ok"] else f"goal not achieved: {answer['reason'][:200]}",
                       "reason": answer["reason"], "source": answer["source"], "goal": answer["ok"]}
             if not answer["ok"] and failed_index is None:
                 failed_index = current_last
         else:
             result = {"ok": True, "error": None, "reason": "", "source": "none", "goal": True}
+        m = cu_meter.current()
+        if not result["ok"] and m is not None and m.exhausted:
+            result["error"] = f"{result['error'] or 'goal not achieved'}; {_cap_reason(m)}"
+            result["cap"] = True
         log.record("verify", f"{state['id']}: judge {'passed' if result['ok'] else 'failed'}", job_id=state["id"], **result)
         if result["ok"]:
             genui.ui_preview_status(_tracker(config), state.get("label", ""), True, 0, result.get("source"))
@@ -952,6 +1014,9 @@ def build_cu_graph(deps: CUDeps):
             return "ok"
         if state.get("infeasible"):
             return "exhausted"
+        m = cu_meter.current()
+        if m is not None and m.exhausted:
+            return "exhausted"  # a heal is a paid replan; at the cap the job reports instead
         if int(state.get("attempt", 0)) < int(state.get("max_attempts", 0)):
             return "heal"
         return "exhausted"
@@ -1052,12 +1117,13 @@ def build_cu_graph(deps: CUDeps):
             error = error or "goal judged infeasible"
         elif not ok and not error:
             error = f"failed after {state.get('attempt', 0)} heal(s)"
-        elif not ok and int(state.get("attempt", 0)) >= int(state.get("max_attempts", 0)):
+        elif not ok and int(state.get("attempt", 0)) >= int(state.get("max_attempts", 0)) and "model-call cap" not in str(error):
             error = f"{error}; gave up after {state.get('attempt', 0)} heal(s)"
         log.record("task", f"{state['id']}: {'done' if ok else 'failed'} {state['label']!r}",
                    job_id=state["id"], ok=ok, error=error, attempt=state.get("attempt", 0),
                    cached=state.get("cached", False), procedure_id=state.get("procedure_id"),
-                   infeasible=bool(state.get("infeasible")))
+                   infeasible=bool(state.get("infeasible")), turns=int(state.get("turns") or 0),
+                   **_meter_detail())
         genui.ui_end(_tracker(config), ok)
         return {"phase": "report", "done": True, "ok": ok, "error": error}
 
@@ -1075,6 +1141,13 @@ def build_cu_graph(deps: CUDeps):
             builder.add_edge(src, dst)
     builder.add_conditional_edges("judge", route_after_judge, {"ok": "store", "heal": "heal", "exhausted": "report"})
     return builder.compile()
+
+
+def _meter_detail() -> dict:
+    m = cu_meter.current()
+    if m is None:
+        return {}
+    return {"model_calls": m.snapshot(), "cost_usd": round(m.cost_usd, 6)}
 
 
 def _note_text(state: dict) -> str:
@@ -1149,12 +1222,20 @@ def run_cu_job(
     max_heals: int | None = None,
     progress: Callable[[dict], None] | None = None,
     procedure_id: str | None = None,
+    max_model_calls: int | None = cu_meter.DEFAULT_MAX_PAID_CALLS,
 ) -> dict:
     """Run one computer-use job to completion; never raises (failures become ``ok=False`` JobStates).
 
     ``progress`` (optional) receives the current JobState at every phase transition.
     ``procedure_id`` (optional) pins the stored version that ``plan`` replays.
+    ``max_model_calls`` caps the job's paid (Claude Code CLI) model calls (None: no cap); at the cap the job
+    stops and reports. The JobState carries ``model_calls``, ``cost_usd`` and ``turns``.
     """
+    with cu_meter.metered(cu_meter.JobMeter(job_id, max_model_calls)):
+        return _run_cu_job(graph, goal, app, job_id, candidates, max_heals, progress, procedure_id)
+
+
+def _run_cu_job(graph, goal, app, job_id, candidates, max_heals, progress, procedure_id) -> dict:
     state = initial_state(goal, app, job_id, candidates, max_heals or 0, procedure_id)
     tracker: dict = {"phase": "context", "state": dict(state), "progress": progress}
     config: RunnableConfig = {
@@ -1169,10 +1250,13 @@ def run_cu_job(
         last["phase"] = tracker.get("phase", last.get("phase"))
         last["done"] = True
         last["ok"] = False
-        last["error"] = f"{type(e).__name__}: {e}"
+        if isinstance(e, cu_meter.ModelCallCapReached):
+            last["error"] = _cap_reason(e.meter) + f" (in {last['phase']})"
+        else:
+            last["error"] = f"{type(e).__name__}: {e}"
         genui.ui_end(tracker, False)
         graph_log = tracker.get("log")
         if graph_log is not None:
             graph_log.record("task", f"{job_id}: aborted in {last['phase']} ({type(e).__name__})",
-                             job_id=job_id, phase=last["phase"], error=last["error"], ok=False)
+                             job_id=job_id, phase=last["phase"], error=last["error"], ok=False, **_meter_detail())
         return job_state(last)

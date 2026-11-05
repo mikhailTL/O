@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import Iterable, Iterator
 
@@ -107,6 +108,57 @@ def find_in(nodes: Iterable[Node], target: Target, within: Node | None = None) -
     return None
 
 
+WINDOW_ROLES = frozenset({"frame", "dialog", "alert", "window", "file chooser"})
+DIALOG_ROLES = frozenset({"dialog", "alert"})
+
+
+@dataclass(frozen=True)
+class KnownDialog:
+    """A first-run / session-restore dialog that is dismissed through the accessibility tree when it appears.
+
+    ``app`` and ``text`` are case-insensitive globs over the application name and over the dialog's
+    whole text (its name plus every descendant's name and text); ``buttons`` are tried in order
+    (accessible names, mnemonic underscores already stripped by the toolkit)."""
+
+    label: str
+    app: str
+    text: str
+    buttons: tuple[str, ...]
+
+
+_DECLINE = ("don't restore", "do not restore", "start new session", "no", "not now", "skip", "no thanks",
+            "dismiss", "cancel", "close")
+
+KNOWN_DIALOGS: tuple[KnownDialog, ...] = (
+    # Mousepad: shown when a second instance finds the first one's session backup (real run: it covered the editor).
+    KnownDialog("mousepad session restore", "mousepad*", "*previous session did not end normally*", _DECLINE),
+    KnownDialog("session restore", "*", "*restore*session*", _DECLINE),
+    KnownDialog("session restore", "*", "*session*restore*", _DECLINE),
+    KnownDialog("crash recovery", "*", "*recover*unsaved*", _DECLINE),
+    KnownDialog("first run", "*", "*welcome to *", ("close", "skip", "not now", "no thanks", "dismiss", "ok")),
+    KnownDialog("first run", "*", "*tip of the day*", ("close", "ok")),
+)
+
+
+def focused_roots(roots: list[Node]) -> list[Node]:
+    """Only the application that owns the active window, with that window first among its windows (dialogs
+    of the same app stay, after it). Unchanged when no window is active (no window manager): then every
+    application is returned in the platform's order."""
+    for app in roots:
+        if any("active" in w.states for w in app.children):
+            kids = sorted(app.children, key=lambda w: 0 if "active" in w.states else 1)
+            return [app.model_copy(update={"children": kids})]
+    return list(roots)
+
+
+def dialog_text(node: Node) -> str:
+    return " ".join(f"{n.name} {n.text}" for n in node.walk()).lower()
+
+
+def _button_name(node: Node) -> str:
+    return node.name.replace("_", "").strip().lower()
+
+
 class CUBackend(ABC):
     """Accessibility-first driver for one display."""
 
@@ -148,6 +200,57 @@ class CUBackend(ABC):
 
     @abstractmethod
     def screenshot(self) -> bytes: ...
+
+    def tree_all(self) -> list[Node]:
+        """Every application on the display (``tree()`` may narrow to the focused one)."""
+        return self.tree()
+
+    def focus_window(self, node: Node) -> None:
+        """Bring one top-level window to the front and give it focus."""
+        self.invoke(node, "focus")
+
+    def focus_existing(self, app: str) -> str | None:
+        """When ``app`` already has a window on this display, focus it and return its name; else None."""
+        want = app.lower()
+        for root in self.tree_all():
+            if root.role != "application" or root.name.lower() != want:
+                continue
+            wins = [c for c in root.children if c.role in WINDOW_ROLES]
+            if not wins:
+                continue
+            win = next((w for w in wins if "active" in w.states), wins[0])
+            try:
+                self.focus_window(win)
+            except BackendError:
+                pass  # already the only window; a refused focus is not a reason to start a second instance
+            return win.name or root.name
+        return None
+
+    def dismiss_known_dialogs(self, nodes: list[Node] | None = None) -> list[str]:
+        """Click the decline button of every ``KNOWN_DIALOGS`` match in ``nodes`` (default: the whole display).
+        Returns one line per dismissed dialog; a dialog without a matching button is left alone."""
+        done: list[str] = []
+        for root in (nodes if nodes is not None else self.tree_all()):
+            app = root.name.lower() if root.role == "application" else ""
+            for node in root.walk():
+                if node.role not in DIALOG_ROLES:
+                    continue
+                text = dialog_text(node)
+                for known in KNOWN_DIALOGS:
+                    if not (fnmatchcase(app, known.app) and fnmatchcase(text, known.text)):
+                        continue
+                    buttons = {_button_name(b): b for b in node.walk() if b.role in ("push button", "button")}
+                    pick = next((buttons[b] for b in known.buttons if b in buttons), None)
+                    if pick is None:
+                        continue
+                    try:
+                        self.click(pick)
+                    except BackendError as e:
+                        done.append(f"{known.label}: could not click {pick.name!r} ({e})")
+                        break
+                    done.append(f"{known.label} ({root.name or '?'}): clicked {pick.name!r}")
+                    break
+        return done
 
     def focused_window(self) -> Node | None:
         for root in self.tree():

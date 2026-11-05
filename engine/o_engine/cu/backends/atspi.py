@@ -15,7 +15,7 @@ import tempfile
 from typing import Any
 
 from ..schema import Target
-from .base import BackendError, CUBackend, Node, Rect, find_in
+from .base import BackendError, CUBackend, Node, Rect, find_in, focused_roots
 
 try:  # optional: python3-gi + at-spi2
     import gi
@@ -55,8 +55,11 @@ def _state_names(acc: Any) -> list[str]:
 class AtspiBackend(CUBackend):
     name = "atspi"
 
-    def __init__(self, allow_pixels: bool = False, display: str | None = None) -> None:
+    def __init__(self, allow_pixels: bool = False, display: str | None = None, focused_only: bool = True) -> None:
         super().__init__(allow_pixels=allow_pixels, display=display)
+        # Actions and judging read the application that owns the active window (see ``focused_roots``):
+        # with two instances of an app on the display, the one in front is the one acted on and judged.
+        self.focused_only = bool(focused_only)
         self._handles: dict[str, Any] = {}
         if _IMPORT_ERROR:
             self.reason = f"gi/Atspi not importable: {_IMPORT_ERROR}"
@@ -78,6 +81,15 @@ class AtspiBackend(CUBackend):
     # ---------------------------------------------------------------- tree
 
     def tree(self, window: str | None = None) -> list[Node]:
+        roots = self._roots(window)
+        if window or not self.focused_only:
+            return roots
+        return focused_roots(roots)
+
+    def tree_all(self) -> list[Node]:
+        return self._roots(None)
+
+    def _roots(self, window: str | None) -> list[Node]:
         self._require()
         self._handles.clear()
         desktop = Atspi.get_desktop(0)
@@ -247,9 +259,59 @@ class AtspiBackend(CUBackend):
         self.require_pixels("key press")
         self._xdotool("key", "--", keys)
 
+    # ------------------------------------------------------------ windows
+
+    def focus_window(self, node: Node) -> None:
+        """Activate the X window behind a top-level a11y window (window manager raise + focus)."""
+        acc = self._handle(node)
+        pid = None
+        if acc is not None:
+            try:
+                pid = int(acc.get_process_id())
+            except Exception:  # noqa: BLE001
+                pid = None
+        candidates: list[str] = []
+        if pid:
+            candidates = self._xdotool_ids("search", "--onlyvisible", "--pid", str(pid))
+        if not candidates and node.name:
+            candidates = self._xdotool_ids("search", "--onlyvisible", "--name", f"^{_re_escape(node.name)}$")
+        for wid in candidates:
+            try:
+                self._xdotool("windowactivate", "--sync", wid)
+                return
+            except BackendError:
+                continue
+        comp = Atspi.Accessible.get_component_iface(acc) if acc is not None else None
+        if comp is not None and comp.grab_focus():
+            return
+        raise BackendError(f"focus: no X window found for {node.name!r}")
+
+    def focus_existing(self, app: str) -> str | None:
+        found = super().focus_existing(app)
+        if found:
+            return found
+        # an app without an accessibility bridge still has an X window with its WM_CLASS
+        for wid in self._xdotool_ids("search", "--onlyvisible", "--class", f"^{_re_escape(app)}$"):
+            try:
+                self._xdotool("windowactivate", "--sync", wid)
+            except BackendError:
+                continue
+            return f"X window {wid} (class {app})"
+        return None
+
+    def _xdotool_ids(self, *args: str) -> list[str]:
+        try:
+            out = self._xdotool_out(*args)
+        except BackendError:
+            return []
+        return [line.strip() for line in out.splitlines() if line.strip().isdigit()]
+
     # ---------------------------------------------------------------- pixels
 
     def _xdotool(self, *args: str) -> None:
+        self._xdotool_out(*args)
+
+    def _xdotool_out(self, *args: str) -> str:
         exe = shutil.which("xdotool")
         if exe is None:
             raise BackendError("xdotool is not installed")
@@ -258,33 +320,64 @@ class AtspiBackend(CUBackend):
         proc = subprocess.run([exe, *args], env=env, capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             raise BackendError(f"xdotool {args[0]} failed: {proc.stderr.strip()[:200]}")
+        return proc.stdout or ""
 
     def screenshot(self) -> bytes:
         self._require()
         env = {k: v for k, v in os.environ.items() if k != "DISPLAY"}
         env.update(self.env())
+        failures: list[str] = []
         magick = shutil.which("import")
         if magick:
-            proc = subprocess.run([magick, "-window", "root", "png:-"], env=env, capture_output=True, timeout=30)
-            if proc.returncode == 0 and proc.stdout:
-                return proc.stdout
+            png, why = _capture([magick, "-window", "root", "png:-"], env)
+            if png:
+                return png
+            failures.append(why)
         xwd = shutil.which("xwd")
         convert = shutil.which("convert") or shutil.which("magick")
         if xwd and convert:
             with tempfile.NamedTemporaryFile(suffix=".xwd", delete=False) as tmp:
                 path = tmp.name
             try:
-                proc = subprocess.run([xwd, "-root", "-silent", "-out", path], env=env, capture_output=True, timeout=30)
-                if proc.returncode == 0:
-                    proc = subprocess.run([convert, f"xwd:{path}", "png:-"], env=env, capture_output=True, timeout=30)
-                    if proc.returncode == 0 and proc.stdout:
-                        return proc.stdout
+                raw, why = _capture([xwd, "-root", "-silent", "-out", path], env, want_stdout=False)
+                if why:
+                    failures.append(why)
+                else:
+                    png, why = _capture([convert, f"xwd:{path}", "png:-"], env)
+                    if png:
+                        return png
+                    failures.append(why)
             finally:
                 try:
                     os.unlink(path)
                 except OSError:
                     pass
-        raise BackendError("no screenshot tool: install ImageMagick (`import`) or xwd+convert")
+        if not failures:
+            raise BackendError("no screenshot tool: install ImageMagick (`import`) or xwd+convert")
+        raise BackendError(f"screenshot of {self.display} failed: " + "; ".join(failures))
+
+
+def _capture(argv: list[str], env: dict[str, str], want_stdout: bool = True) -> tuple[bytes, str]:
+    """(stdout, "") on success, else (b"", "<command> <what went wrong>: <stderr>")."""
+    shown = " ".join(os.path.basename(argv[0:1][0]) if i == 0 else a for i, a in enumerate(argv))
+    try:
+        proc = subprocess.run(argv, env=env, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return b"", f"`{shown}` timed out after 30 s"
+    except OSError as e:
+        return b"", f"`{shown}` could not run: {e}"
+    stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    if proc.returncode != 0:
+        return b"", f"`{shown}` exited {proc.returncode}: {stderr[:300] or '(no stderr)'}"
+    if want_stdout and not proc.stdout:
+        return b"", f"`{shown}` wrote no image: {stderr[:300] or '(no stderr)'}"
+    return proc.stdout or b"ok", ""
+
+
+def _re_escape(text: str) -> str:
+    import re
+
+    return re.escape(text)
 
 
 def _glob(name: str, pattern: str) -> bool:

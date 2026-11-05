@@ -239,7 +239,10 @@ class ScriptRunner:
         reason: FailureReason | None = None
         evidence: list[dict] = []
         try:
-            before_digest = self.backend.tree_digest(self.backend.tree())
+            nodes = self.backend.tree()
+            if self._dismiss_dialogs(nodes, job_id, i):
+                nodes = self.backend.tree()
+            before_digest = self.backend.tree_digest(nodes)
             screenshot = self.backend.screenshot()
             screenshot_sha = hashlib.sha256(screenshot).hexdigest()
         except Exception as e:
@@ -440,7 +443,13 @@ class ScriptRunner:
     def _screenshot_assert(self, step: ScreenshotAssertStep, screenshot: bytes) -> str:
         if self.judge is None:
             return f"screenshot_assert skipped: no judge configured ({step.question[:80]!r})"
-        verdict = self.judge.ask(screenshot, step.question)
+        ask = self.judge.ask
+        # A mid-script screen check never spends a paid fallback call: the judge may answer from the focused
+        # window's a11y text or defer to the job's final goal check (cu/judge.py Judge policy).
+        if _accepts(ask, "tree") and _accepts(ask, "final"):
+            verdict = ask(screenshot, step.question, tree=self.backend.tree, final=False)
+        else:
+            verdict = ask(screenshot, step.question)
         ok, reason = _verdict(verdict)
         if not ok:
             raise _StepFailure(f"screenshot_assert failed: {reason or step.question}")
@@ -540,6 +549,22 @@ class ScriptRunner:
             raise _StepFailure(f"call {step.fn!r} raised {type(e).__name__}: {e}") from None
         return f"call {step.fn} -> {str(value)[:200]}" if value is not None else f"call {step.fn} ok"
 
+    def _dismiss_dialogs(self, nodes: Any, job_id: str, index: int) -> bool:
+        """Known first-run / session-restore dialogs are declined through the a11y tree before a step runs."""
+        fn = getattr(self.backend, "dismiss_known_dialogs", None)
+        if not callable(fn):
+            return False
+        try:
+            done = list(fn(nodes) or [])
+        except Exception as e:  # noqa: BLE001 - a dialog check never fails a step
+            self.log.record("note", f"{job_id}: dialog check failed ({type(e).__name__}: {e})", job_id=job_id, index=index)
+            return False
+        for line in done:
+            self.log.record("note", f"{job_id}: dismissed dialog before step {index}: {line}", job_id=job_id, index=index)
+        if done:
+            self._sleep(self.poll_interval)
+        return bool(done)
+
     def _launch(self, step: LaunchStep) -> str:
         try:
             args = shlex.split(step.cmd)
@@ -547,6 +572,20 @@ class ScriptRunner:
             raise _StepFailure(f"launch: cannot parse cmd: {e}") from None
         if not args:
             raise _StepFailure("launch: empty cmd")
+        # Idempotent: an app that already has a window on this display is focused, not started again (a second
+        # instance stacks over the first and splits input from what the screenshot shows). A cmd with file or
+        # other positional arguments still launches, since focusing would silently drop what it asks to open.
+        app = os.path.basename(args[0])
+        if not [a for a in args[1:] if not a.startswith("-")]:
+            focus = getattr(self.backend, "focus_existing", None)
+            existing = None
+            if callable(focus):
+                try:
+                    existing = focus(app)
+                except Exception:  # noqa: BLE001 - fall through to a normal launch
+                    existing = None
+            if existing:
+                return f"already running: focused the existing {app} window {existing!r}; no second instance started"
         env = {k: v for k, v in os.environ.items() if k != "DISPLAY"}
         env.update(self.backend.env())
         try:
@@ -582,6 +621,14 @@ class _ApiBackend:
         elif isinstance(target, str):
             target = Target(name=target)
         return self._backend.find(target, within=within) if within is not None else self._backend.find(target)
+
+
+def _accepts(fn: Any, name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _parameters(fn: Any) -> list[str]:

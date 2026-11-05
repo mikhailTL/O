@@ -314,8 +314,15 @@ const TOOLS = [
   {
     name: 'provision',
     description: 'Run environment-setup commands through the O engine (validate → cache → execute → verify → remediate). ' +
-      'Blocks until the job finishes and returns the final JobState. Use this instead of running setup commands yourself.',
-    inputSchema: PROVISION_SCHEMA,
+      'Blocks until the job finishes and returns the final JobState. Use this instead of running setup commands yourself. ' +
+      'Steps run in O\'s sandbox (<sandboxRoot>/<job id>) unless workspace names a folder the user granted in O\'s settings.',
+    inputSchema: {
+      ...PROVISION_SCHEMA,
+      properties: {
+        ...PROVISION_SCHEMA.properties,
+        workspace: { type: 'string', maxLength: 1024, description: 'Optional absolute path of a folder the user granted (Settings: grantedFolders); the job runs there instead of a fresh sandbox. Any other path is refused.' },
+      },
+    },
   },
   {
     name: 'cache_lookup',

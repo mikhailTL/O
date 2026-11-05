@@ -7,6 +7,7 @@ state change is written to the action log.
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import platform
 import queue
@@ -47,6 +48,39 @@ def _env(name: str, default: str = "") -> str:
     return value if value not in (None, "") else default
 
 
+def _granted_folders_env(raw: str) -> list[str]:
+    """``O_GRANTED_FOLDERS``: a JSON list of absolute paths (or ``os.pathsep``-separated). Relative or
+    non-string entries are dropped; an unparsable value grants nothing."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw) if raw.startswith("[") else raw.split(os.pathsep)
+    except ValueError:
+        return []
+    if not isinstance(items, list):
+        return []
+    return [i.strip() for i in items if isinstance(i, str) and i.strip() and os.path.isabs(i.strip())]
+
+
+def resolve_workspace(requested: Any, granted: list[str]) -> Path:
+    """The real path of ``requested`` when it IS one of the granted folders (after resolving symlinks and
+    ``..`` on both sides) and is an existing directory; otherwise ``SchemaViolation``. A subfolder, a parent
+    or a sibling of a granted folder is refused: containment stays exactly one granted root per job."""
+    if not isinstance(requested, str) or not requested.strip():
+        raise SchemaViolation("workspace must be a non-empty absolute path")
+    path = requested.strip()
+    if not os.path.isabs(path):
+        raise SchemaViolation("workspace must be an absolute path")
+    real = Path(os.path.realpath(path))
+    roots = {Path(os.path.realpath(g)) for g in granted if isinstance(g, str) and os.path.isabs(g)}
+    if real not in roots:
+        raise SchemaViolation("workspace is not a folder the user granted (settings: grantedFolders)")
+    if not real.is_dir():
+        raise SchemaViolation("workspace does not exist or is not a directory")
+    return real
+
+
 def _default_screenpipe_db() -> str:
     return str(Path.home() / ".screenpipe" / "db.sqlite")
 
@@ -84,6 +118,10 @@ class EngineSettings(BaseModel):
     cu_zoom: bool = True  # O_CU_ZOOM: wrap the vision grounder in ZoomGrounder
     cu_comparative: bool = True  # O_CU_COMPARATIVE: best-of-N ranks all candidates in one model call
     cu_interface_builder: bool = True  # O_CU_INTERFACE_BUILDER: build api.py per app after a fresh store
+    cu_max_model_calls: int = Field(default=12, ge=0, le=200)  # O_CU_MAX_MODEL_CALLS: paid Claude calls per cu job
+    # Folders the user granted (app setting grantedFolders, O_GRANTED_FOLDERS as a JSON list): a /provision
+    # ``workspace`` equal to one of them runs the job there instead of <sandbox_root>/<job_id>.
+    granted_folders: list[str] = Field(default_factory=list)
     # ---- Phase 2 (tooling core / containment / swarm / headless web) ----
     mcp_servers_file: str = ""  # "" -> <data_dir>/mcp-servers.json (see mcp_servers_path)
     high_risk_sandbox: str = "docker"
@@ -142,6 +180,8 @@ class EngineSettings(BaseModel):
             "cu_zoom": _truthy_env("O_CU_ZOOM", True),
             "cu_comparative": _truthy_env("O_CU_COMPARATIVE", True),
             "cu_interface_builder": _truthy_env("O_CU_INTERFACE_BUILDER", True),
+            "cu_max_model_calls": int(_env("O_CU_MAX_MODEL_CALLS", "12")),
+            "granted_folders": _granted_folders_env(_env("O_GRANTED_FOLDERS", "")),
             # Phase 2
             "mcp_servers_file": _env("O_MCP_SERVERS_FILE", ""),
             "high_risk_sandbox": _env("O_HIGH_RISK_SANDBOX", "docker"),
@@ -250,14 +290,20 @@ class EngineDeps:
             settings_like=settings.settings_like,
             ui=self.ui,
         )
+        # job id -> granted folder the job runs in (``/provision`` with ``workspace``); every other job gets
+        # its own ``<sandbox_root>/<job_id>``.
+        self.job_workspaces: dict[str, Path] = {}
         self.graph = build_graph(
-            Deps(sandbox_factory=lambda job_id: Sandbox(str(self.sandbox_root / job_id)), **self._graph_fields)
+            Deps(sandbox_factory=lambda job_id: Sandbox(str(self.sandbox_dir(job_id))), **self._graph_fields)
         )
         # Computer use is built lazily: nothing below imports a platform accessibility package
         # until the first /computer/* request, so /health stays importable everywhere.
         self._cu: dict[str, Any] = {}
         self._cu_lock = threading.RLock()
         self.cu_displays = cu_display_names(settings.cu_candidates)
+
+    def sandbox_dir(self, job_id: str) -> Path:
+        return self.job_workspaces.get(job_id) or (self.sandbox_root / job_id)
 
     def cu_backend(self, slot: int = 0) -> Any:
         """One backend per candidate slot. Linux: its own ``IsolatedDisplay`` (``:99 + slot``); pixel
@@ -292,7 +338,9 @@ class EngineDeps:
                     allow_pixels = bool(display.running) and not is_host
                     state = "is the host display: pixels refused" if is_host else ("running" if allow_pixels else "not running")
                     self.log.record("note", f"computer-use display {display.display} {state}",
-                                    display=display.display, slot=int(slot), allow_pixels=allow_pixels)
+                                    display=display.display, slot=int(slot), allow_pixels=allow_pixels,
+                                    window_manager=getattr(display, "wm_name", None),
+                                    window_manager_note=getattr(display, "wm_reason", "") or None)
                     self._cu[key] = get_backend(display=display.display, allow_pixels=allow_pixels)
                 else:
                     self._cu[key] = get_backend(display=None, allow_pixels=False)
@@ -421,6 +469,7 @@ class EngineDeps:
     def run_cu_job(self, graph: Any, goal: str, app: str, job_id: str, candidates: int = 1, **kw: Any) -> dict:
         from .cu.graph import run_cu_job
 
+        kw.setdefault("max_model_calls", self.settings.cu_max_model_calls)
         return run_cu_job(graph, goal, app, job_id, candidates, max_heals=self.settings.cu_max_heals, **kw)
 
     @property
@@ -1006,7 +1055,8 @@ def create_app(
         return graph, True
 
     def _run(job: _Job) -> None:
-        sandbox_dir = settings.sandbox_root_path / job.id
+        workspace = job.state.get("workspace")
+        sandbox_dir = Path(workspace) if workspace else settings.sandbox_root_path / job.id
         sandbox_dir.mkdir(parents=True, exist_ok=True)
         log.record("graph", f"job {job.id} started", job_id=job.id, label=job.request.label, sandbox=str(sandbox_dir))
         started = time.monotonic()
@@ -1029,6 +1079,9 @@ def create_app(
         finally:
             if headless:
                 ambient.isolated.release(job.id)
+            spaces = getattr(d, "job_workspaces", None)
+            if isinstance(spaces, dict):
+                spaces.pop(job.id, None)
         if headless:
             final["headless"] = True
             final["isolation"] = ambient.isolated.last_backend or "local"
@@ -1059,9 +1112,20 @@ def create_app(
             return _provision_swarm(body)  # Phase 2: defined in the "Phase 2 routes" block below
         job_id = uuid.uuid4().hex
         priority = ambient.take_priority(job_id, body)  # low | normal | high; removed before the strict parse
+        workspace = None
+        if isinstance(body, dict) and "workspace" in body:
+            body = dict(body)
+            workspace = resolve_workspace(body.pop("workspace"), settings.granted_folders)
         request = parse_request(body)
         job = _Job(job_id, request, settings.max_attempts)
         job.state["priority"] = priority
+        if workspace is not None:
+            job.state["workspace"] = str(workspace)
+            d = deps()
+            if isinstance(getattr(d, "job_workspaces", None), dict):
+                d.job_workspaces[job_id] = workspace
+            log.record("policy", f"provision {job_id}: runs in granted folder {workspace}", job_id=job_id,
+                       workspace=str(workspace))
         jobs.add(job)
         log.record("task", f"provision queued: {request.label}", job_id=job.id, steps=len(request.steps), mode=settings.permission_mode)
         pool.submit(_run, job)

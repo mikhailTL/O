@@ -53,6 +53,8 @@ const DEFAULTS = Object.freeze({
   cuZoomGrounding: true, // ground on the full screenshot, then again on a crop around the answer
   cuComparativeRanking: true, // best-of-N ranks all candidates in one model call
   cuInterfaceBuilder: true, // turn a passing procedure into a per-app Python interface (api.py)
+  cuMaxModelCalls: 12, // 0..200 engine-side paid (Claude Code) model calls per computer-use job; then it stops and reports
+  grantedFolders: [], // absolute folders the user granted; /provision may use exactly one of them as its workspace
   // Phase 2 tooling core
   mcpServers: '{}', // JSON, Claude Code's mcpServers shape; merged into o-mcp.json and the engine's router
   highRiskSandbox: 'docker', // 'e2b' | 'docker' | 'local' for risk:"high" steps
@@ -175,6 +177,10 @@ function sanitize(obj) {
   if (typeof obj.cuZoomGrounding === 'boolean') out.cuZoomGrounding = obj.cuZoomGrounding;
   if (typeof obj.cuComparativeRanking === 'boolean') out.cuComparativeRanking = obj.cuComparativeRanking;
   if (typeof obj.cuInterfaceBuilder === 'boolean') out.cuInterfaceBuilder = obj.cuInterfaceBuilder;
+  if (obj.cuMaxModelCalls !== undefined) { const n = parseInt(obj.cuMaxModelCalls, 10); if (Number.isFinite(n)) out.cuMaxModelCalls = Math.max(0, Math.min(200, n)); }
+  if (Array.isArray(obj.grantedFolders)) {
+    out.grantedFolders = [...new Set(obj.grantedFolders.filter((f) => typeof f === 'string' && f.trim()).map((f) => f.trim().replace(/[\\/]+$/, '') || f.trim()).filter((f) => path.isAbsolute(f)))].slice(0, 64);
+  }
   if (typeof obj.mcpServers === 'string') { try { const j = JSON.parse(obj.mcpServers || '{}'); if (j && typeof j === 'object' && !Array.isArray(j)) out.mcpServers = JSON.stringify(j); } catch (_) { /* keep the previous value */ } }
   if (['e2b', 'docker', 'local'].includes(obj.highRiskSandbox)) out.highRiskSandbox = obj.highRiskSandbox;
   if (typeof obj.e2bApiKey === 'string') out.e2bApiKey = obj.e2bApiKey.trim();

@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..schema import ProvisionStep, SchemaViolation
 from ..tokenfilter import TokenFilter
+from . import meter
 from .ground import LOCAL_TIMEOUT_SECONDS, CLAUDE_TIMEOUT_SECONDS, png_data_url
 from .probes import PROBE_ALLOW_LIST, is_allowed_probe  # noqa: F401  (re-exported: the one shared allow-list)
 from .schema import StateCheck, Target
@@ -141,6 +142,7 @@ class VLMJudge:
                 close()
 
     def judge(self, png_bytes: bytes, question: str) -> JudgeVerdict:
+        meter.count_local("judge")
         tf = TokenFilter()
         filtered = tf.filter_stream(self._tokens(png_bytes, question))
         if not filtered:
@@ -162,6 +164,7 @@ class ClaudeCodeJudge:
         # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
         # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
         # headless mode (real run: every screenshot check failed with "permission denied").
+        meter.charge_paid("judge")
         workdir = tempfile.mkdtemp(prefix="o-judge-")
         path = os.path.join(workdir, "screen.png")
         try:
@@ -186,40 +189,144 @@ class ClaudeCodeJudge:
             payload = json.loads(proc.stdout)
         except json.JSONDecodeError as e:
             raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
+        meter.add_cost(payload)
         result = payload.get("result") if isinstance(payload, dict) else None
         if not isinstance(result, str):
             raise SchemaViolation("claude cli output has no string result")
         return parse_verdict(result, self.name)
 
 
+_QUOTED = re.compile(
+    r"""(?:^|(?<=[\s:(\[,]))(?:"([^"]+)"|'([^']+)'|\u201c([^\u201d]+)\u201d|\u2018([^\u2019]+)\u2019)(?=$|[\s.,;:)\]?!])"""
+)
+_NEGATION = re.compile(r"\b(no|not|none|without|never|nothing|n't|absent|missing|removed|deleted|empty|blank|cleared)\b|n't\b", re.I)
+_INVERT = re.compile(r"\bnot\b|n't\b|\bnon-?empty\b", re.I)
+_EMPTY = re.compile(r"\b(empty|blank|cleared)\b", re.I)
+_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_LINE_COUNT = re.compile(r"\bexactly\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:non-empty\s+)?lines?\b", re.I)
+_TEXT_ROLES = {"text", "entry", "document text", "paragraph", "terminal", "editbar", "password text", "spin button"}
+
+
+def _walk(nodes: Any):
+    for root in nodes or ():
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            yield n
+            stack.extend(reversed(list(_get(n, "children") or [])))
+
+
+def tree_text_verdict(question: str, nodes: Any) -> JudgeVerdict | None:
+    """Answer a yes/no screen question from the focused window's accessibility text, with no model call.
+
+    Decides only the shapes it can read exactly: every quoted string in the question present in the
+    window's text (optionally ``exactly N lines`` of the text element holding them), or an "empty"
+    question about the editable text. Anything else (no quotes, negations around quotes) returns None.
+    """
+    q = str(question or "")
+    texts = [str(_get(n, "text") or "") for n in _walk(nodes) if str(_get(n, "role") or "").lower() in _TEXT_ROLES]
+    if not texts:
+        return None
+    quoted = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(q)]
+    quoted = [s.strip() for s in quoted if s and s.strip()]
+    if not quoted:
+        if _EMPTY.search(q) and not _INVERT.search(q):
+            empty = all(not t.strip() for t in texts)
+            return JudgeVerdict(ok=empty, source="tree-text",
+                                reason="the window's text elements are empty" if empty else
+                                f"the window's text is not empty ({sum(len(t) for t in texts)} chars)")
+        return None
+    if _NEGATION.search(q):
+        return None  # "no 'x'", "without 'x'": presence logic would invert; not decided here
+    hay = "\n".join(texts)
+    missing = [s for s in quoted if s.lower() not in hay.lower()]
+    if missing:
+        return JudgeVerdict(ok=False, source="tree-text",
+                            reason=f"{missing[0]!r} is not in the focused window's text")
+    m = _LINE_COUNT.search(q)
+    if m:
+        want = int(m.group(1)) if m.group(1).isdigit() else _NUMBERS[m.group(1).lower()]
+        holder = next((t for t in texts if quoted[0].lower() in t.lower()), hay)
+        have = len([ln for ln in holder.splitlines() if ln.strip()])
+        if have != want:
+            return JudgeVerdict(ok=False, source="tree-text", reason=f"the text has {have} non-empty lines, not {want}")
+    return JudgeVerdict(ok=True, source="tree-text", reason=f"the focused window's text contains {len(quoted)} quoted string(s)")
+
+
+DEFERRED_REASON = "not checked on screen: no local judge answered; deferred to the final goal check"
+
+
 class Judge:
-    """primary -> fallback once. Never raises; no backend answering is a failed verdict."""
+    """primary -> (tree text) -> fallback once. Never raises (except at the job's model-call cap).
+
+    Cost policy (real run: most of a job's paid calls were intermediate screen checks while vLLM was down):
+
+    * identical (screenshot sha256, question) pairs are answered once per job (the job meter's cache);
+    * when the primary (local VLM) does not answer and ``tree`` is given, the focused window's
+      accessibility text decides when it can (``tree_text_verdict``);
+    * only a ``final=True`` question (the job's goal check) reaches the paid fallback. A non-final one
+      that nothing local could decide passes as ``source="deferred"`` and is counted on the job meter, so
+      the graph runs the final goal check before reporting success.
+
+    ``final`` defaults to True so a caller that does not know about the policy keeps the old behaviour.
+    """
 
     def __init__(self, primary: JudgeBackend | None, fallback: JudgeBackend | None = None) -> None:
         self.primary = primary
         self.fallback = fallback
         self.last_source: str = "none"
 
-    def judge(self, png_bytes: bytes, question: str) -> JudgeVerdict:
+    def judge(self, png_bytes: bytes, question: str, tree: Any = None, final: bool = True) -> JudgeVerdict:
         self.last_source = "none"
+        m = meter.current()
+        if m is not None:
+            hit = m.cached_verdict(png_bytes, question)
+            if hit is not None and (final or hit.source != "deferred"):
+                self.last_source = hit.source
+                return hit
         errors: list[str] = []
-        for backend in (self.primary, self.fallback):
-            if backend is None:
-                continue
+        verdict = self._ask(self.primary, png_bytes, question, errors)
+        if verdict is None and tree is not None:
             try:
-                verdict = backend.judge(png_bytes, question)
-            except Exception as e:
-                errors.append(f"{backend.name}: {e}")
-                continue
-            self.last_source = backend.name
-            return verdict
-        if not errors:
-            errors.append("no judge backend configured")
-        return JudgeVerdict(ok=False, reason="judge unavailable (" + "; ".join(errors) + ")", source="none")
+                nodes = tree() if callable(tree) else tree
+                verdict = tree_text_verdict(question, nodes)
+            except meter.ModelCallCapReached:
+                raise
+            except Exception as e:  # noqa: BLE001 - an unreadable tree just means "not decided here"
+                errors.append(f"tree-text: {type(e).__name__}: {e}")
+        if verdict is None and not final and self.fallback is not None:
+            if m is not None:
+                m.deferred += 1
+            self.last_source = "deferred"
+            return JudgeVerdict(ok=True, reason=DEFERRED_REASON, source="deferred")
+        if verdict is None:
+            verdict = self._ask(self.fallback, png_bytes, question, errors)
+        if verdict is None:
+            if not errors:
+                errors.append("no judge backend configured")
+            return JudgeVerdict(ok=False, reason="judge unavailable (" + "; ".join(errors) + ")", source="none")
+        self.last_source = verdict.source or "judge"
+        if m is not None:
+            m.cache_verdict(png_bytes, question, verdict)
+        return verdict
 
-    def ask(self, png_bytes: bytes, question: str) -> tuple[bool, str]:
+    def _ask(self, backend: JudgeBackend | None, png_bytes: bytes, question: str, errors: list[str]) -> JudgeVerdict | None:
+        if backend is None:
+            return None
+        try:
+            v = backend.judge(png_bytes, question)
+        except meter.ModelCallCapReached:
+            raise
+        except Exception as e:
+            errors.append(f"{backend.name}: {e}")
+            return None
+        if not v.source:
+            v = JudgeVerdict(ok=v.ok, reason=v.reason, source=backend.name)
+        return v
+
+    def ask(self, png_bytes: bytes, question: str, tree: Any = None, final: bool = True) -> tuple[bool, str]:
         """Executor-facing form of ``judge``."""
-        v = self.judge(png_bytes, question)
+        v = self.judge(png_bytes, question, tree=tree, final=final)
         return v.ok, v.reason
 
 

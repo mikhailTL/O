@@ -306,29 +306,39 @@ step_screenpipe() {
 }
 
 # Xvfb: Linux only (isolated display :99). macOS: headless-only.
+# A minimal window manager (openbox) goes with it: without one, windows on the isolated display
+# stack with no focus/raise, so input lands in one window while screenshots show another.
 step_xvfb() {
   if [ "$OS" != "Linux" ]; then
     ok "xvfb — isolated display: headless-only on this OS"
     return
   fi
-  if command -v Xvfb >/dev/null 2>&1; then
-    ok "xvfb (already installed)"
+  local pkgs_apt="" pkgs_dnf=""
+  command -v Xvfb >/dev/null 2>&1 || { pkgs_apt="xvfb"; pkgs_dnf="xorg-x11-server-Xvfb"; }
+  if ! command -v openbox >/dev/null 2>&1 && ! command -v matchbox-window-manager >/dev/null 2>&1 \
+     && ! command -v xfwm4 >/dev/null 2>&1; then
+    pkgs_apt="$pkgs_apt openbox"; pkgs_dnf="$pkgs_dnf openbox"
+  fi
+  if [ -z "$pkgs_apt" ]; then
+    ok "xvfb + window manager (already installed)"
     return
   fi
   if command -v apt-get >/dev/null 2>&1; then
-    if sudo_run apt-get install -y xvfb; then
-      ok "xvfb"
+    # shellcheck disable=SC2086
+    if sudo_run apt-get install -y --no-install-recommends $pkgs_apt; then
+      ok "xvfb:$pkgs_apt"
     else
-      fail "xvfb" "run 'sudo apt-get install -y xvfb'"
+      fail "xvfb" "run 'sudo apt-get install -y$pkgs_apt'"
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    if sudo_run dnf install -y xorg-x11-server-Xvfb; then
-      ok "xvfb"
+    # shellcheck disable=SC2086
+    if sudo_run dnf install -y $pkgs_dnf; then
+      ok "xvfb:$pkgs_dnf"
     else
-      fail "xvfb" "run 'sudo dnf install -y xorg-x11-server-Xvfb'"
+      fail "xvfb" "run 'sudo dnf install -y$pkgs_dnf'"
     fi
   else
-    fail "xvfb" "install the Xvfb package with your distro's package manager"
+    fail "xvfb" "install the Xvfb and openbox packages with your distro's package manager"
   fi
 }
 

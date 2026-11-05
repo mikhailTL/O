@@ -151,6 +151,8 @@ class EngineProcess extends EventEmitter {
       O_CU_ZOOM: s.cuZoomGrounding === false ? '0' : '1',
       O_CU_COMPARATIVE: s.cuComparativeRanking === false ? '0' : '1',
       O_CU_INTERFACE_BUILDER: s.cuInterfaceBuilder === false ? '0' : '1',
+      O_CU_MAX_MODEL_CALLS: String(Number.isInteger(s.cuMaxModelCalls) ? s.cuMaxModelCalls : 12),
+      O_GRANTED_FOLDERS: JSON.stringify(Array.isArray(s.grantedFolders) ? s.grantedFolders : []),
       O_MCP_SERVERS_FILE: this.mcpServersFile(s),
       O_HIGH_RISK_SANDBOX: s.highRiskSandbox || 'docker',
       E2B_API_KEY: s.e2bApiKey || '',
