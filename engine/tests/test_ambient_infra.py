@@ -199,8 +199,23 @@ def test_firecracker_availability_reasons(tmp_path):
 # ----------------------------------------------------------------------------- microsandbox
 
 
+class FakeMountConfig:
+    def __init__(self, bind):
+        self.bind = bind
+
+
+class FakeVolume:
+    @staticmethod
+    def bind(path, **kw):
+        return FakeMountConfig(path)
+
+
 class FakeMSB:
+    """Mirrors microsandbox 0.7.13: create(name, *, image, cpus, memory, volumes: Mapping, replace),
+    exec(cmd, args, *, timeout) -> ExecOutput, stop(), static remove(name)."""
+
     created = []
+    removed = []
 
     def __init__(self, name):
         self.name = name
@@ -208,39 +223,72 @@ class FakeMSB:
         self.execs = []
 
     @classmethod
-    async def create(cls, name, image=None, cpus=None, memory=None, volumes=None):
+    async def create(cls, name, *, image=None, cpus=None, memory=None, volumes=None, replace=False):
+        if volumes is not None and not isinstance(volumes, dict):
+            raise TypeError("volumes must be a Mapping")
         sb = cls(name)
-        sb.opts = dict(image=image, cpus=cpus, memory=memory, volumes=volumes)
+        sb.opts = dict(image=image, cpus=cpus, memory=memory, volumes=volumes, replace=replace)
         cls.created.append(sb)
         return sb
 
-    async def exec(self, cmd, args):
-        self.execs.append((cmd, args))
-        return types.SimpleNamespace(stdout_text="ok\n", stderr_text="", exit_code=0)
+    @staticmethod
+    async def remove(name):
+        FakeMSB.removed.append(name)
 
-    async def stop(self):
+    async def exec(self, cmd, args=None, *, cwd=None, env=None, timeout=None):
+        self.execs.append((cmd, args, timeout))
+        return types.SimpleNamespace(stdout_text="ok\n", stderr_text="", exit_code=0, success=True)
+
+    async def stop(self, timeout=None):
         self.stopped = True
 
 
 def test_microsandbox_runs_step_and_stops(tmp_path):
     FakeMSB.created.clear()
-    sb = MicrosandboxSandbox(job_dir=tmp_path, image="img", sdk=FakeMSB)
+    FakeMSB.removed.clear()
+    sb = MicrosandboxSandbox(job_dir=tmp_path, image="img", sdk=FakeMSB, volume=FakeVolume)
     assert sb.available
     step = ProvisionStep(target_directory="sub", command_string="echo ok", timeout_seconds=10)
     res = sb.run(step, 0)
     assert res.exit_code == 0 and res.stdout == "ok\n" and res.cwd == "/work/sub"
     vm = FakeMSB.created[0]
-    assert vm.opts["volumes"] == [f"{tmp_path.resolve()}:/work"] and vm.opts["image"] == "img"
-    assert vm.execs[0][0] == "sh" and "cd /work/sub && echo ok" in vm.execs[0][1][1]
+    assert set(vm.opts["volumes"]) == {"/work"} and vm.opts["volumes"]["/work"].bind == str(tmp_path.resolve())
+    assert vm.opts["image"] == "img" and vm.opts["replace"] is True
+    assert vm.execs[0][0] == "sh" and "cd /work/sub && echo ok" in vm.execs[0][1][1] and vm.execs[0][2] == 10.0
     sb.run(step, 1)
     assert len(FakeMSB.created) == 1  # one microVM per job
     sb.destroy()
-    assert vm.stopped
+    assert vm.stopped and FakeMSB.removed == [vm.name]
+
+
+def test_microsandbox_create_failure_is_a_failed_step_and_cleans_up(tmp_path):
+    class Boom(FakeMSB):
+        @classmethod
+        async def create(cls, name, **kw):
+            raise RuntimeError("sandbox process exited (signal: 6 (SIGABRT)) before agent relay became available")
+
+    FakeMSB.removed.clear()
+    sb = MicrosandboxSandbox(job_dir=tmp_path, sdk=Boom, volume=FakeVolume)
+    res = sb.run(ProvisionStep(target_directory=".", command_string="true", timeout_seconds=5), 0)
+    assert res.exit_code == 127 and "SIGABRT" in res.stderr and not res.timed_out
+    sb.destroy()
+    assert FakeMSB.removed == [sb.vm_name]
 
 
 def test_microsandbox_status_reasons():
-    ok, reason = microsandbox_status(env={}, which=lambda n: None)
-    assert not ok and ("not installed" in reason or "server" in reason)
+    ok, reason = microsandbox_status(find_spec=lambda n: None)
+    assert not ok and "not installed" in reason
+    present = lambda n: object()  # noqa: E731
+    ok, reason = microsandbox_status(find_spec=present, platform="linux", access=lambda p, m: False)
+    assert not ok and "/dev/kvm" in reason
+    ok, reason = microsandbox_status(find_spec=present, platform="darwin", machine="x86_64")
+    assert not ok and "Apple Silicon" in reason
+    ok, reason = microsandbox_status(find_spec=present, platform="linux", access=lambda p, m: True,
+                                     runtime_check=lambda: (True, ""))
+    assert ok and reason == ""
+    ok, reason = microsandbox_status(find_spec=present, platform="darwin", machine="arm64",
+                                     runtime_check=lambda: (False, "runtime missing"))
+    assert not ok and reason == "runtime missing"
 
 
 # ----------------------------------------------------------------------------- isolation

@@ -1046,6 +1046,7 @@ def create_app(
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
         ambient.record_job(job.id, job.request.label, final, "provision")
+        ambient.job_finished(job.id)
 
     @app.get("/health", dependencies=guarded)
     def health() -> dict[str, Any]:
@@ -1056,8 +1057,11 @@ def create_app(
     def provision(body: dict[str, Any]) -> dict[str, str]:
         if isinstance(body, dict) and body.get("swarm"):
             return _provision_swarm(body)  # Phase 2: defined in the "Phase 2 routes" block below
+        job_id = uuid.uuid4().hex
+        priority = ambient.take_priority(job_id, body)  # low | normal | high; removed before the strict parse
         request = parse_request(body)
-        job = _Job(uuid.uuid4().hex, request, settings.max_attempts)
+        job = _Job(job_id, request, settings.max_attempts)
+        job.state["priority"] = priority
         jobs.add(job)
         log.record("task", f"provision queued: {request.label}", job_id=job.id, steps=len(request.steps), mode=settings.permission_mode)
         pool.submit(_run, job)
@@ -1068,6 +1072,8 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="unknown job")
+        if not job.state.get("done"):
+            return {**job.state, "paused": job_id in ambient.pause_gate.snapshot()["waiting"]}
         return job.state
 
     @app.post("/jobs/{job_id}/approve", dependencies=guarded)
@@ -1271,9 +1277,10 @@ def create_app(
         from .graph import step_record
         from .schema import ScriptPayload
 
+        script_id = f"{SCRIPT_SANDBOX_PREFIX}{uuid.uuid4().hex}"
+        priority = ambient.take_priority(script_id, body)
         req = _validate(ScriptRunRequest, body)
         payload = _validate(ScriptPayload, req.model_dump())
-        script_id = f"{SCRIPT_SANDBOX_PREFIX}{uuid.uuid4().hex}"
         sandbox_dir = settings.sandbox_root_path / script_id
         headless = ambient.absent
         sandbox = ambient.isolated.for_job(script_id) if headless else Sandbox(str(sandbox_dir))
@@ -1288,8 +1295,10 @@ def create_app(
         finally:
             if headless:
                 ambient.isolated.release(script_id)
+            ambient.job_finished(script_id)
         record = step_record(result, 0)
         record["sandbox"] = str(sandbox_dir)
+        record["priority"] = priority
         if headless:
             record["headless"] = True
             record["isolation"] = getattr(sandbox, "backend_name", "local")

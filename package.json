@@ -12,7 +12,8 @@
     "check": "node -e \"for (const f of require('fs').readdirSync('main')) if (f.endsWith('.js')) require('child_process').execFileSync(process.execPath, ['--check', 'main/' + f], {stdio: 'inherit'})\"",
     "dist": "electron-builder",
     "demo:record": "node tools/demo/record.js",
-    "demo:launch": "node tools/demo/launch.js"
+    "demo:launch": "node tools/demo/launch.js",
+    "demo:film": "node tools/demo/launch.js --film film"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.84",

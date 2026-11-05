@@ -148,12 +148,16 @@ class TaskManager extends EventEmitter {
   }
 
   _agentFor(t) {
+    const priority = t.priority || 'normal';
     if (this._claimed.has(t.id)) {
       const a = this._claimed.get(t.id);
       this._claimed.delete(t.id);
-      return a;
+      // a pre-warmed agent was spawned as normal priority; low/high tasks need their own bridge env
+      if (priority === 'normal') return a;
+      try { if (a.dispose) a.dispose(); } catch (_) {}
     }
     const a = this.createAgent(t.id, { goalId: t.goalId || null });
+    a.priority = priority;
     a.sessionId = t.sessionId || null;
     return a;
   }

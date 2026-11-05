@@ -185,3 +185,40 @@ def test_stress_proxy_bounds():
     assert rppg.stress_proxy(70, None) == 0.0
     assert rppg.stress_proxy(70, 70) == 0.0
     assert rppg.stress_proxy(130, 70) == 1.0
+
+
+def test_parse_ruview_sensing_server_schema():
+    """Field names from RuView's wifi_densepose/client/ws.py and sensing-server main.rs."""
+    edge = {"type": "edge_vitals", "node_id": "n1", "presence": True, "fall_detected": False, "motion": False,
+            "breathing_rate_bpm": 15.0, "heartrate_bpm": 70.0, "n_persons": 1, "motion_energy": 0.2,
+            "presence_score": 0.8, "rssi": -50.0}
+    assert csi.parse_ruview_message(edge) == {"presence": True, "motion": 0.0, "breathing": 15.0}
+    assert csi.parse_ruview_message({**edge, "motion": True, "breathing_rate_bpm": None}) == {"presence": True, "motion": 1.0}
+    assert csi.parse_ruview_message({"type": "edge_vitals", "n_persons": 0, "motion": False})["presence"] is False
+    upd = {"type": "sensing_update", "classification": {"motion_level": "present_moving", "presence": True, "confidence": 0.9},
+           "features": {"variance": 3.0, "motion_band_power": 0.4}, "vital_signs": {"breathing_rate_bpm": 12.0, "heart_rate_bpm": 60.0},
+           "persons": [{"id": 1, "keypoints": []}], "pose_keypoints": [[0, 0, 0, 1]]}
+    assert csi.parse_ruview_message(json.dumps(upd)) == {"presence": True, "motion": 1.0, "breathing": 12.0}
+    assert csi.parse_ruview_message({"type": "sensing_update", "classification": {"motion_level": "absent"}}) == {"presence": False, "motion": 0.0}
+    assert csi.parse_ruview_message({"type": "pose_data", "persons": []}) == {"presence": False, "motion": 0.0}
+    assert csi.parse_ruview_message({"type": "connection_established", "node_id": "n1"}) is None
+    assert csi.parse_ruview_message({"motion_level": "present_still", "presence": True}) == {"presence": True, "motion": 0.0}
+
+
+def test_parse_ruview_home_assistant_state_topics():
+    t = "homeassistant/binary_sensor/wifi_densepose_abc-node1/presence/state"
+    assert csi.parse_ruview_message(b"ON", topic=t) == {"presence": True}
+    assert csi.parse_ruview_message("OFF", topic=t) == {"presence": False}
+    assert csi.parse_ruview_message("50", topic=t.replace("binary_sensor", "sensor").replace("presence", "motion_level")) == {"motion": 0.5}
+    assert csi.parse_ruview_message("2", topic="homeassistant/sensor/wifi_densepose_x/person_count/state") == {"presence": True}
+    assert csi.parse_ruview_message("70", topic="homeassistant/sensor/wifi_densepose_x/heart_rate/state") is None
+    assert csi.parse_ruview_message("ON", topic="homeassistant/binary_sensor/other_device/presence/state") is None
+    s = csi.CSISensor(None, enabled=True, ruview_mqtt="mqtt://x")
+    assert s.feed_ruview((t, b"ON"), ts=1.0)["motion"] == 0.0
+    assert s.feed_ruview(("homeassistant/sensor/wifi_densepose_abc-node1/motion_level/state", b"100"), ts=2.0)["motion"] == 1.0
+    assert s.feed_ruview((t, b"OFF"), ts=3.0) == {"variance": 0.0, "doppler_energy": 0.0, "presence": False, "motion": 0.0,
+                                                  "source": "ruview", "ts": 3.0}
+    src = csi.RuViewMQTTSource("mqtt://h:1883")
+    assert src.topics == csi.RUVIEW_MQTT_TOPICS and csi.RuViewMQTTSource("mqtt://h/ruview/#").topics == ("ruview/#",)
+    assert csi.RuViewWSSource("", token="k").connect_kwargs() == {"additional_headers": {"Authorization": "Bearer k"}}
+    assert csi.RuViewWSSource("ws://x", token="").url == "ws://x"

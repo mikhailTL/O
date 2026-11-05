@@ -6,3 +6,4 @@
 html[data-film-strip="composer"] :is(#titlebar, #log, .disclaimer, #queue-line) { visibility: hidden; }
 html[data-film-strip="composer"] body { background: transparent !important; border-color: transparent !important; box-shadow: none !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 .inputwrap.lit { border-color: rgba(255, 255, 255, .55) !important; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), inset 0 0 28px rgba(255, 255, 255, .06) !important; }
+html[data-film-rows="2"] #prompt { min-height: 48px !important; }

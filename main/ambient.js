@@ -59,6 +59,16 @@ function sensorFor(name) {
   return SENSORS.find((s) => s.id === n || s.key === n) || SENSORS.find((s) => s.match.test(n)) || null;
 }
 
+/**
+ * The brief inside a GET /brief/latest answer. The engine answers `{brief: null}` or `{brief: {text, sentences,
+ * since, until, count, counts, via, ts}}`; a bare brief object is accepted too. Returns null when none.
+ */
+function unwrapBrief(b) {
+  if (b && typeof b === 'object' && 'brief' in b) b = b.brief;
+  if (!b || typeof b !== 'object' || typeof b.text !== 'string' || !b.text.trim()) return null;
+  return b;
+}
+
 /** Normalize a GET /presence answer. */
 function normPresence(p) {
   const state = p && STATES.includes(p.state) ? p.state : 'UNKNOWN';
@@ -66,8 +76,13 @@ function normPresence(p) {
   return { state, since: toSec(p && p.since), sources };
 }
 
-/** Normalize a GET /sensors answer onto the catalog (unknown names are kept, labelled by their own name). */
+/**
+ * Normalize a GET /sensors answer onto the catalog (unknown names are kept, labelled by their own name).
+ * The engine answers `{ambient, indicator, sensors: [{id, name, enabled, available, reason, ...}], bus, tts,
+ * supervisor}`; a bare array is accepted too.
+ */
 function normSensors(list) {
+  if (list && !Array.isArray(list) && Array.isArray(list.sensors)) list = list.sensors;
   const out = [];
   for (const s of Array.isArray(list) ? list : []) {
     if (!s || typeof s !== 'object') continue;
@@ -318,14 +333,15 @@ class AmbientController extends EventEmitter {
     let brief = null;
     for (let i = 0; i < BRIEF_TRIES; i++) {
       try {
-        const b = await this.engineCall('GET', '/brief/latest', null, 8000);
-        if (b && typeof b.text === 'string' && b.text.trim() && toSec(b.since) >= since - BRIEF_SLACK_S) { brief = b; break; }
+        const b = unwrapBrief(await this.engineCall('GET', '/brief/latest', null, 8000));
+        if (b && toSec(b.since) >= since - BRIEF_SLACK_S) { brief = b; break; }
       } catch (_) { /* not ready yet */ }
       if (this.known !== 'USER_PRESENT' || !this.enabled()) return null;
       await new Promise((r) => setTimeout(r, BRIEF_RETRY_MS));
     }
     if (!brief) { this.log('note', 'Back: no brief for this time away', { since }); return null; }
-    const out = { text: clip(brief.text, 900), sentences: sentencesOf(brief.text, 3), milestones: Number(brief.milestones) || 0, since: toSec(brief.since) };
+    const sentences = Array.isArray(brief.sentences) && brief.sentences.length ? brief.sentences.slice(0, 3).map((x) => clip(x, 400)) : sentencesOf(brief.text, 3);
+    const out = { text: clip(brief.text, 900), sentences, milestones: Number(brief.milestones != null ? brief.milestones : brief.count) || 0, since: toSec(brief.since) };
     this.lastBrief = out;
     this.log('note', `Brief shown (${out.milestones} milestone(s) while away)`, { milestones: out.milestones });
     try { this.showBrief(out); } catch (_) {}
@@ -356,6 +372,6 @@ class AmbientController extends EventEmitter {
 }
 
 module.exports = {
-  AmbientController, SENSORS, SENSOR_KEYS, PRIVACY_LINE, consentFilter, liveSensors, milestoneFor, normPresence, normSensors,
+  AmbientController, SENSORS, SENSOR_KEYS, PRIVACY_LINE, consentFilter, liveSensors, milestoneFor, normPresence, normSensors, unwrapBrief,
   sensorFor, sentencesOf, osSpeak, dotBitmap,
 };

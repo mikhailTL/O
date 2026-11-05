@@ -653,6 +653,7 @@ class OAgent extends EventEmitter {
       O_GOAL_URL: `${base}/goal`,
     };
     if (this.taskId) bridgeEnv.O_TASK_ID = this.taskId;
+    bridgeEnv.O_TASK_PRIORITY = ['low', 'normal', 'high'].includes(this.priority) ? this.priority : 'normal';
     if (this.goalId) bridgeEnv.O_GOAL_ID = this.goalId;
     let engine = null;
     try { engine = this.getEngine(); } catch { engine = null; }

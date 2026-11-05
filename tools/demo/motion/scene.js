@@ -249,7 +249,8 @@
     var note = el('div', 'line mono'); note.style.position = 'absolute'; note.style.left = '0'; note.style.top = '620px'; note.style.fontSize = '22px'; note.style.opacity = '0'; note.style.whiteSpace = 'pre';
     right.append(chain, note); sec.append(right);
     return panel(sec, { x: 140, y: 45, scale: 1.5, window: true }).then(function (p) {
-      p.doc.getElementById('btn-actionlog').click();
+      // the titlebar button moved into Settings ("View activity record"); either opens the same sheet
+      (p.doc.getElementById('btn-actionlog') || p.doc.getElementById('btn-view-record')).click();
       return sleep(250).then(function () {
         p.wrap.style.transformOrigin = '0 0';
         tl.at(p.wrap, [{ opacity: 0, transform: 'scale(1.46)' }, { opacity: 1, transform: 'scale(1.5)' }], { t: 0, d: 800 });
@@ -397,14 +398,16 @@
   };
 
   // ---------------------------------------------------------------- build a file
-  /** film = [{shot, ...opts}]. Resolves with {duration, cues} once every shot is built and seeked to 0. */
-  S.build = async function (film) {
+  /** film = [{shot, ...opts}]; edges = {fadeIn, blur} ms at the file's start and end. Resolves with {duration, cues} once every shot is built and seeked to 0. */
+  S.build = async function (film, edges) {
+    edges = edges || {};
+    var fadeIn = edges.fadeIn == null ? FADE_IN : edges.fadeIn, blurOut = edges.blur == null ? BLUR : edges.blur;
     var all = el('div', ''); all.id = 'all'; all.style.position = 'absolute'; all.style.inset = '0';
     var canvas = $('#canvas'), shotsEl = $('#shots');
     document.body.appendChild(all); all.append(canvas, shotsEl);
     var black = el('div', ''); black.style.position = 'absolute'; black.style.inset = '0'; black.style.background = '#000'; black.style.pointerEvents = 'none';
     document.body.appendChild(black);
-    anim(black, [{ opacity: 1 }, { opacity: 0 }], { t: 0, d: FADE_IN, ease: 'ease-out' });
+    anim(black, [{ opacity: 1 }, { opacity: 0 }], { t: 0, d: fadeIn, ease: 'ease-out' });
     // the glow drifts a little over the whole file (one slow camera move)
     var glow = $('#glow');
     var t = 0, last = null;
@@ -422,11 +425,13 @@
     var total = last.start + last.len;
     anim(glow, [{ transform: 'translate(0,0) scale(1)' }, { transform: 'translate(-60px,30px) scale(1.08)' }], { t: 0, d: total, ease: 'linear' });
     // blur-out to black
-    anim(all, [{ filter: 'blur(0px)', opacity: 1 }, { filter: 'blur(26px)', opacity: 0 }], { t: total - BLUR, d: BLUR, ease: 'ease-in', out: true });
+    anim(all, [{ filter: 'blur(0px)', opacity: 1 }, { filter: 'blur(26px)', opacity: 0 }], { t: total - blurOut, d: blurOut, ease: 'ease-in', out: true });
     S.duration = total;
     S.seek(0);
     await sleep(50);
     return { duration: total, cues: S.cues };
   };
   S.shots = shots;
+  // for shot packs loaded after this file (film-shots.js)
+  S.lib = { el: el, esc: esc, $: $, sleep: sleep, anim: anim, panel: panel, fitComposer: fitComposer, typeIntoComposer: typeIntoComposer, EASE: EASE, XF: XF };
 })();

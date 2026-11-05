@@ -346,4 +346,107 @@ films.d4 = async (backend, state) => {
   };
 };
 
+/**
+ * The consumer launch film (docs/videos/o-film.mp4): animated scenes, no take. Every scene illustrates a feature
+ * that exists in the code (parallel tasks: main/tasks.js; learned preferences and replays: engine/o_engine/
+ * learning.py; goals and checkpoints: main/goals.js + engine/o_engine/goals.py; away/brief: plan section J).
+ * Task results, brands and people are examples; the second frame says so.
+ */
+films.film = async () => ({
+  title: 'O — the computer that works while you do',
+  cues: {},
+  // short joins: under 6 frames of near-black between scenes (the open and the outro keep their own fades)
+  edges: { fadeIn: 100, blur: 260 },
+  files: [
+    { id: '01-open', stills: [3600], edges: { fadeIn: 400, blur: 260 }, film: [
+      { shot: 'brand', line: 'The computer that works while you do.', hold: 5600 },
+      { shot: 'quiet', text: 'Illustrated with the real interface. Task results are examples.', hold: 2400 },
+    ] },
+    { id: '02-tasks', stills: [9800], film: [
+      { shot: 'parallel', cps: 42, gap: 600, rate: 2.5, tail: 4000, tasks: [
+        { prompt: 'Find the 3 best standing desks under $400 and compare them', title: 'Standing desks under $400',
+          steps: [[0, 'Starting…'], [1, 'Opening 6 stores'], [4, 'Reading 41 reviews'], [10, 'Checking prices under $400'], [15, 'Comparing stability and noise'], [21, 'Building the table']] },
+        { prompt: 'Rename every photo in Downloads by the date it was taken', title: 'Rename photos by date', doneAt: 12,
+          steps: [[0, 'Starting…'], [1, 'Scanning Downloads'], [3, 'Reading dates from 312 photos'], [6, 'Renaming 312 photos'], [9, 'Sorting into 4 folders'], [12, 'Done']] },
+        { prompt: 'Fill out the dentist intake form with my details', title: 'Dentist intake form',
+          steps: [[0, 'Starting…'], [1, 'Opening the intake form'], [3, 'Typing your name'], [5, 'Typing your address'], [8, 'Adding your insurance']] },
+      ] },
+    ] },
+    { id: '03-results', stills: [3400, 7900, 12300], film: [
+      { shot: 'deskTable', title: 'Standing desks under $400', sub: '3 picks from 41 reviews across 6 stores', seconds: 38, hold: 4400,
+        cols: ['Desk', 'Price', 'Height', 'Load', 'Noise', 'Warranty'],
+        rows: [
+          { name: 'Fernwood Lift 2', note: 'Dual motor, oak top', cells: ['$379', '25–50 in', '275 lb', '42 dB', '7 yr'], best: 'Best overall' },
+          { name: 'Arlo Rise', note: 'Single motor, bamboo top', cells: ['$329', '27–47 in', '220 lb', '46 dB', '5 yr'] },
+          { name: 'Kestrel Pro', note: 'Dual motor, laminate top', cells: ['$399', '24–50 in', '300 lb', '39 dB', '10 yr'] },
+        ] },
+      { shot: 'photos', title: 'Downloads', sub: '312 photos, renamed by the date they were taken', seconds: 12, flyAt: 1100,
+        folders: [{ name: 'June 14, 2026', count: 48 }, { name: 'June 22, 2026', count: 117 }, { name: 'July 3, 2026', count: 86 }, { name: 'July 19, 2026', count: 61 }],
+        renames: [['IMG_4821.HEIC', '2026-06-14 at 09.12.heic'], ['IMG_4822.HEIC', '2026-06-14 at 09.13.heic'], ['IMG_4907.HEIC', '2026-06-22 at 18.40.heic'], ['IMG_5133.JPG', '2026-07-03 at 11.05.jpg'], ['IMG_5260.HEIC', '2026-07-19 at 20.31.heic'], ['IMG_5261.HEIC', '2026-07-19 at 20.34.heic']] },
+      { shot: 'form', title: 'Dentist intake form', sub: 'Filled in from your details', ready: 'Ready to submit', seconds: 21, cps: 46,
+        formHead: 'New patient intake · Harborview Dental',
+        fields: [['Full name', 'Maya Lindqvist'], ['Date of birth', '04/17/1991'], ['Address', '418 Harbor Lane, Apt 3'], ['Phone', '(555) 014-2290'], ['Insurance', 'Brightline Health · Member 88-2041'], ['Allergies', 'None']] },
+    ] },
+    { id: '04-apps', stills: [4300], film: [
+      { shot: 'apps', label: 'A second display that only O uses', app: 'Lisbon trip — Slides', title1: 'Four days in Lisbon', sub1: 'June 12–15 · 4 people',
+        title2: 'Day one · Alfama', bullets: ['Castelo de São Jorge at 10', 'Lunch near the Sé', 'Tram 28 back at sunset'],
+        claim1: 'Works in your apps.', claim2: 'Never touches your mouse.', hold: 6000 },
+    ] },
+    { id: '05-learns', stills: [3800, 9000], film: [
+      { shot: 'learn', correction: 'Make it shorter next time', learned: 'you like short summaries', nextLabel: 'Next week',
+        long: 'This week in your newsletters: <b>The Morning Ledger</b> covered the new transit plan, rent changes in three neighborhoods and a long profile of the Saturday market. <b>Field Notes</b> walked through fall planting, soil tests and which bulbs to buy now. <b>Kitchen Table</b> had four weeknight recipes and a note on cast iron.',
+        short: '<b>Ledger:</b> transit plan, rents up in 3 areas. <b>Field Notes:</b> plant bulbs now. <b>Kitchen Table:</b> 4 quick dinners.', tail: 2000 },
+      { shot: 'replay', title: 'Sort this week’s receipts into my expenses sheet', firstLabel: 'First run', replayLabel: 'Replayed', first: 27, replay: 2, firstMs: 2400, claim: 'Learns once. Faster every time.', tail: 2400 },
+    ] },
+    { id: '06-goals', stills: [3400, 9600, 15200], film: [
+      { shot: 'goalAsk', prompt: 'Grow a YouTube channel about desk setups to monetization', button: 'Make this a goal', note: 'Daily work, approvals only at checkpoints', tail: 1000 },
+      { shot: 'goalView', eyebrow: 'Goal', title: 'Grow a desk-setup channel to monetization', days: 60, lapseMs: 4000, tail: 1300,
+        footer: 'Checks in only when something needs your OK',
+        next: [[1, 'next: pick a niche'], [3, 'next: script video one'], [5, 'next: publish video one'], [7, 'next: answer comments'], [9, 'next: your OK on video two']],
+        metrics: [
+          { name: 'Subscribers', max: 240, values: [0, 0, 3, 5, 41, 88, 120, 171, 214] },
+          { name: 'Views', max: 9000, values: [0, 0, 40, 120, 1900, 3600, 5100, 6800, 8420] },
+        ],
+        log: [[2, 'Picked a niche: desks under $400'], [3, 'Scripted video one'], [5, 'Published video one'], [7, 'Answered 26 comments'], [9, 'Cut video two']] },
+      { shot: 'approve', kind: 'Checkpoint · day 9', head: 'Approve video ‘My $400 desk setup’', sum: 'Cut, captioned, thumbnail made. Publishes Thursday at 6 pm.',
+        items: [['Length', '8:42'], ['Title', 'My $400 desk setup, 6 months later'], ['Tags', 'desk setup, standing desk, home office']],
+        done: '✓  Approved · publishes Thursday', eyebrow: 'Example goal', claim: 'Give it a goal. It works on it every day.', hold: 5400 },
+    ] },
+    { id: '07-away', stills: [5200, 9200], film: [
+      { shot: 'away', here: 'Here with you', away: 'Away · 4 tasks running', hold: 5600 },
+      { shot: 'sandboxes', caption: 'Each task runs sealed off from the rest of your computer.', msLabel: 'While you were away',
+        pill: ['Away · 4 tasks running', 'Away · 3 tasks running', 'Away · 2 tasks running', 'Away · 1 task running', 'Away · all done'],
+        tiles: [
+          { title: 'Desk comparison', x: 140, y: 330, w: 600, h: 200, done: 2600, steps: ['Reading reviews', 'Checking prices', 'Building the table'] },
+          { title: 'Photo cleanup', x: 770, y: 330, w: 410, h: 200, done: 1300, steps: ['Reading dates', 'Renaming 312 photos'] },
+          { title: 'Intake form', x: 140, y: 560, w: 410, h: 200, done: 2000, steps: ['Typing your details', 'Checking fields'] },
+          { title: 'Video two edit', x: 580, y: 560, w: 600, h: 200, done: 3500, steps: ['Cutting', 'Adding captions', 'Making the thumbnail'] },
+        ],
+        milestones: [['10:42', 'Photos renamed and sorted'], ['10:58', 'Intake form ready to submit'], ['11:15', 'Desk comparison finished'], ['11:40', 'Video two cut, needs your OK']], hold: 5400 },
+    ] },
+    { id: '08-return', stills: [5600], film: [
+      { shot: 'ret', pill: ['Away · all done', 'Welcome back'], title: 'While you were out', when: 'Just now', hold: 9600,
+        sentences: ['While you were out I finished the desk comparison and renamed 312 photos.', 'Your intake form is ready to submit and video two is cut and waiting for your OK.', 'Nothing needed you, so I didn’t interrupt.'] },
+    ] },
+    { id: '09-claims', stills: [1200, 7200], film: [
+      { shot: 'claims5', each: 2000, groups: [
+        { x: 200, y: 430, size: 120, fx: 1280, fy: 404, claims: [
+          { verb: 'researches', frag: '<div class="fr"><b>Fernwood Lift 2</b><span>$379</span><span>42 dB</span></div><div class="fr"><b>Arlo Rise</b><span>$329</span><span>46 dB</span></div><div class="fr"><b>Kestrel Pro</b><span>$399</span><span>39 dB</span></div>' },
+          { verb: 'builds', frag: '<div class="fr"><b>Lisbon trip</b><span>9 slides</span></div><div class="fr"><b>Intake form</b><span>ready</span></div>' },
+          { verb: 'runs your apps', frag: '<span class="f-chip">Slides</span><span class="f-chip">Notes</span><span class="f-chip">Mail</span>' },
+        ] },
+        { x: 430, y: 600, size: 108, fx: 200, fy: 300, claims: [
+          { verb: 'works while you’re away', frag: '<span class="f-pill" style="border:0;background:none;padding:0"><img src="/assets/o-avatar.svg" alt="">Away · 4 tasks running</span>' },
+          { verb: 'learns you', frag: '<span class="f-learn" style="box-shadow:none"><span class="k">Learned</span>you like short summaries</span>' },
+        ] },
+      ] },
+    ] },
+    { id: '10-close', stills: [2400], edges: { fadeIn: 100, blur: 800 }, film: [
+      { shot: 'outro', hold: 4600 },
+    ] },
+  ],
+  facts: () => ({ illustrated: true, note: 'Animated illustration of real O features; task results, brands and people are examples.' }),
+});
+films.film.standalone = true;
+
 module.exports = { films, story, CU_TREE };

@@ -114,9 +114,9 @@ async function openStudio(backend, state, genui) {
  * Render one scene file. film = [{shot, ...opts}]; cues = {name: async fn} run from Node when the frame clock
  * passes the shot's cue time; stills = [ms] saves PNGs instead of encoding (for checking frames before a render).
  */
-async function renderScene(studio, { id, film, out, cues = {}, stills = null, stillsDir = null, log = console.log }) {
+async function renderScene(studio, { id, film, edges = null, out, cues = {}, stills = null, stillsDir = null, log = console.log }) {
   const page = await studio.openScene();
-  const built = await page.evaluate((film) => window.__scene.build(film), film);
+  const built = await page.evaluate(([film, edges]) => window.__scene.build(film, edges), [film, edges]);
   const frames = Math.ceil(built.duration / 1000 * FPS);
   const pending = built.cues.slice().sort((a, b) => a.t - b.t);
   const tick = async (ms) => {

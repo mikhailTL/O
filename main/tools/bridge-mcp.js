@@ -67,6 +67,8 @@ const ENGINE_URL = (process.env.O_ENGINE_URL || '').replace(/\/+$/, '');
 const ENGINE_TOKEN = process.env.O_ENGINE_TOKEN || '';
 const SCHEDULE_URL = process.env.O_SCHEDULE_URL;
 const TASK_ID = process.env.O_TASK_ID || '';
+// the task's presence priority (plan J): low jobs pause on the engine while the user is back
+const TASK_PRIORITY = ['low', 'normal', 'high'].includes(process.env.O_TASK_PRIORITY) ? process.env.O_TASK_PRIORITY : 'normal';
 const GOAL_URL = process.env.O_GOAL_URL;
 const GOAL_ID = process.env.O_GOAL_ID || '';
 const PROFILE_CACHE_MS = 60 * 1000;
@@ -785,7 +787,7 @@ async function runJob(path, args, what) {
 }
 
 function provision(args) {
-  return runJob('/provision', args, 'provision');
+  return runJob('/provision', { ...args, priority: TASK_PRIORITY }, 'provision');
 }
 
 function computerRun(args) {
@@ -889,6 +891,7 @@ async function callTool(name, args) {
     case 'script_run':
       return enginePost('/script/run', {
         language: args.language, code: args.code, target_directory: args.target_directory, timeout_seconds: args.timeout_seconds,
+        priority: TASK_PRIORITY,
       }, (Number(args.timeout_seconds) || 60) * 1000 + 10000);
     case 'swarm_run':
       return runJob('/swarm/run', {

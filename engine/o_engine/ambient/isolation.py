@@ -6,7 +6,8 @@ choice and every fall-back. ``IsolatedJobSandbox`` presents that backend with th
 interface the provisioning graph and the native runner already use (``root``, ``resolve``,
 ``run(step, index, env_extra, isolated_display)``), so the graph is reused unchanged: absolute paths
 inside the job root are re-rooted at ``/work`` and cached scripts under ``import_roots`` are copied
-into the job dir first. When PRESENT nothing here is used.
+into the job dir first. When PRESENT nothing here is used. Before every step, ``run`` passes the job's
+``PauseGate`` checkpoint (ambient/pause.py): a low-priority job waits there while the user is back.
 """
 from __future__ import annotations
 
@@ -71,8 +72,11 @@ def select_isolated(job_dir: str, log: Any = None, settings_like: dict | None = 
 class IsolatedJobSandbox:
     """``executor.Sandbox``-shaped adapter over a ``DisposableSandbox`` rooted at the job dir."""
 
-    def __init__(self, root: str | Path, backend: Any, import_roots: Iterable[str | Path] = ()) -> None:
+    def __init__(self, root: str | Path, backend: Any, import_roots: Iterable[str | Path] = (), job_id: str = "",
+                 gate: Any = None) -> None:
         self._local = Sandbox(str(root))
+        self.job_id = job_id
+        self.gate = gate
         self.root = self._local.root
         self.backend = backend
         self.import_roots = [Path(p).resolve() for p in import_roots]
@@ -109,6 +113,8 @@ class IsolatedJobSandbox:
         return _ABS_PATH.sub(sub, command)
 
     def run(self, step: Any, index: int = 0, env_extra: Any = None, isolated_display: bool = False) -> StepResult:
+        if self.gate is not None and self.job_id:
+            self.gate.checkpoint(self.job_id, step=index)  # safe point: between steps (interrupt on return)
         if self.backend is None:
             return self._local.run(step, index, env_extra=env_extra, isolated_display=isolated_display)
         if getattr(step, "command_string", None) is None:
@@ -129,8 +135,9 @@ class IsolatedSandboxes:
     """One ``IsolatedJobSandbox`` per job id (built on first use, destroyed by ``release``)."""
 
     def __init__(self, sandbox_root: Path, log: Any = None, settings_like: dict | None = None,
-                 import_roots: Iterable[str | Path] = (), candidates: Any = None) -> None:
+                 import_roots: Iterable[str | Path] = (), candidates: Any = None, gate: Any = None) -> None:
         self.sandbox_root = Path(sandbox_root)
+        self.gate = gate
         self.log = log
         self.settings_like = settings_like
         self.import_roots = list(import_roots)
@@ -146,7 +153,7 @@ class IsolatedSandboxes:
                 root = self.sandbox_root / job_id
                 root.mkdir(parents=True, exist_ok=True)
                 backend = select_isolated(str(root), self.log, self.settings_like, self.candidates, job_id=job_id)
-                sb = IsolatedJobSandbox(root, backend, self.import_roots)
+                sb = IsolatedJobSandbox(root, backend, self.import_roots, job_id=job_id, gate=self.gate)
                 self._by_job[job_id] = sb
                 self.last_backend = sb.backend_name
             return sb

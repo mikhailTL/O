@@ -3,7 +3,7 @@
 # Idempotent: safe to run again at any time. Each step prints "✓ name" or "✗ name — what to do".
 # Exit code = number of failed required steps. Every step is required except the Docker presence check.
 # Required engine packages: mcp, e2b, crewai, browser-use (in engine/pyproject.toml) and open-interpreter
-# (its own step: its pins conflict with browser-use, see step_open_interpreter).
+# (its own step: its pins conflict with browser-use, see step_open_interpreter), and the ambient extra.
 # vLLM: installed locally on Linux with an NVIDIA GPU; elsewhere the installer asks for the URL of a
 # remote or Docker vLLM server and writes it to O's settings (vllmUrl).
 #
@@ -380,6 +380,48 @@ step_open_interpreter() {
   fi
 }
 
+# Ambient layer (required): sensors, presence, isolation. 'pip install -e "engine[ambient]"' (the ambient
+# extra in engine/pyproject.toml), then verified by import. sounddevice needs the PortAudio library
+# (Debian/Ubuntu: libportaudio2). On macOS the default input is opened once as a check (non-fatal).
+AMBIENT_MODULES="cv2:opencv-python sounddevice:sounddevice paho.mqtt.client:paho-mqtt websockets:websockets redis:redis microsandbox:microsandbox rppg:open-rppg mediapipe:mediapipe"
+step_ambient() {
+  if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
+    fail "ambient" "skipped: engine venv missing"
+    return
+  fi
+  local fix="run '$VENV_PY -m pip install -e \"$ROOT/engine[ambient]\"' and read its errors"
+  if ! run "$VENV_PY" -m pip install -e "$ROOT/engine[ambient]"; then
+    fail "ambient" "$fix"
+    return
+  fi
+  if [ "$DRY" = "1" ]; then
+    echo "  [dry] $VENV_PY -c 'import cv2, sounddevice, paho.mqtt.client, websockets, redis, microsandbox, rppg, mediapipe'"
+    ok "ambient (pip install -e engine[ambient])"
+    return
+  fi
+  local pair mod pkg missing=""
+  for pair in $AMBIENT_MODULES; do
+    mod="${pair%%:*}"; pkg="${pair#*:}"
+    "$VENV_PY" -W ignore -c "import $mod" >/dev/null 2>&1 || missing="$missing $pkg"
+  done
+  if [ -n "$missing" ]; then
+    local hint=""
+    case "$missing" in *sounddevice*) [ "$OS" = "Linux" ] && hint=" (sounddevice needs PortAudio: sudo apt-get install libportaudio2)";; esac
+    fail "ambient" "these do not import:$missing$hint; $fix"
+    return
+  fi
+  ok "ambient (pip install -e engine[ambient])"
+  if [ "$OS" = "Darwin" ]; then
+    if "$VENV_PY" -c "import sounddevice as sd; s = sd.InputStream(channels=1); s.close()" >/dev/null 2>&1; then
+      ok "ambient microphone (sounddevice opened the default input)"
+    else
+      echo "  note: sounddevice could not open the default input yet. macOS asks for microphone and camera"
+      echo "        permission the first time O uses them (System Settings → Privacy & Security)."
+    fi
+    echo "  note: macOS will prompt for microphone/camera permission on first use."
+  fi
+}
+
 # Docker: used for risk:"high" steps (docker run --rm --network <dockerNetwork>, default bridge). Reported, never installed.
 step_docker() {
   if command -v docker >/dev/null 2>&1; then
@@ -423,6 +465,7 @@ step_screenpipe
 step_xvfb
 step_required_packages
 step_open_interpreter
+step_ambient
 step_docker
 step_engine_check
 

@@ -454,6 +454,22 @@ const fakeScreen = {
     ok(briefBounds(fakeScreen, 9999).height === 420 && briefBounds(fakeScreen, 10).height === 80, 'brief window height is bounded');
   }
 
+  // ------------------------------------------------------------ the real engine's response shapes
+  {
+    // GET /sensors as engine/o_engine/ambient/layer.py sensors_view() answers it
+    const real = amb.normSensors({ ambient: true, indicator: false, sensors: [
+      { id: 'csi', name: 'wifi-csi', enabled: true, available: false, reason: 'no CSI source configured' },
+      { id: 'sonar', name: 'sonar', enabled: false, available: true, reason: '' },
+      { id: 'camera', name: 'camera-face', enabled: true, available: true, reason: '' },
+      { id: 'heart', name: 'heart-rppg', enabled: false, available: true, reason: '' },
+    ], bus: {}, tts: {}, supervisor: {} });
+    ok(real.map((s) => s.key).join(',') === 'sensorWifi,sensorSonar,sensorCamera,sensorHeartRate', 'normSensors reads the engine {sensors:[...]} object and maps wifi-csi/sonar/camera-face/heart-rppg');
+    ok(amb.unwrapBrief({ brief: null }) === null && amb.unwrapBrief({ brief: { text: '  ' } }) === null, 'unwrapBrief: {brief:null} and an empty text are no brief');
+    const b = amb.unwrapBrief({ brief: { text: 'A. B. C.', sentences: ['A.', 'B.', 'C.'], since: 100, count: 3 } });
+    ok(b && b.count === 3 && b.since === 100, 'unwrapBrief reads the engine {brief:{text, sentences, since, count}} shape');
+    ok(amb.unwrapBrief({ text: 'x.', since: 1 }).text === 'x.', 'unwrapBrief still accepts a bare brief');
+  }
+
   ctl.stop();
   tm.dispose();
   overlay.destroy();

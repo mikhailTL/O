@@ -15,6 +15,7 @@ from .brief import Briefer
 from .bus import make_bus
 from .isolation import IsolatedSandboxes
 from .milestones import MilestoneStore, kind_for_job
+from .pause import PauseGate, pop_priority
 from .presence import PresenceMachine
 from .sensors.csi import VITALS_NOTE, CSISensor
 from .sensors.rppg import RPPGSensor
@@ -63,8 +64,10 @@ class AmbientLayer:
         self.briefer = Briefer(self.milestones, model if model is not None else _LazyLocalModel(s.vllm_url, s.vllm_model),
                                self.bus, log, speak=None)
         self.supervisor = Supervisor(log, auto_repair=s.auto_repair)
+        self.pause_gate = PauseGate(log)
         self.isolated = IsolatedSandboxes(Path(s.sandbox_root), log, s.settings_like, import_roots=[s.data_dir],
-                                          candidates=isolation_candidates)
+                                          candidates=isolation_candidates, gate=self.pause_gate)
+        self.presence.listeners.append(self.pause_gate.on_presence)  # synchronous, before the bus delivers
         self.presence.attach()
         self.briefer.attach()
         self.started = False
@@ -97,6 +100,7 @@ class AmbientLayer:
         return True
 
     def stop(self) -> None:
+        self.pause_gate.release_all()  # never leave a paused job blocked at shutdown
         if self.started:
             self.presence.stop()
             self.supervisor.stop()
@@ -122,6 +126,7 @@ class AmbientLayer:
         snap["ambient"] = bool(self.settings.ambient)
         snap["isolation"] = self.isolated.last_backend
         snap["sensors_live"] = live
+        snap["pause"] = self.pause_gate.snapshot()
         return snap
 
     def sensors_view(self) -> dict[str, Any]:
@@ -162,6 +167,13 @@ class AmbientLayer:
                 "note": cam.heart_status()["note"]}
 
     # ---- hooks --------------------------------------------------------------------------------
+    def take_priority(self, job_id: str, body: Any) -> str:
+        """``priority`` from a /provision or /script/run body (removed from it), registered for ``job_id``."""
+        return self.pause_gate.register(job_id, pop_priority(body))
+
+    def job_finished(self, job_id: str) -> None:
+        self.pause_gate.forget(job_id)
+
     def record_job(self, job_id: str, label: str, final: dict[str, Any], kind: str = "provision") -> None:
         """Milestone for every finished engine job. Never raises."""
         try:

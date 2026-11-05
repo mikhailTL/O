@@ -1,0 +1,78 @@
+{
+  "name": "film",
+  "title": "O — the computer that works while you do",
+  "file": "docs/videos/o-film.mp4",
+  "bytes": 53072806,
+  "durationS": 101.166667,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
+  "timeline": [
+    {
+      "scene": "01-open",
+      "start": 0,
+      "seconds": 7.6,
+      "bytes": 4001074
+    },
+    {
+      "scene": "02-tasks",
+      "start": 7.6,
+      "seconds": 10.2,
+      "bytes": 7230690
+    },
+    {
+      "scene": "03-results",
+      "start": 17.8,
+      "seconds": 13.67,
+      "bytes": 7332258
+    },
+    {
+      "scene": "04-apps",
+      "start": 31.47,
+      "seconds": 6,
+      "bytes": 2615334
+    },
+    {
+      "scene": "05-learns",
+      "start": 37.47,
+      "seconds": 13.23,
+      "bytes": 7055610
+    },
+    {
+      "scene": "06-goals",
+      "start": 50.7,
+      "seconds": 15.47,
+      "bytes": 6863782
+    },
+    {
+      "scene": "07-away",
+      "start": 66.17,
+      "seconds": 10.6,
+      "bytes": 5848682
+    },
+    {
+      "scene": "08-return",
+      "start": 76.77,
+      "seconds": 9.6,
+      "bytes": 4647994
+    },
+    {
+      "scene": "09-claims",
+      "start": 86.37,
+      "seconds": 10.2,
+      "bytes": 5171390
+    },
+    {
+      "scene": "10-close",
+      "start": 96.57,
+      "seconds": 4.6,
+      "bytes": 2312821
+    }
+  ],
+  "facts": {
+    "illustrated": true,
+    "note": "Animated illustration of real O features; task results, brands and people are examples."
+  },
+  "renderedAt": "2026-11-05T18:03:37.255Z"
+}

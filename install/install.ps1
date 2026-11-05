@@ -2,7 +2,7 @@
 # Idempotent: safe to run again at any time. Each step prints "✓ name" or "✗ name — what to do".
 # Exit code = number of failed required steps. Every step is required except the Docker presence check.
 # Required engine packages: mcp, e2b, crewai, browser-use (in engine\pyproject.toml) and open-interpreter
-# (its own step: its pins conflict with browser-use, see Step-OpenInterpreter).
+# (its own step: its pins conflict with browser-use, see Step-OpenInterpreter), and the ambient extra.
 # vLLM does not run locally on Windows: the installer asks for the URL of a remote or Docker vLLM
 # server and writes it to O's settings (vllmUrl).
 #
@@ -346,6 +346,38 @@ function Step-OpenInterpreter {
   }
 }
 
+# Ambient layer (required): sensors, presence, isolation. 'pip install -e "engine[ambient]"' (the ambient
+# extra in engine\pyproject.toml), then verified by import. microsandbox on Windows needs WHP
+# (Windows Hypervisor Platform); without it headless jobs fall back to Docker or the local sandbox.
+$AmbientModules = [ordered]@{ 'cv2' = 'opencv-python'; 'sounddevice' = 'sounddevice'; 'paho.mqtt.client' = 'paho-mqtt'; 'websockets' = 'websockets'; 'redis' = 'redis'; 'microsandbox' = 'microsandbox'; 'rppg' = 'open-rppg'; 'mediapipe' = 'mediapipe' }
+function Step-Ambient {
+  if (-not (Test-Path $VenvPy) -and -not $Dry) {
+    Fail 'ambient' 'skipped: engine venv missing'
+    return
+  }
+  $spec = (Join-Path $Root 'engine') + '[ambient]'
+  $fix = "run '$VenvPy -m pip install -e `"$spec`"' and read its errors"
+  if (-not (Invoke-Step $VenvPy @('-m', 'pip', 'install', '-e', $spec))) {
+    Fail 'ambient' $fix
+    return
+  }
+  if ($Dry) {
+    Write-Host "  [dry] $VenvPy -c 'import $($AmbientModules.Keys -join ', ')'"
+    Ok 'ambient (pip install -e engine[ambient])'
+    return
+  }
+  $missing = @()
+  foreach ($mod in $AmbientModules.Keys) {
+    & $VenvPy -W ignore -c "import $mod" *> $null
+    if ($LASTEXITCODE -ne 0) { $missing += $AmbientModules[$mod] }
+  }
+  if ($missing.Count -gt 0) {
+    Fail 'ambient' "these do not import: $($missing -join ', '); $fix"
+    return
+  }
+  Ok 'ambient (pip install -e engine[ambient])'
+}
+
 # Docker: used for risk:"high" steps (docker run --rm --network <dockerNetwork>, default bridge). Reported, never installed.
 function Step-Docker {
   if (Test-Command 'docker') {
@@ -389,6 +421,7 @@ Step-Screenpipe
 Step-Xvfb
 Step-RequiredPackages
 Step-OpenInterpreter
+Step-Ambient
 Step-Docker
 Step-EngineCheck
 

@@ -9,10 +9,23 @@ const { startBackend, ROOT } = require('../run');
 const { openStudio, renderScene, assemble, probe, genuiStore } = require('./render');
 const { films, CU_TREE } = require('./films');
 
+/** What render.js's makeMain reads from a backend, with nothing running behind it. */
+function standIn() {
+  const { EventEmitter } = require('events');
+  const ev = new EventEmitter();
+  return Object.assign(ev, {
+    actionLog: { tail: () => [], markRead: () => ({ ok: true }), paths: () => ({}), verifyChain: () => ({ ok: true, count: 0 }), record: () => {} },
+    engine: { port: 0, url: '' }, health: { vllm: false, playwright: true },
+    proxy: { status: () => ({ enabled: false }) },
+    stop: async () => {},
+  });
+}
+
 async function makeFilm(name, { out, stills = false, stillsDir = null, audio = null, keepScenes = false, log = console.log } = {}) {
   if (!films[name]) throw new Error(`unknown film ${name} (have: ${Object.keys(films).join(', ')})`);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `o-film-${name}-`));
-  const backend = await startBackend({ dataDir: path.join(work, 'data'), cuTree: CU_TREE });
+  // an animated film (films[name].standalone) needs no take: the panel frames talk to a quiet stand-in
+  const backend = films[name].standalone ? standIn() : await startBackend({ dataDir: path.join(work, 'data'), cuTree: CU_TREE });
   const genui = genuiStore();
   const state = { busy: false, logVisible: null, genuiVisible: null, genui };
   backend.on('event', (ev) => { if (ev.type === 'genui') genui.push(ev.frame); });
@@ -25,10 +38,10 @@ async function makeFilm(name, { out, stills = false, stillsDir = null, audio = n
     for (const f of film.files) {
       log(`[${name}] scene ${f.id} (${f.film.map((s) => s.shot).join(' → ')})`);
       if (stills) {
-        const r = await renderScene(studio, { id: f.id, film: f.film, cues: film.cues, stills: f.stills || [Math.round(1200)], stillsDir: stillsDir || path.join(work, 'stills'), log });
+        const r = await renderScene(studio, { id: f.id, film: f.film, edges: f.edges || film.edges, cues: film.cues, stills: f.stills || [Math.round(1200)], stillsDir: stillsDir || path.join(work, 'stills'), log });
         results.push(r);
       } else {
-        results.push(await renderScene(studio, { id: f.id, film: f.film, cues: film.cues, out: path.join(work, `${f.id}.mp4`), log }));
+        results.push(await renderScene(studio, { id: f.id, film: f.film, edges: f.edges || film.edges, cues: film.cues, out: path.join(work, `${f.id}.mp4`), log }));
       }
     }
     const facts = film.facts ? film.facts() : {};
