@@ -1,0 +1,25 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+.o-install.json
+engine/**/__pycache__/
+engine/.venv/
+*.pyc
+# engine runtime data (never commit)
+engine/data/
+engine/**/cache/
+engine/**/procedures/
+engine/**/interfaces/
+engine/**/locators.sqlite
+engine/**/*.jsonl
+engine/**/*.db
+o-sandbox/
+.o-run-*
+.o-step-*
+*.egg-info/
+engine/eval/osworld/results/
+# local secrets / settings fixtures
+o-settings.json
+mcp-servers.json

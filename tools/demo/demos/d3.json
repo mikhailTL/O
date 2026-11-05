@@ -1,0 +1,13 @@
+{
+  "id": "d3",
+  "title": "Use O from any app",
+  "curlReply": "find . -name '*.py' -print0 | xargs -0 cat | wc -l",
+  "pyReply": "{\"ok\": true, \"source\": \"O API proxy\"}",
+  "captions": {
+    "intro": ["An OpenAI-compatible API on localhost", "Settings → API proxy: URL and a bearer token; loopback only"],
+    "curl": ["curl it like any chat API", "each request is one claude -p run on your own login (reply text stubbed in this demo)"],
+    "stream": ["Streaming SSE, chat.completion.chunk frames, data: [DONE]", "no API key; nothing leaves your machine except through Claude Code"],
+    "python": ["Or the openai Python client", "base_url = the proxy, api_key = the token; o-ai-code returns only the JSON"],
+    "logged": ["Every API request is in the action log too", "task + result entries, the token never"]
+  }
+}

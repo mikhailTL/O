@@ -1,0 +1,23 @@
+{
+  "instruction": "Open the File menu and click Save",
+  "app": "gedit",
+  "result": true,
+  "steps": [
+    {
+      "screenshot": "step0.png",
+      "click": [
+        10,
+        10
+      ],
+      "target": "File menu"
+    },
+    {
+      "screenshot": "step1.png",
+      "click": [
+        50,
+        50
+      ],
+      "target": "Save button"
+    }
+  ]
+}

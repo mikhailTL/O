@@ -1,0 +1,2 @@
+# Keep Windows line endings in the double-click launcher, byte for byte.
+*.bat -text

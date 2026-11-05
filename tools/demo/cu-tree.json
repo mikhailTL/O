@@ -1,0 +1,26 @@
+[
+  {
+    "id": "w0", "role": "frame", "name": "Notes", "states": ["active", "visible"],
+    "rect": {"x": 0, "y": 0, "w": 720, "h": 480},
+    "children": [
+      {
+        "id": "m0", "role": "menu bar", "name": "", "states": ["visible"], "rect": {"x": 0, "y": 0, "w": 720, "h": 28},
+        "children": [
+          {"id": "m1", "role": "menu", "name": "File", "states": ["visible"], "rect": {"x": 8, "y": 4, "w": 40, "h": 20}},
+          {"id": "m2", "role": "menu", "name": "Edit", "states": ["visible"], "rect": {"x": 56, "y": 4, "w": 40, "h": 20}},
+          {"id": "m3", "role": "menu", "name": "View", "states": ["visible"], "rect": {"x": 104, "y": 4, "w": 44, "h": 20}}
+        ]
+      },
+      {
+        "id": "t0", "role": "tool bar", "name": "", "states": ["visible"], "rect": {"x": 0, "y": 28, "w": 720, "h": 36},
+        "children": [
+          {"id": "b1", "role": "push button", "name": "New", "states": ["visible", "enabled"], "rect": {"x": 8, "y": 32, "w": 56, "h": 28}},
+          {"id": "b2", "role": "push button", "name": "Open", "states": ["visible", "enabled"], "rect": {"x": 72, "y": 32, "w": 56, "h": 28}},
+          {"id": "b3", "role": "push button", "name": "Save", "states": ["visible", "enabled"], "rect": {"x": 136, "y": 32, "w": 56, "h": 28}}
+        ]
+      },
+      {"id": "e0", "role": "text", "name": "Editor", "text": "", "states": ["visible", "editable", "focused"], "rect": {"x": 0, "y": 64, "w": 720, "h": 392}},
+      {"id": "s0", "role": "status bar", "name": "Ready", "states": ["visible"], "rect": {"x": 0, "y": 456, "w": 720, "h": 24}}
+    ]
+  }
+]

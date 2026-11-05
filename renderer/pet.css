@@ -1,0 +1,121 @@
+/* O AI — pet window styles. The avatar is a glass orb, so the bubble and the prompt button
+   are glass too: near-black, translucent, a hairline border and the ring's ice-blue as the one accent.
+   Typeface: the system sans. Base html/body rules live here only (index.html carries no inline
+   style, so its CSP can keep style-src to 'self'). */
+:root {
+  --pet-glass: rgba(12, 12, 14, 0.82);
+  --pet-line: rgba(255, 255, 255, 0.1);
+  --pet-text: #f4f4f6;
+  --pet-ring: #9fd8ff;
+  --pet-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--pet-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#pet-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  z-index: 1;
+}
+body.dragging #pet-canvas { cursor: grabbing; }
+
+/* Speech bubble: a glass pill above the orb.
+   #bubble is the pill: anchored left+right with an auto margin so it shrinks to fit the text
+   (up to 176px) instead of being capped at half the window by a left:50% + translate centre.
+   The 4-line clamp sits on the padding-free #bubble-text so the ellipsis is the last visible
+   line and no sliver of line 5 shows inside the pill's padding. */
+#bubble {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: max-content;
+  max-width: 176px;
+  z-index: 3;
+  box-sizing: border-box;
+  padding: 7px 11px;
+  background: var(--pet-glass);
+  color: var(--pet-text);
+  font-size: 11.5px;
+  line-height: 1.35;
+  font-weight: 500;
+  letter-spacing: .1px;
+  text-align: center;
+  border-radius: 14px;
+  border: 1px solid var(--pet-line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 8px 24px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(4px) scale(0.96);
+  transform-origin: 50% 100%;
+  transition: opacity 160ms ease-out, transform 200ms cubic-bezier(.2, .9, .3, 1);
+  pointer-events: none;
+}
+#bubble.show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+#bubble-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Prompt button: a small glass disc with a spark, faint until hovered */
+#prompt-btn {
+  position: absolute;
+  top: 64px;
+  right: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--pet-line);
+  border-radius: 50%;
+  background: var(--pet-glass);
+  color: var(--pet-ring);
+  font: 15px/28px var(--pet-sans);
+  text-align: center;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 18px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 160ms ease-out, transform 160ms ease-out, box-shadow 160ms ease-out, top 200ms ease-out;
+}
+/* A tall (3-4 line) bubble reaches the button's row: step the button down beside the orb. */
+body.bubble-tall #prompt-btn { top: 98px; }
+body.show-btn #prompt-btn,
+#prompt-btn:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+#prompt-btn:focus-visible { outline: 2px solid var(--pet-ring); outline-offset: 2px; }
+#prompt-btn:active { transform: scale(0.94); }
+body.dragging #prompt-btn { opacity: 0; }
+
+@media (hover: hover) and (pointer: fine) {
+  body:hover #prompt-btn { opacity: 1; transform: scale(1); }
+  #prompt-btn:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 3px rgba(159, 216, 255, 0.22), 0 6px 18px rgba(0, 0, 0, 0.4); }
+}
+@media (hover: none) {
+  #prompt-btn { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #bubble, #prompt-btn { transition: none; }
+}

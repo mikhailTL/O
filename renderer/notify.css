@@ -1,0 +1,47 @@
+/* O's permission sidebar: glass cards that slide in from the screen edge, styled like the composer. */
+html, body.notify { background: transparent !important; }
+body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; display: block; overflow: hidden; padding: 10px 12px 14px 18px; }
+#stack { display: flex; flex-direction: column; gap: 10px; }
+
+.ncard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 12px 12px 10px 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(159, 216, 255, 0.18), 0 14px 40px rgba(0, 0, 0, .45);
+  color: var(--text);
+  animation: nin .28s cubic-bezier(.2, .9, .3, 1.1) both;
+  position: relative;
+  overflow: hidden;
+}
+:root[data-theme="light"] .ncard { box-shadow: 0 0 0 3px var(--accent-soft), 0 10px 30px rgba(0, 0, 0, .18); }
+.ncard.out { animation: nout .2s ease-in forwards; }
+@keyframes nin { from { transform: translateX(110%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes nout { to { transform: translateX(110%); opacity: 0; } }
+
+.nhead { display: flex; align-items: center; gap: 9px; }
+.nhead img { width: 26px; height: 26px; border-radius: 50%; animation: breathe 2.4s ease-in-out infinite; flex: 0 0 auto; }
+.ntitle { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.2; }
+.ntitle b { font: 600 14.5px/1.2 var(--serif); }
+.ntitle span { font-size: 11.5px; color: var(--muted); }
+.nopen { width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; }
+.nopen svg { width: 16px; height: 16px; }
+
+.nwhat { margin: 8px 0 6px; font-size: 13.5px; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.nwhat b { color: var(--text); }
+.ndetail {
+  margin: 0 0 9px; max-height: 92px; overflow: auto;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 7px 10px; font: 11.5px/1.45 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.nrow { display: flex; align-items: center; gap: 8px; }
+.nrow .spacer { flex: 1; }
+.ntimer { font-size: 11px; color: var(--muted); }
+.nrow button { border-radius: 999px; padding: 6px 14px; font-size: 13px; }
+.nrow .deny { background: transparent; }
+.nrow .allow { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 600; }
+.nmore { text-align: center; font-size: 11.5px; color: var(--muted); }
+@media (hover: hover) and (pointer: fine) {
+  .nopen:hover { background: var(--surface-2); color: var(--text); }
+  .nrow .allow:hover { background: var(--accent-hover); border-color: transparent; }
+}

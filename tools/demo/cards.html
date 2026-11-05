@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>O AI launch cards</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1600px; height: 1000px; overflow: hidden; font-family: "Inter", "Segoe UI", -apple-system, Roboto, sans-serif; color: #fff; }
+  body { background: radial-gradient(circle at 50% 42%, #2b2235, #0d0c14 70%); }
+  .card { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; }
+  .card.on { display: flex; }
+  .card img { width: 180px; image-rendering: pixelated; margin-bottom: 18px; }
+  h1 { font-size: 112px; margin: 0; letter-spacing: -.02em; font-weight: 800; }
+  h1 span { color: #d87556; }
+  .sub { font-size: 30px; color: #e9c7b8; margin: 14px 0 0; font-weight: 400; }
+  .tag { margin-top: 44px; font-size: 18px; color: #9a94a6; letter-spacing: .12em; text-transform: uppercase; }
+
+  #why { align-items: flex-start; padding: 0 140px; justify-content: center; }
+  #why h2 { font-size: 54px; margin: 0 0 44px; font-weight: 750; letter-spacing: -.015em; }
+  #why h2 span { color: #d87556; }
+  #why ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 26px 56px; width: 100%; }
+  #why li { font-size: 27px; line-height: 1.3; padding-left: 40px; position: relative; color: #f1eee8; }
+  #why li::before { content: ''; position: absolute; left: 0; top: 11px; width: 16px; height: 16px; border-radius: 4px; background: #d87556; }
+  #why li small { display: block; font-size: 18px; color: #a9a3b4; margin-top: 4px; }
+  #why .foot { margin-top: 56px; font-size: 18px; color: #7f7890; }
+
+  #end code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 26px; background: #ffffff14; padding: 12px 22px; border-radius: 12px; color: #f0e6dc; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="card" id="title"><img src="../../assets/o-icon.png" alt=""><h1>O <span>AI</span></h1><p class="sub">a desktop agent that writes down everything it does</p><p class="tag">four short demos</p></div>
+
+<div class="card" id="why">
+  <h2>What <span>O</span> does differently</h2>
+  <ul>
+    <li>Everything is logged, in a hash chain<small>every tool call, policy decision and engine step; Verify chain says ✓ or ✗ at #n</small></li>
+    <li>No mouse or keyboard takeover<small>works inside your own tabs and on accessibility nodes; your cursor is yours</small></li>
+    <li>Cached replay with zero model calls<small>an identical request replays its saved script; a saved procedure replays step by step</small></li>
+    <li>High-risk steps run in a sandbox<small>a throwaway Docker container or E2B box, destroyed after; the path sandbox otherwise, and it says so</small></li>
+    <li>Local-first, with your own Claude login<small>a loopback API proxy over claude -p; no API key; nothing listens off-machine</small></li>
+    <li>Declarative UI, never raw HTML<small>plans and progress are checked frames mapped onto the panel's own components</small></li>
+  </ul>
+  <p class="foot">Claims as stated in the O README; demos recorded against the real engine, action log and API proxy.</p>
+</div>
+
+<div class="card" id="end"><img src="../../assets/o-icon.png" alt=""><h1>O <span>AI</span></h1><code>cd O && npm install && npm start</code><p class="tag">design and shell based on opia (MIT)</p></div>
+</body>
+</html>

@@ -1,0 +1,44 @@
+{
+  "id": "d3",
+  "title": "Use O from any app",
+  "file": "docs/videos/d3.mp4",
+  "bytes": 7088383,
+  "durationS": 44.733333,
+  "width": 3200,
+  "height": 2000,
+  "marks": [
+    {
+      "t": 2.647,
+      "caption": "An OpenAI-compatible API on localhost"
+    },
+    {
+      "t": 11.343,
+      "caption": "curl it like any chat API"
+    },
+    {
+      "t": 16.485,
+      "caption": "Streaming SSE, chat.completion.chunk frames, data: [DONE]"
+    },
+    {
+      "t": 25.263,
+      "label": "curl exit 0"
+    },
+    {
+      "t": 27.864,
+      "caption": "Or the openai Python client"
+    },
+    {
+      "t": 32.534,
+      "label": "python exit 0"
+    },
+    {
+      "t": 35.135,
+      "caption": "Every API request is in the action log too"
+    },
+    {
+      "t": 42.134,
+      "caption": null
+    }
+  ],
+  "recordedAt": "2026-11-05T05:58:39.892Z"
+}

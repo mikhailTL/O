@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>O AI</title>
+  <link rel="stylesheet" href="pet.css">
+</head>
+<body>
+  <div id="bubble" aria-live="polite"><span id="bubble-text"></span></div>
+  <canvas id="pet-canvas" width="200" height="200" aria-label="O AI, your desktop pet"></canvas>
+  <button id="prompt-btn" type="button" aria-label="Ask O to do something" title="Ask O to do something (Ctrl/Cmd+Shift+O)">✦</button>
+  <script src="sprite.js"></script>
+  <script src="behavior.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

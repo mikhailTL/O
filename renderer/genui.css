@@ -1,0 +1,127 @@
+/* O AI generative UI: declarative frames rendered on panel.css tokens.
+   Status pills share the action-log `.kind` look. Motion: transform/opacity only. */
+
+.gu-surface {
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface);
+  color: var(--text-2); font-size: 13px; line-height: 1.45; overflow: hidden;
+}
+.gu-surface[data-status="failed"] { border-color: var(--bad-line); }
+.gu-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); background: var(--surface-2);
+}
+.gu-title { flex: 1; min-width: 0; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gu-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.gu-empty { color: var(--muted); font-size: 12.5px; }
+.gu-missing { color: var(--muted); font: 11px var(--mono); }
+
+/* status pill: same recipe as .alrow .kind */
+.gu-pill {
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 0 7px;
+  font: 500 11px/17px var(--mono); color: var(--pill-text); border: 1px solid var(--line); background: var(--surface-2);
+  white-space: nowrap; flex: 0 0 auto;
+}
+.gu-head .gu-pill { background: var(--surface-inset); } /* the head is already a tint; the pill must not add a third */
+.gu-pill[data-status="running"] { color: var(--accent); }
+.gu-pill[data-status="ok"] { color: var(--ok); }
+.gu-pill[data-status="failed"] { color: var(--bad); border-color: var(--bad-line); background: transparent; }
+.gu-pill[data-status="skipped"] { text-decoration: line-through; }
+
+/* layout */
+.gu-col { display: flex; flex-direction: column; gap: 8px; }
+.gu-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.gu-row > * { flex: 1 1 140px; min-width: 0; }
+/* A card always sits inside a surface (chat frame or run), so it reads as a shade darker, not a second white tint. */
+.gu-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-inset); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.gu-card-title { font-weight: 600; color: var(--text); }
+
+/* text */
+.gu-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gu-text[data-tone="muted"] { color: var(--muted); font-size: 12.5px; }
+.gu-text[data-tone="error"] { color: var(--bad); }
+
+/* step */
+.gu-step { display: flex; flex-direction: column; gap: 4px; }
+.gu-step-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.gu-step-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.gu-step[data-status="pending"] .gu-step-label, .gu-step[data-status="skipped"] .gu-step-label { color: var(--muted); }
+.gu-step-detail { color: var(--muted); font-size: 12px; padding-left: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* progress bar: fill scales on X only */
+.gu-bar { height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.gu-bar-fill { height: 100%; width: 100%; background: var(--accent); transform-origin: left center; transition: transform .25s ease-out; }
+.gu-progress { display: flex; flex-direction: column; gap: 4px; }
+.gu-progress-label { font-size: 12px; color: var(--muted); }
+
+/* tree */
+.gu-tree-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.gu-tree-list .gu-tree-list { padding-left: 18px; margin-top: 2px; }
+.gu-node-line { display: flex; align-items: center; gap: 6px; min-height: 22px; min-width: 0; }
+.gu-node-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gu-twisty {
+  width: 18px; height: 18px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+.gu-twisty svg { width: 12px; height: 12px; transition: transform .15s ease-out; }
+.gu-twisty[aria-expanded="true"] svg { transform: rotate(90deg); }
+.gu-twisty:active { transform: none; }
+.gu-twisty-leaf::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--line-strong); }
+
+/* key/value */
+.gu-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 12.5px; }
+.gu-kv dt { color: var(--muted); white-space: nowrap; }
+.gu-kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+
+/* button: closed action set */
+.gu-btn { align-self: flex-start; padding: 5px 12px; font-size: 12.5px; }
+.gu-btn[data-action="approve"], .gu-btn[data-action="retry"] { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
+.gu-btn[data-action="deny"] { color: var(--bad); }
+.gu-row > .gu-btn { flex: 0 0 auto; }
+
+/* sandboxed preview */
+.gu-preview { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface-2); }
+.gu-frame { display: block; width: 100%; border: 0; background: transparent; }
+.gu-preview-off { padding: 8px 12px; }
+.gu-step-busy .gu-pill[data-status="running"] { animation: gu-breathe 1.2s ease-in-out infinite; }
+@keyframes gu-breathe { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .gu-bar-fill, .gu-twisty svg, .runs-head .chev { transition: none; }
+  .gu-step-busy .gu-pill { animation: none; }
+}
+
+.gu-note { color: var(--muted); font-size: 12px; }
+
+@media (hover: hover) and (pointer: fine) {
+  button.gu-twisty:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
+  .gu-btn[data-action="approve"]:hover, .gu-btn[data-action="retry"]:hover { background: var(--accent-hover); border-color: transparent; color: var(--on-accent); }
+  .gu-btn[data-action="deny"]:hover { background: var(--bad-soft); border-color: var(--bad-line); }
+}
+.gu-twisty:focus-visible, .gu-btn:focus-visible, .runs-head:focus-visible, #btn-runs:focus-visible, #btn-runs-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- in the chat */
+.msg.genui { align-self: stretch; }
+
+/* ---------------------------------------------------------------- Runs sheet */
+/* sheet placement, background and blur come from panel.css (#settings, #actionlog, #runs) */
+#runs { padding: 0 18px 22px; display: flex; flex-direction: column; }
+#runs-list { display: flex; flex-direction: column; gap: 6px; flex: 1 0 auto; }
+.runs-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 10px; }
+.run { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.run[data-status="failed"] { border-color: var(--bad-line); }
+.runs-head {
+  display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; column-gap: 8px;
+  width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--text-2); font-size: 12.5px;
+}
+.runs-head:active { transform: none; }
+.runs-head .chev { width: 14px; height: 14px; color: var(--muted); transition: transform .15s ease-out; }
+.runs-head[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.runs-head .ttl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+.runs-head .sid { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.run-body { padding: 0 10px 10px; }
+.run-body .gu-surface { border: 0; border-radius: 0; background: transparent; }
+.run-body .gu-head { display: none; }
+.run-body .gu-body { padding: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .runs-head:hover { background: var(--surface-2); }
+  .run:has(.runs-head:hover) { border-color: var(--line-strong); }
+}

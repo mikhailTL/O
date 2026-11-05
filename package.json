@@ -1,0 +1,52 @@
+{
+  "name": "o-ai",
+  "productName": "O AI",
+  "version": "1.0.0",
+  "description": "O AI \u2014 a calm desktop agent that does things on your computer with Claude Code and writes every action to a log.",
+  "main": "main/main.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "check": "node -e \"for (const f of require('fs').readdirSync('main')) if (f.endsWith('.js')) require('child_process').execFileSync(process.execPath, ['--check', 'main/' + f], {stdio: 'inherit'})\"",
+    "dist": "electron-builder",
+    "demo:record": "node tools/demo/record.js",
+    "demo:launch": "node tools/demo/launch.js"
+  },
+  "dependencies": {
+    "@playwright/mcp": "^0.0.84",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "build": {
+    "appId": "ai.o.agent",
+    "productName": "O AI",
+    "files": [
+      "main/**",
+      "renderer/**",
+      "assets/**",
+      "extension/**",
+      "engine/**",
+      "install/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "asarUnpack": [
+      "main/tools/**",
+      "engine/**",
+      "node_modules/@playwright/**",
+      "node_modules/playwright*/**"
+    ]
+  }
+}

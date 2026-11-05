@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "O Link",
+  "version": "1.0.0",
+  "description": "Lets the O AI desktop pet read and work in your open tabs. Talks only to O on this computer (127.0.0.1). Payments are blocked.",
+  "minimum_chrome_version": "125",
+  "permissions": ["debugger", "tabs", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["guard.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_start"
+    }
+  ],
+  "action": { "default_title": "O Link" },
+  "icons": { "128": "icon.png" }
+}

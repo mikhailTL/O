@@ -1,0 +1,56 @@
+{
+  "id": "d2",
+  "title": "The log is the product",
+  "file": "docs/videos/d2.mp4",
+  "bytes": 7338223,
+  "durationS": 47.266667,
+  "width": 3200,
+  "height": 2000,
+  "marks": [
+    {
+      "t": 2.655,
+      "caption": "Security by recording, not by asking"
+    },
+    {
+      "t": 14.076,
+      "caption": "The action log, inside the panel"
+    },
+    {
+      "t": 17.45,
+      "caption": "Filter: Tools · Engine · Policy · Errors"
+    },
+    {
+      "t": 26.538,
+      "caption": "Expand a row for the full detail"
+    },
+    {
+      "t": 30.167,
+      "caption": "Verify chain"
+    },
+    {
+      "t": 33.605,
+      "label": "verify {\"ok\":true,\"count\":27}"
+    },
+    {
+      "t": 33.605,
+      "caption": "Now edit one line of the log file on disk…"
+    },
+    {
+      "t": 36.287,
+      "label": "tampered line 17"
+    },
+    {
+      "t": 39.131,
+      "caption": "Verify chain again: ✗ broken at the edited entry"
+    },
+    {
+      "t": 43.107,
+      "label": "verify {\"ok\":false,\"count\":27,\"brokenAt\":16,\"reason\":\"hash\"}"
+    },
+    {
+      "t": 44.907,
+      "caption": null
+    }
+  ],
+  "recordedAt": "2026-11-05T05:57:09.782Z"
+}

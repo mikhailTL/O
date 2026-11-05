@@ -1,0 +1,15 @@
+{
+  "instruction": "Click the Sum button in the toolbar",
+  "app": "libreoffice_calc",
+  "result": false,
+  "steps": [
+    {
+      "screenshot": "step0.png",
+      "click": [
+        5,
+        5
+      ],
+      "target": "Sum button"
+    }
+  ]
+}

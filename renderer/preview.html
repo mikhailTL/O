@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Sandboxed preview host, loaded in <iframe sandbox="allow-scripts"> (opaque origin, no file access).
+       In: one postMessage {type:'o-ui-load', html, css, js} from the embedding window.
+       Out: parent.postMessage({type:'o-ui-event', name, payload}) only.
+       The bootstrap below is trusted by hash; the document's JS runs as a blob script it creates. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-dl+R7e0xY5dP6T2NwG+yoGvXYsQXQMgODso12iw1mdc=' 'strict-dynamic'; img-src data:">
+  <title>Preview</title>
+  <script>'use strict';
+// Sandboxed preview bootstrap. Trusted by hash; 'strict-dynamic' lets it run the document's JS as a blob script.
+(function () {
+  var loaded = false;
+  window.addEventListener('message', function (e) {
+    if (loaded || e.source !== window.parent || !e.data || typeof e.data !== 'object' || e.data.type !== 'o-ui-load') return;
+    loaded = true;
+    var style = document.createElement('style');
+    style.textContent = String(e.data.css || '');
+    document.head.appendChild(style);
+    document.body.innerHTML = String(e.data.html || '');
+    var js = String(e.data.js || '');
+    if (!js) return;
+    var script = document.createElement('script');
+    script.src = URL.createObjectURL(new Blob([js], { type: 'text/javascript' }));
+    document.body.appendChild(script);
+  });
+})();</script>
+</head>
+<body></body>
+</html>

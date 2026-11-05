@@ -1,0 +1,46 @@
+{
+  "file": "docs/videos/o-launch.mp4",
+  "bytes": 30388773,
+  "durationS": 214.666667,
+  "width": 3200,
+  "height": 2000,
+  "timeline": [
+    {
+      "name": "title",
+      "start": 0,
+      "seconds": 3.5
+    },
+    {
+      "name": "d1",
+      "start": 3.5,
+      "seconds": 57.63
+    },
+    {
+      "name": "d2",
+      "start": 61.13,
+      "seconds": 47.27
+    },
+    {
+      "name": "d3",
+      "start": 108.4,
+      "seconds": 44.73
+    },
+    {
+      "name": "d4",
+      "start": 153.13,
+      "seconds": 48.53
+    },
+    {
+      "name": "why",
+      "start": 201.67,
+      "seconds": 9
+    },
+    {
+      "name": "end",
+      "start": 210.67,
+      "seconds": 4
+    }
+  ],
+  "audio": false,
+  "builtAt": "2026-11-05T06:04:24.150Z"
+}

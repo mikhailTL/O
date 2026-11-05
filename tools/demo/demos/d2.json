@@ -1,0 +1,22 @@
+{
+  "id": "d2",
+  "title": "The log is the product",
+  "prompt": "Prepare a scratch workspace: a notes folder with today's todo file, and show me what's in it",
+  "request": {
+    "label": "Prepare scratch workspace",
+    "steps": [
+      { "target_directory": ".", "command_string": "mkdir -p notes && printf -- '- [ ] write the launch post\\n- [ ] record the demo\\n' > notes/todo.md", "timeout_seconds": 30 },
+      { "target_directory": "notes", "command_string": "cat todo.md && ls -la", "timeout_seconds": 30 }
+    ]
+  },
+  "captions": {
+    "intro": ["Security by recording, not by asking", "every tool call, policy decision and engine step is written down"],
+    "open": ["The action log, inside the panel", "app and engine entries, one file, newest last"],
+    "filter": ["Filter: Tools · Engine · Policy · Errors", "the engine's graph nodes are entries too"],
+    "expand": ["Expand a row for the full detail", "command, cwd, exit code, output tail"],
+    "verify": ["Verify chain", "each entry hashes the one before it: ✓ intact"],
+    "tamper": ["Now edit one line of the log file on disk…", "a single character changed in o-actions.jsonl"],
+    "broken": ["Verify chain again: ✗ broken at the edited entry", "nothing before it is affected; everything after is unverified"]
+  },
+  "reply": "Your scratch workspace is ready: `notes/todo.md` with two items."
+}

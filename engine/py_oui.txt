@@ -1,0 +1,27 @@
+@begin job:7 "Install deps"
+@update job:7
+Col#root{phases current steps}
+Tree#phases[n=[{"id":"context","label":"context","status":"pending","children":[]},{"id":"validate","label":"validate","status":"pending","children":[]},{"id":"execute","label":"execute","status":"pending","children":[]},{"id":"verify","label":"verify","status":"pending","children":[]},{"id":"report","label":"report","status":"pending","children":[]}]]
+Step#current[l=starting]
+Col#steps
+@update job:7
+Tree#phases[n=[{"id":"context","label":"context","status":"ok","children":[]},{"id":"validate","label":"validate","status":"ok","children":[]},{"id":"execute","label":"execute","status":"running","children":[]},{"id":"verify","label":"verify","status":"pending","children":[]},{"id":"report","label":"report","status":"pending","children":[]}]]
+Step#current[l=execute;st=run]
+@update job:7
+Step#step-0[l="npm install";st=run;p=0.4]
+Col#steps{step-0}
+@data job:7 steps.0.status "running"
+@data job:7 steps.0.progress 0.4
+@data job:7 steps.0.status "ok"
+@update job:7
+Step#step-1[l="npm test";st=fail;d="exit 1"]
+Col#steps{step-0 step-1}
+@data job:7 steps.1.status "failed"
+@data job:7 steps.1.detail "exit 1"
+@sandbox job:7 v1 {"html":"<div class=\"card\"><b>localhost:3000</b><span class=\"ok\">ok</span> <span class=\"muted\">status 200</span><span class=\"muted\">120 ms</span></div>","css":"body{margin:0;font:13px system-ui,sans-serif;color:#e6e6e6;background:#141414}.card{display:flex;gap:12px;align-items:center;padding:10px 14px;border:1px solid #2a2a2a;border-radius:8px;margin:8px}.ok{color:#7ed07e}.failed{color:#e07a7a}.muted{color:#8a8a8a}","js":""}
+@update job:7
+Prev#preview-v1[s=v1;h=64]
+Col#root{phases current steps preview-v1}
+@update job:7
+Step#current[l=done;st=ok]
+@end job:7 true

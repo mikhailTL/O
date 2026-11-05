@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- O: a black glass orb with a luminous ring (the letter O) and one highlight that doubles as an eye. -->
+  <defs>
+    <radialGradient id="orb" cx="36%" cy="30%" r="78%">
+      <stop offset="0" stop-color="#3b3b44"/>
+      <stop offset=".5" stop-color="#17171b"/>
+      <stop offset="1" stop-color="#050506"/>
+    </radialGradient>
+    <radialGradient id="rim" cx="50%" cy="50%" r="50%">
+      <stop offset=".82" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".97" stop-color="#ffffff" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".05"/>
+    </radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="glow-eye" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <circle cx="128" cy="128" r="118" fill="url(#orb)"/>
+  <circle cx="128" cy="128" r="118" fill="url(#rim)"/>
+  <ellipse cx="128" cy="46" rx="74" ry="26" fill="url(#sheen)"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#9fd8ff" stroke-width="22" opacity=".42" filter="url(#glow)"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#bfe6ff" stroke-width="9" opacity=".92"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#f2fbff" stroke-width="3.5"/>
+  <ellipse cx="104" cy="100" rx="15" ry="12" fill="#ffffff" opacity=".6" filter="url(#glow-eye)"/>
+  <ellipse cx="104" cy="100" rx="12" ry="9.5" fill="#ffffff" opacity=".96"/>
+</svg>
