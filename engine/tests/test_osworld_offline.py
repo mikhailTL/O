@@ -49,11 +49,14 @@ def test_load_rejects_bad_meta(tmp_path):
 
 
 def test_dataset_hash_is_deterministic_without_git(tmp_path):
-    h1 = offline.dataset_hash(FIXTURES)
-    h2 = offline.dataset_hash(FIXTURES)
+    import shutil
+    src = tmp_path / "eps"
+    shutil.copytree(FIXTURES, src)
+    h1 = offline.dataset_hash(src)
+    h2 = offline.dataset_hash(src)
     assert h1 == h2 and h1.startswith("sha256:")
-    names = sorted(p.relative_to(FIXTURES).as_posix() for p in FIXTURES.rglob("*") if p.is_file())
-    lines = "\n".join(f"{n}:{(FIXTURES / n).stat().st_size}" for n in names)
+    names = sorted(p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file())
+    lines = "\n".join(f"{n}:{(src / n).stat().st_size}" for n in names)
     assert h1 == "sha256:" + hashlib.sha256(lines.encode("utf-8")).hexdigest()
     (tmp_path / "x.bin").write_bytes(b"ab")
     assert offline.dataset_hash(tmp_path) != h1
@@ -123,8 +126,11 @@ def test_cli_empty_dir_fails(tmp_path):
 
 
 def test_summarize_includes_offline_table(tmp_path, capsys):
+    import shutil
+    src = tmp_path / "eps"
+    shutil.copytree(FIXTURES, src)
     out = tmp_path / "table.md"
-    assert offline.main(["--episodes", str(FIXTURES), "--grounder", "stub", "--judge", "stub", "--out", str(out)]) == 0
+    assert offline.main(["--episodes", str(src), "--grounder", "stub", "--judge", "stub", "--out", str(out)]) == 0
     capsys.readouterr()
     rc = summarize.main(["--result_dir", str(tmp_path / "no-results"), "--offline", str(out)])
     printed = capsys.readouterr().out

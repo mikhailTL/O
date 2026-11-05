@@ -1,5 +1,5 @@
 'use strict';
-// O AI prompt panel: chat log, prompt box, permission cards, settings.
+// O AI prompt panel: tasks (strip, Tasks sheet, one transcript per task), prompt box, permission cards, settings.
 (function () {
   const o = window.o;
   const $ = (id) => document.getElementById(id);
@@ -23,14 +23,12 @@
   const sendBtn = $('btn-send');
   const stopBtn = $('btn-stop');
   const stateLine = $('state-line');
-  const queueLine = $('queue-line');
   const settingsEl = $('settings');
   const setupEl = $('setup');
   const actionlogEl = $('actionlog');
   const runsEl = $('runs');
   const has = (name) => !!o && typeof o[name] === 'function';
 
-  let busy = false;
   let currentAssistant = null; // { el, text } for the bubble being streamed
   let currentSteps = null;     // container for this turn's tool steps
 
@@ -147,6 +145,8 @@
   }
 
   function addPermissionCard(p) {
+    if (p.taskId) { pendingFor.add(p.taskId); renderStrip(); renderTaskbar(); }
+    if (p.taskId && p.taskId !== viewId) return; // shown when that task is opened (the strip says it needs an OK)
     if (document.querySelector(`.perm[data-id="${CSS.escape(p.id)}"]`)) return;
     startChat();
     endAssistantBubble();
@@ -159,6 +159,7 @@
         <button class="allow">Allow</button>
       </div>`, true);
     el.dataset.id = p.id;
+    if (p.taskId) el.dataset.task = p.taskId;
     el.querySelector('.allow').addEventListener('click', () => respond(p.id, true));
     el.querySelector('.deny').addEventListener('click', () => respond(p.id, false));
     scrollDown(true);
@@ -177,34 +178,45 @@
     el.querySelector('.perm-actions').innerHTML = `<span class="verdict">${allow ? '✓ Allowed' : '✕ Denied'}</span>`;
   }
 
+  // The composer is always enabled: while the viewed task runs, sending starts another task.
   function syncButtons() {
     const hasText = !!promptEl.value.trim();
-    stopBtn.hidden = !(busy && !hasText);
-    sendBtn.hidden = busy && !hasText;
+    const t = viewed();
+    const running = isActive(t);
+    stopBtn.hidden = !(running && !hasText);
+    sendBtn.hidden = running && !hasText;
     sendBtn.disabled = !hasText;
-    sendBtn.title = busy ? 'Queue this after the current task (Enter)' : 'Send (Enter)';
-  }
-
-  function setBusy(b) {
-    busy = b;
-    syncButtons();
-    document.body.classList.toggle('busy', b);
-  }
-
-  function setQueue(n) {
-    queueLine.hidden = !n;
-    queueLine.textContent = n ? `${n} more task${n > 1 ? 's' : ''} queued` : '';
+    sendBtn.title = running ? 'Start another task (Enter)' : t ? 'Follow up on this task (Enter)' : 'Start task (Enter)';
+    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up, or press + for a new task…' : 'Give O a task…';
   }
 
   // ------------------------------------------------------------ agent events
 
+  // Events that belong to one task (ev.taskId) draw into the chat only when that task is the one shown.
+  const TASK_EVENTS = ['status', 'assistant', 'tool', 'permission', 'permission-resolved', 'done', 'error', 'permission-timeout'];
   o.onAgentEvent((ev) => {
+    if (ev && ev.taskId && TASK_EVENTS.includes(ev.type)) {
+      if (ev.type === 'permission') { addPermissionCard(ev); return; }
+      if (ev.type === 'permission-resolved') { pendingFor.delete(ev.taskId); markPermission(ev.id, ev.allow); renderStrip(); renderTaskbar(); return; }
+      if (ev.type === 'done' || ev.type === 'error') { pendingFor.delete(ev.taskId); }
+      const t = tasksById.get(ev.taskId);
+      if (t && ev.type === 'status' && ev.text) { t.statusLine = String(ev.text).slice(0, 80); t.mood = ev.mood; renderStrip(); renderTaskbar(); }
+      if (t && ev.type === 'tool' && ev.summary) { t.statusLine = String(ev.summary).slice(0, 80); renderStrip(); renderTaskbar(); }
+      if (ev.taskId !== viewId) {
+        if (awaitingTask) { const q = early.get(ev.taskId) || []; q.push(ev); if (q.length < 200) early.set(ev.taskId, q); }
+        if (ev.type === 'done' || ev.type === 'error') setTimeout(refreshTasks, 200);
+        return;
+      }
+    }
+    handleViewedEvent(ev);
+  });
+
+  function handleViewedEvent(ev) {
     switch (ev.type) {
       case 'status':
         // The text already says what O is doing; the mood only colours it (data-mood in panel.css).
         stateLine.textContent = String(ev.text || MOOD_LABEL[ev.mood] || ev.mood || '').slice(0, 80);
         stateLine.dataset.mood = ev.mood || '';
-        if (['thinking', 'working', 'browsing'].includes(ev.mood)) setBusy(true);
         break;
       case 'assistant':
         appendAssistant(ev.text || '', ev.delta === true);
@@ -221,13 +233,14 @@
       case 'done': {
         endAssistantBubble();
         finishSteps();
-        if (ev.stopped) { setBusy(false); stateLine.textContent = 'stopped'; setTimeout(refreshState, 400); break; }
+        if (ev.stopped || ev.result === '(stopped)') { addMsg('meta', '■ stopped'); stateLine.textContent = 'stopped'; setTimeout(refreshTasks, 200); break; }
         const bits = [];
         if (ev.durationMs) bits.push(`${(ev.durationMs / 1000).toFixed(1)}s`);
         if (typeof ev.costUsd === 'number' && ev.costUsd > 0) bits.push(`~$${ev.costUsd.toFixed(3)}`);
         addMsg('meta', `✓ done${bits.length ? ' · ' + bits.join(' · ') : ''}`);
         stateLine.textContent = MOOD_LABEL.success;
-        setTimeout(refreshState, 300);
+        if (ev.taskId) seen.add(ev.taskId);
+        setTimeout(refreshTasks, 200);
         break;
       }
       case 'error':
@@ -235,10 +248,13 @@
         finishSteps();
         addMsg('error', `⚠ ${escapeHtml(ev.message || 'Something went wrong')}`);
         stateLine.textContent = MOOD_LABEL.error;
-        refreshState();
+        setTimeout(refreshTasks, 200);
         break;
-      case 'queue':
-        setQueue(ev.length || 0);
+      case 'tasks':
+        setTasks(ev.tasks, ev.schedules);
+        break;
+      case 'view-task':
+        if (ev.taskId) viewTask(ev.taskId);
         break;
       case 'update':
         showUpdate(ev);
@@ -252,9 +268,6 @@
       case 'link-blocked':
         addMsg('meta', `Stopped before a payment step (${escapeHtml(ev.reason || 'payment')}). O does not make payments.`);
         break;
-      case 'log-unread':
-        setLogBadge(ev.count);
-        break;
       case 'open-log':
         openActionLog();
         break;
@@ -264,37 +277,54 @@
       default:
         break;
     }
-  });
+  }
 
   async function refreshState() {
     try {
       const st = await o.getState();
-      setBusy(st.busy);
-      setQueue(st.queue);
+      if (Array.isArray(st.tasks)) setTasks(st.tasks, st.schedules);
+      pendingFor.clear();
       (st.pendingPermissions || []).forEach(addPermissionCard);
-      if (typeof st.logUnread === 'number') setLogBadge(st.logUnread);
+      renderStrip(); renderTaskbar();
     } catch (_) {}
   }
 
   // ------------------------------------------------------------ composer
 
+  // A follow-up goes to the viewed task when it has ended; otherwise (nothing viewed, or the viewed task is
+  // still running) the prompt starts a new task and the chat switches to it. Running tasks keep going.
+  let awaitingTask = 0;
   async function send(text) {
     text = (text != null ? text : promptEl.value).trim();
     if (!text) return;
     promptEl.value = '';
     autosize();
+    const t = viewed();
+    const followUp = !!(viewId && !isActive(t));
+    if (!followUp) { viewId = null; viewTitle = ''; clearLog(); }
     endAssistantBubble();
     finishSteps();
     startChat();
     addMsg('user', md(text));
     scrollDown(true);
-    setBusy(true);
-    const res = await o.sendPrompt(text);
+    awaitingTask++;
+    let res;
+    try { res = await o.sendPrompt(text, followUp ? { taskId: viewId } : {}); } catch (err) { res = { ok: false, error: err && err.message }; }
+    awaitingTask--;
     if (res && res.ok === false) {
       addMsg('error', `⚠ ${escapeHtml(res.error || 'Could not send')}`);
       refreshState();
-    } else if (res && res.queued) {
-      addMsg('meta', `queued (#${res.position}) — O will get to it right after the current task`);
+      return;
+    }
+    if (res && res.taskId) {
+      viewId = res.taskId;
+      viewTitle = text.slice(0, 60);
+      seen.add(res.taskId);
+      if (!tasksById.has(res.taskId)) tasksById.set(res.taskId, { id: res.taskId, title: text.replace(/\s+/g, ' ').slice(0, 60), status: res.queued ? 'queued' : 'running', statusLine: res.queued ? 'Waiting for a free slot' : 'Starting…', position: res.position || 0 });
+      for (const ev of early.get(res.taskId) || []) handleViewedEvent(ev);
+      early.delete(res.taskId);
+      if (res.queued) addMsg('meta', `Waiting for a free slot (#${res.position}). Your other tasks keep running.`);
+      setTasks();
     }
   }
 
@@ -307,22 +337,21 @@
   promptEl.addEventListener('input', autosize);
   promptEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
-    if (e.key === 'Escape') { if (!settingsEl.hidden) closeSettings(); else if (!actionlogEl.hidden) actionlogEl.hidden = true; else if (!runsEl.hidden) runsEl.hidden = true; else o.hidePanel(); }
+    if (e.key === 'Escape') { if (!taskMenu.hidden) closeTaskMenu(); else if (!settingsEl.hidden) closeSettings(); else if (!actionlogEl.hidden) actionlogEl.hidden = true; else if (!runsEl.hidden) runsEl.hidden = true; else o.hidePanel(); }
   });
   sendBtn.addEventListener('click', () => send());
+  /** The composer's stop button stops the task being shown; other tasks keep running. */
   async function stopNow() {
-    setBusy(false); // the UI resets right away; O kills the task in the background
+    if (!viewId || !isActive(viewed())) return;
     endAssistantBubble();
     finishSteps();
-    stateLine.textContent = 'stopped';
-    const r = await o.cancel();
-    addMsg('meta', `■ stopped${r && r.dropped ? ` · dropped ${r.dropped} queued task(s)` : ''}`);
-    setTimeout(refreshState, 400);
+    stateLine.textContent = 'stopping…';
+    await stopTaskUI(viewId);
   }
   stopBtn.addEventListener('click', stopNow);
   // Ctrl+. or Ctrl+Shift+X in the panel also stops.
   document.addEventListener('keydown', (e) => {
-    if (busy && (e.ctrlKey || e.metaKey) && (e.key === '.' || (e.shiftKey && e.key.toLowerCase() === 'x'))) { e.preventDefault(); stopNow(); }
+    if (isActive(viewed()) && (e.ctrlKey || e.metaKey) && (e.key === '.' || (e.shiftKey && e.key.toLowerCase() === 'x'))) { e.preventDefault(); stopNow(); }
   });
   log.addEventListener('click', (e) => {
     const ex = e.target.closest('.example');
@@ -331,7 +360,8 @@
 
   $('btn-close').addEventListener('click', () => o.hidePanel());
   $('btn-quit').addEventListener('click', () => {
-    if (busy && !confirm('O is working on a task. Stop it and turn O off?')) return;
+    const n = [...tasksById.values()].filter(isActive).length;
+    if (n && !confirm(`O is working on ${n} task${n === 1 ? '' : 's'}. Stop ${n === 1 ? 'it' : 'them'} and turn O off?`)) return;
     o.turnOff();
   });
   // ------------------------------------------------------------ chat history
@@ -344,7 +374,7 @@
     endAssistantBubble();
     finishSteps();
     log.querySelectorAll('.msg').forEach((m) => m.remove());
-    for (const [id, s] of surfaces) if (s.kind === 'chat') { s.surface.unmount(); surfaces.delete(id); }
+    for (const s of surfaces.values()) if (s.kind === 'chat' && s.host) { s.surface.unmount(); s.host = null; } // kept: shown again when its task is
     document.body.classList.remove('chatting');
     setGreeting();
   }
@@ -370,19 +400,12 @@
     return false;
   }
 
-  async function newChatUI() {
-    const res = await o.newChat();
-    if (showErr(res)) return;
-    clearLog();
-    closeDrawer();
-    promptEl.focus();
-  }
-  $('btn-new').addEventListener('click', newChatUI);
-  $('btn-drawer-new').addEventListener('click', newChatUI);
+  $('btn-new').addEventListener('click', newTaskView);
+  $('btn-drawer-new').addEventListener('click', newTaskView);
 
   function openDrawer() { drawer.hidden = false; scrim.hidden = false; closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; refreshChatList(); }
   function closeDrawer() { drawer.hidden = true; scrim.hidden = true; }
-  $('btn-chats').addEventListener('click', () => (drawer.hidden ? openDrawer() : closeDrawer()));
+  $('btn-all-tasks').addEventListener('click', () => { closeRuns(); openDrawer(); });
   $('btn-drawer-close').addEventListener('click', closeDrawer);
   scrim.addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden) { e.stopPropagation(); closeDrawer(); } }, true);
@@ -404,8 +427,8 @@
     try { list = await o.listChats(); } catch (_) {}
     chatList.innerHTML = '';
     const real = list.filter((c) => c.count > 0 || c.current);
-    $('chat-count').textContent = `${real.length} chat${real.length === 1 ? '' : 's'}`;
-    if (!real.length) { chatList.innerHTML = '<div class="chat-empty">No chats yet. Say hi to O!</div>'; return; }
+    $('chat-count').textContent = `${real.length} task${real.length === 1 ? '' : 's'}`;
+    if (!real.length) { chatList.innerHTML = '<div class="chat-empty">No past tasks yet.</div>'; return; }
     let group = '';
     for (const c of real) {
       const g = groupOf(c.updatedAt);
@@ -416,17 +439,13 @@
 
   function chatItem(c) {
     const el = document.createElement('div');
-    el.className = 'chat-item' + (c.current ? ' current' : '');
+    el.className = 'chat-item' + (c.id === viewId ? ' current' : '');
     el.title = c.title;
     // The title is a real button (Enter and Space open the chat); the icon buttons carry their own names.
-    el.innerHTML = `<button type="button" class="ttl"${c.current ? ' aria-current="true"' : ''}>${escapeHtml(c.title)}</button><span class="acts"><button type="button" class="ren" title="Rename" aria-label="Rename chat">${PENCIL}</button><button type="button" class="del" title="Delete" aria-label="Delete chat">${TRASH}</button></span>`;
+    el.innerHTML = `<button type="button" class="ttl"${c.id === viewId ? ' aria-current="true"' : ''}>${escapeHtml(c.title)}</button><span class="acts"><button type="button" class="ren" title="Rename" aria-label="Rename chat">${PENCIL}</button><button type="button" class="del" title="Delete" aria-label="Delete chat">${TRASH}</button></span>`;
     el.addEventListener('click', async (e) => {
       if (e.target.closest('.acts') || el.classList.contains('confirm') || el.querySelector('input')) return;
-      const res = await o.openChat(c.id);
-      if (showErr(res)) { closeDrawer(); return; }
-      renderChat(res.chat);
-      closeDrawer();
-      promptEl.focus();
+      await viewTask(c.id);
     });
     el.querySelector('.ren').addEventListener('click', () => startRename(el, c));
     el.querySelector('.del').addEventListener('click', () => confirmDelete(el, c));
@@ -457,7 +476,7 @@
       e.stopPropagation();
       const res = await o.deleteChats([c.id]);
       if (showErr(res)) return;
-      if (c.current) renderChat(res.chat);
+      if (c.id === viewId) newTaskView();
       refreshChatList();
     });
     el.querySelector('.yes').focus();
@@ -475,17 +494,252 @@
     clearTimeout(armTimer); delAll.classList.remove('armed'); delAll.textContent = 'Delete all chats';
     const res = await o.deleteChats('all');
     if (showErr(res)) return;
-    renderChat(res.chat);
+    newTaskView();
     refreshChatList();
   });
 
-  // Show the chat that was open last time.
-  o.currentChat().then((chat) => { if (chat && chat.messages && chat.messages.length) renderChat(chat); }).catch(() => {});
+  // Opening the panel starts on a fresh task; running and recent tasks are in the strip above the composer.
+  // ------------------------------------------------------------ tasks
+  // Every prompt is a task with its own transcript. `viewId` is the task shown in the chat (null = a new,
+  // empty task). Events for other tasks only update the task strip; switching tasks loads that transcript.
+
+  const tasksById = new Map(); // id -> snapshot from main ({id, title, status, statusLine, ...})
+  let schedules = [];
+  let viewId = null;
+  const seen = new Set();      // ended tasks the user has looked at (they leave the strip)
+  const early = new Map();     // task id -> events that arrived before we knew to show that task
+  const ACTIVE = ['queued', 'running'];
+  const isActive = (t) => !!t && ACTIVE.includes(t.status);
+  const viewed = () => (viewId ? tasksById.get(viewId) || null : null);
+  const STATUS_WORD = { queued: 'Waiting', running: 'Working', done: 'Done', failed: 'Needs you', stopped: 'Stopped' };
+  const STOP_ICON = '<svg viewBox="0 0 20 20"><rect x="5" y="5" width="10" height="10" rx="2"/></svg>';
+
+  function relTime(ms) {
+    if (!ms) return '';
+    const d = new Date(ms), now = new Date();
+    const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((day(d) - day(now)) / 86400000);
+    if (diff === 0) return `today ${time}`;
+    if (diff === 1) return `tomorrow ${time}`;
+    if (diff === -1) return `yesterday ${time}`;
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' + time;
+  }
+
+  const pendingFor = new Set(); // task ids with an approval waiting
+
+  /** One task row (strip and Tasks sheet): open button + stop button for an active task. */
+  function taskRow(t, { compact } = {}) {
+    const row = document.createElement('div');
+    row.className = 'task-row';
+    row.setAttribute('role', 'listitem');
+    row.dataset.status = t.status;
+    row.dataset.id = t.id;
+    if (t.id === viewId) row.classList.add('current');
+    const asks = pendingFor.has(t.id);
+    const line = asks ? 'Needs your OK' : t.status === 'queued' ? `Waiting for a free slot${t.position ? ` (#${t.position})` : ''}` : (t.status === 'done' && t.result ? t.result : t.statusLine) || STATUS_WORD[t.status] || '';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'task-open';
+    open.innerHTML = `<span class="tdot" aria-hidden="true"></span><span class="ttext"><span class="ttl">${escapeHtml(t.title)}</span><span class="tline">${escapeHtml(String(line).split('\n')[0])}</span></span>${compact ? '' : `<span class="tword">${escapeHtml(asks ? 'Needs you' : STATUS_WORD[t.status] || '')}</span>`}`;
+    open.setAttribute('aria-label', `${t.title}. ${asks ? 'Needs your OK' : STATUS_WORD[t.status] || ''}. ${line}`);
+    if (t.id === viewId) open.setAttribute('aria-current', 'true');
+    if (asks) row.classList.add('asks');
+    open.addEventListener('click', () => { closeRuns(); viewTask(t.id); });
+    row.appendChild(open);
+    if (isActive(t)) {
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'task-stop';
+      stop.title = 'Stop';
+      stop.setAttribute('aria-label', `Stop ${t.title}`);
+      stop.innerHTML = STOP_ICON;
+      stop.addEventListener('click', (e) => { e.stopPropagation(); stopTaskUI(t.id); });
+      row.appendChild(stop);
+    }
+    return row;
+  }
+
+  function scheduleRow(s, { withCancel = true } = {}) {
+    const row = document.createElement('div');
+    row.className = 'task-row sched';
+    row.setAttribute('role', 'listitem');
+    row.dataset.status = 'scheduled';
+    row.innerHTML = `<div class="task-open static"><span class="tdot" aria-hidden="true"></span><span class="ttext"><span class="ttl">${escapeHtml(s.title)}</span><span class="tline">${escapeHtml(s.label || '')}${s.nextRun ? ` · next ${escapeHtml(relTime(s.nextRun))}` : ''}</span></span></div>`;
+    if (withCancel) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'task-cancel';
+      b.textContent = 'Cancel';
+      b.setAttribute('aria-label', `Cancel schedule ${s.title}`);
+      b.addEventListener('click', async () => { if (has('cancelSchedule')) { await o.cancelSchedule(s.id); refreshTasks(); } });
+      row.appendChild(b);
+    }
+    return row;
+  }
+
+  const strip = $('task-strip');
+  const STRIP_MAX = 3;
+  /** Above the composer: every running / waiting task, finished ones not looked at yet, and the schedule count. */
+  function renderStrip() {
+    const all = [...tasksById.values()];
+    const active = all.filter(isActive);
+    const others = active.filter((t) => t.id !== viewId); // the task on screen has its own bar above the chat
+    const fresh = all.filter((t) => !isActive(t) && !seen.has(t.id) && t.id !== viewId && t.endedAt && Date.now() - t.endedAt < 30 * 60 * 1000 && t.status !== 'stopped');
+    const rows = [...others.sort((a, b) => (a.status === b.status ? 0 : a.status === 'running' ? -1 : 1)), ...fresh];
+    strip.innerHTML = '';
+    rows.slice(0, STRIP_MAX).forEach((t) => strip.appendChild(taskRow(t, { compact: true })));
+    const more = rows.length - STRIP_MAX;
+    const extras = [];
+    if (more > 0) extras.push(`${more} more`);
+    if (schedules.length) extras.push(`${schedules.length} scheduled · next ${relTime(schedules[0].nextRun)}`);
+    if (extras.length) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'strip-more';
+      b.textContent = extras.join(' · ');
+      b.addEventListener('click', openRuns);
+      strip.appendChild(b);
+    }
+    strip.hidden = !strip.children.length;
+    document.body.classList.toggle('has-strip', !strip.hidden);
+    const running = active.filter((t) => t.status === 'running').length;
+    const badge = $('tasks-badge');
+    badge.hidden = !active.length;
+    badge.textContent = String(active.length);
+    $('btn-runs').setAttribute('aria-label', active.length ? `Tasks, ${running} running` : 'Tasks');
+    document.body.classList.toggle('busy', running > 0);
+  }
+
+  function renderTaskSheet() {
+    if (runsEl.hidden) return;
+    const all = [...tasksById.values()];
+    const now = $('tasks-now'), sch = $('tasks-scheduled'), rec = $('tasks-recent');
+    const fill = (el, items, empty, fn) => {
+      el.innerHTML = '';
+      if (!items.length) { const d = document.createElement('div'); d.className = 'task-empty'; d.textContent = empty; el.appendChild(d); return; }
+      items.forEach((x) => el.appendChild(fn(x)));
+    };
+    fill(now, all.filter(isActive), 'Nothing running. Give me a task, or several.', (t) => taskRow(t));
+    fill(sch, schedules, 'No schedules. Try “Every weekday at 8, summarize what’s new in my inbox”.', (s) => scheduleRow(s));
+    fill(rec, all.filter((t) => !isActive(t)).slice(0, 12), 'Finished tasks show up here.', (t) => taskRow(t));
+    const running = all.filter((t) => t.status === 'running').length, queued = all.filter((t) => t.status === 'queued').length;
+    $('tasks-sub').textContent = running || queued || schedules.length
+      ? [running && `${running} running`, queued && `${queued} waiting`, schedules.length && `${schedules.length} scheduled`].filter(Boolean).join(' · ')
+      : 'Everything O is doing, waiting to do, or will do later';
+  }
+
+  /** The bar above the chat: the viewed task's title, live status and its overflow menu. */
+  function renderTaskbar() {
+    const t = viewed();
+    const bar = $('taskbar');
+    bar.hidden = !viewId;
+    if (!viewId) { closeTaskMenu(); return; }
+    bar.dataset.status = t ? (pendingFor.has(t.id) ? 'asks' : t.status) : 'done';
+    $('taskbar-title').textContent = t ? t.title : (viewTitle || 'Task');
+    $('taskbar-status').textContent = t ? (pendingFor.has(t.id) ? 'Needs your OK' : t.status === 'queued' ? 'Waiting for a free slot' : t.status === 'running' ? (t.statusLine || 'Working') : STATUS_WORD[t.status]) : 'Done';
+    $('task-menu').querySelector('[data-act="stop"]').hidden = !isActive(t);
+    $('task-menu').querySelector('[data-act="redo"]').hidden = isActive(t);
+  }
+  let viewTitle = '';
+
+  function setTasks(list, scheds) {
+    if (Array.isArray(list)) {
+      tasksById.clear();
+      for (const t of list) tasksById.set(t.id, t);
+    }
+    if (Array.isArray(scheds)) schedules = scheds;
+    renderStrip();
+    renderTaskSheet();
+    renderTaskbar();
+    syncButtons();
+    const t = viewed();
+    stateLine.textContent = t ? (t.status === 'running' ? 'working on it' : STATUS_WORD[t.status].toLowerCase()) : summaryLine();
+    stateLine.dataset.mood = t && t.status === 'running' ? (t.mood || 'working') : '';
+  }
+
+  function summaryLine() {
+    const running = [...tasksById.values()].filter((t) => t.status === 'running').length;
+    return running ? `${running} task${running === 1 ? '' : 's'} running` : 'ready';
+  }
+
+  async function refreshTasks() {
+    if (!has('listTasks')) return;
+    try { const r = await o.listTasks(); setTasks(r.tasks, r.schedules); } catch (_) {}
+  }
+
+  /** Show one task's transcript (from main's per-task chat store) and its pending approvals. */
+  async function viewTask(id) {
+    if (!id) return;
+    closeTaskMenu();
+    let res = null;
+    if (has('viewTask')) { try { res = await o.viewTask(id); } catch (_) { res = null; } }
+    if (!res || res.ok === false) { if (res) showErr(res); return; }
+    viewId = id;
+    seen.add(id);
+    early.delete(id);
+    viewTitle = (res.chat && res.chat.title) || (res.task && res.task.title) || '';
+    if (res.task) tasksById.set(id, res.task);
+    renderChat(res.chat);
+    if (res.task && isActive(res.task)) { startChat(); }
+    showTaskSurface(id);
+    refreshState();
+    setTasks();
+    closeDrawer();
+    promptEl.focus();
+  }
+
+  function newTaskView() {
+    viewId = null;
+    viewTitle = '';
+    clearLog();
+    setTasks();
+    closeDrawer();
+    promptEl.focus();
+  }
+
+  async function stopTaskUI(id) {
+    const t = tasksById.get(id);
+    if (t) { t.status = t.status === 'queued' ? 'stopped' : t.status; t.statusLine = 'Stopping…'; setTasks(); }
+    try { if (has('stopTask')) await o.stopTask(id); else await o.cancel(id); } catch (_) {}
+    setTimeout(refreshTasks, 300);
+  }
+
+  // ------------------------------------------------------------ task overflow menu
+  const taskMenu = $('task-menu'), taskMenuBtn = $('btn-task-menu');
+  function closeTaskMenu() { taskMenu.hidden = true; taskMenuBtn.setAttribute('aria-expanded', 'false'); }
+  function openTaskMenu() {
+    taskMenu.hidden = false;
+    taskMenuBtn.setAttribute('aria-expanded', 'true');
+    const first = [...taskMenu.querySelectorAll('button')].find((b) => !b.hidden);
+    if (first) first.focus();
+  }
+  taskMenuBtn.addEventListener('click', () => (taskMenu.hidden ? openTaskMenu() : closeTaskMenu()));
+  taskMenu.addEventListener('keydown', (e) => {
+    const items = [...taskMenu.querySelectorAll('button')].filter((b) => !b.hidden);
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    if (e.key === 'Escape') { e.stopPropagation(); closeTaskMenu(); taskMenuBtn.focus(); }
+  });
+  document.addEventListener('click', (e) => { if (!taskMenu.hidden && !e.target.closest('#task-menu, #btn-task-menu')) closeTaskMenu(); });
+  taskMenu.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || !viewId) return;
+    closeTaskMenu();
+    const id = viewId;
+    if (b.dataset.act === 'record') openActionLog({ taskId: id, title: $('taskbar-title').textContent });
+    else if (b.dataset.act === 'stop') stopTaskUI(id);
+    else if (b.dataset.act === 'redo' && has('redoTask')) {
+      const r = await o.redoTask(id);
+      if (!showErr(r)) { addMsg('meta', 'Redoing this task from scratch'); refreshTasks(); }
+    }
+  });
 
   // ------------------------------------------------------------ settings
 
-  const FIELDS = ['theme', 'openAtLogin', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
-    'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython', 'logUnreadBadge',
+  const FIELDS = ['theme', 'openAtLogin', 'maxParallelTasks', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
+    'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'proxyEnabled', 'proxyPort', 'proxyConcurrency', 'proxyMode',
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',
     'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder'];
@@ -510,8 +764,59 @@
   function revertThemePreview() { applyTheme(savedTheme); }
   function openSettings() {
     settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true;
-    loadSettings(); refreshExtension(); refreshProxy();
+    loadSettings(); refreshExtension(); refreshProxy(); renderSettingsSchedules(); refreshLearned();
   }
+
+  // Settings → Scheduled tasks: the same rows as the Tasks sheet, each cancellable.
+  async function renderSettingsSchedules() {
+    const box = $('settings-schedules');
+    if (has('listSchedules')) { try { schedules = await o.listSchedules(); } catch (_) {} }
+    box.innerHTML = '';
+    if (!schedules.length) { const d = document.createElement('div'); d.className = 'task-empty'; d.textContent = 'Nothing scheduled.'; box.appendChild(d); return; }
+    schedules.forEach((x) => box.appendChild(scheduleRow(x)));
+  }
+
+  // Settings → O has learned: what the engine's /learn profile holds, each line removable, plus
+  // one-tap "Schedule this?" offers for habits it noticed.
+  async function refreshLearned() {
+    const list = $('learned-list'), sug = $('learned-suggestions');
+    list.innerHTML = ''; sug.innerHTML = '';
+    if (!has('learnProfile')) { list.innerHTML = '<div class="task-empty">Not available in this build.</div>'; return; }
+    let r;
+    try { r = await o.learnProfile(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    if (!r || !r.ok) { const d = document.createElement('div'); d.className = 'task-empty'; d.textContent = (r && r.error) || 'Could not read what O has learned.'; list.appendChild(d); return; }
+    for (const sg of r.suggestions || []) {
+      const row = document.createElement('div');
+      row.className = 'learn-row suggest';
+      row.innerHTML = `<span class="ltext"><span class="lkind">Noticed</span>${escapeHtml(sg.text)}<span class="lsub">${escapeHtml(sg.label)}</span></span>`;
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'learn-accept'; b.textContent = 'Schedule this';
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        const res = await o.acceptSuggestion(sg);
+        if (res && res.ok) { row.remove(); renderSettingsSchedules(); refreshTasks(); } else { b.disabled = false; b.textContent = 'Could not schedule'; }
+      });
+      row.appendChild(b);
+      sug.appendChild(row);
+    }
+    const items = r.items || [];
+    if (!items.length) { const d = document.createElement('div'); d.className = 'task-empty'; d.textContent = 'Nothing yet. O learns as you give it tasks and correct its results.'; list.appendChild(d); return; }
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'learn-row';
+      row.innerHTML = `<span class="ltext"><span class="lkind">${escapeHtml(it.kind)}</span>${escapeHtml(it.text)}</span>`;
+      if (it.id) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'learn-forget'; b.title = 'Forget this';
+        b.setAttribute('aria-label', `Forget: ${it.text}`);
+        b.innerHTML = TRASH;
+        b.addEventListener('click', async () => { const res = await o.learnForget(it.id); if (res && res.ok) row.remove(); });
+        row.appendChild(b);
+      }
+      list.appendChild(row);
+    }
+  }
+  $('btn-view-record').addEventListener('click', () => openActionLog());
   function closeSettings() {
     if (settingsEl.hidden) return;
     settingsEl.hidden = true;
@@ -597,20 +902,17 @@
 
   // ------------------------------------------------------------ action log sheet
 
-  const alList = $('actionlog-list'), alSub = $('actionlog-sub'), alBadge = $('actionlog-badge'), alChain = $('actionlog-chain');
+  const alList = $('actionlog-list'), alSub = $('actionlog-sub'), alChain = $('actionlog-chain'), alTaskChip = $('actionlog-task');
   const AL_CAP = 500;
   let alEntries = [];
   let alFilter = 'all';
   let alUnread = 0;
   let alSubscribed = false;
+  let alTask = null; // set by a task's "What did O do?": only that task's entries
   const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
-  function setLogBadge(n) {
-    alUnread = Math.max(0, Number(n) || 0);
-    alBadge.hidden = !alUnread;
-    alBadge.textContent = alUnread > 9 ? '9+' : String(alUnread);
-    $('btn-actionlog').setAttribute('aria-label', alUnread ? `Action log, ${alUnread} new` : 'Action log');
-  }
+  // The activity record is a background safety feature: no badge on the front UI, only a count kept here.
+  function setLogBadge(n) { alUnread = Math.max(0, Number(n) || 0); }
 
   function isErrorEntry(e) {
     if (!e) return false;
@@ -619,6 +921,7 @@
   }
 
   function matchesFilter(e) {
+    if (alTask && !(e.detail && e.detail.taskId === alTask)) return false;
     switch (alFilter) {
       case 'tools': return e.kind === 'tool' || e.kind === 'result';
       case 'engine': return e.source === 'engine' || ['graph', 'cache', 'remediate', 'verify'].includes(e.kind);
@@ -673,7 +976,7 @@
     if (!shown.length) {
       const d = document.createElement('div');
       d.className = 'al-empty';
-      d.textContent = alEntries.length ? 'Nothing matches this filter.' : 'Nothing logged yet. Give me a task and every step will show up here.';
+      d.textContent = alTask ? 'Nothing recorded for this task yet.' : alEntries.length ? 'Nothing matches this filter.' : 'Nothing recorded yet.';
       alList.appendChild(d);
     } else {
       const frag = document.createDocumentFragment();
@@ -706,16 +1009,20 @@
     try { o.onLogEntry(appendLogEntry); } catch (_) { alSubscribed = false; }
   }
 
-  async function openActionLog() {
+  async function openActionLog({ taskId = null, title = '' } = {}) {
     closeSettings();
     runsEl.hidden = true;
     closeDrawer();
     actionlogEl.hidden = false;
     alChain.textContent = ''; alChain.className = '';
-    setLogSubtitle(alUnread);
+    alTask = taskId;
+    alTaskChip.hidden = !taskId;
+    if (taskId) alSub.textContent = `What O did for “${title || 'this task'}”`;
+    else setLogSubtitle(alUnread);
     let tail = [];
-    if (has('logTail')) { try { tail = await o.logTail(300); } catch (_) { tail = []; } }
-    alEntries = (Array.isArray(tail) ? tail : (tail && tail.entries) || []).slice(-AL_CAP);
+    if (has('logTail')) { try { tail = await o.logTail(taskId ? 2000 : 300); } catch (_) { tail = []; } }
+    alEntries = (Array.isArray(tail) ? tail : (tail && tail.entries) || []);
+    alEntries = (taskId ? alEntries.filter((e) => e.detail && e.detail.taskId === taskId) : alEntries).slice(-AL_CAP);
     renderActionLog();
     requestAnimationFrame(() => { actionlogEl.scrollTop = actionlogEl.scrollHeight; });
     if (has('logMarkRead')) { try { await o.logMarkRead(); } catch (_) {} }
@@ -723,7 +1030,7 @@
   }
   function closeActionLog() { actionlogEl.hidden = true; }
 
-  $('btn-actionlog').addEventListener('click', () => (actionlogEl.hidden ? openActionLog() : closeActionLog()));
+  alTaskChip.addEventListener('click', () => openActionLog());
   $('btn-actionlog-close').addEventListener('click', closeActionLog);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !actionlogEl.hidden && settingsEl.hidden && document.activeElement !== promptEl) closeActionLog(); });
   $('actionlog-filters').addEventListener('click', (e) => {
@@ -936,16 +1243,39 @@
     s = { surface: new GenUI.Surface(id), kind: surfaceKind(id), host: null, item: null, seq: ++surfaceSeq };
     surfaces.set(id, s);
     if (s.kind === 'chat') {
-      startChat();
-      endAssistantBubble();
-      currentSteps = null;
-      s.host = addMsg('genui', '');
-      s.surface.mount(s.host);
+      // A task's cards (surface chat:<taskId>) show only in that task's chat.
+      const own = id === 'chat:' + (viewId || 'default');
+      if (own) mountChatSurface(s);
     } else if (!runsEl.hidden) {
       runsList.querySelector('.runs-empty')?.remove();
       runsList.prepend(runItem(s, true));
     }
     return s;
+  }
+
+  function mountChatSurface(s) {
+    startChat();
+    endAssistantBubble();
+    currentSteps = null;
+    s.host = addMsg('genui', '');
+    s.surface.mount(s.host);
+  }
+
+  /** After switching to a task: put its cards back (from memory, else from main's frame store). */
+  async function showTaskSurface(id) {
+    if (!GenUI) return;
+    const sid = 'chat:' + id;
+    let s = surfaces.get(sid);
+    if (!s && has('genuiFrames')) {
+      let frames = [];
+      try { frames = await o.genuiFrames(sid); } catch (_) { frames = []; }
+      if (Array.isArray(frames) && frames.length && viewId === id && !surfaces.get(sid)) {
+        s = { surface: new GenUI.Surface(sid), kind: 'chat', host: null, item: null, seq: ++surfaceSeq };
+        for (const f of frames) s.surface.apply(f);
+        surfaces.set(sid, s);
+      }
+    }
+    if (s && !s.host && viewId === id) mountChatSurface(s);
   }
 
   function onGenuiFrame(frame) {
@@ -954,11 +1284,11 @@
     if (!v.ok) { genuiNote(`GenUI frame rejected: ${v.error}`, { surface: frame && frame.surface, type: frame && frame.type }); return; }
     const s = getSurface(frame.surface, true);
     if (!s) return;
-    const stick = s.kind === 'chat' && atBottom();
+    const stick = s.kind === 'chat' && !!s.host && atBottom();
     s.surface.apply(frame);
     if (s.item) updateRunHead(s);
     if (s.kind === 'job' && !runsEl.hidden) updateRunsSub();
-    if (s.kind === 'chat') scrollDown(stick);
+    if (s.kind === 'chat' && s.host) scrollDown(stick);
   }
 
   function updateRunHead(s) {
@@ -1010,7 +1340,7 @@
     if (!jobs.length) {
       const d = document.createElement('div');
       d.className = 'runs-empty';
-      d.textContent = 'No runs yet. Give me a job and its plan, steps and result will show up here.';
+      d.textContent = 'No engine runs yet.';
       runsList.appendChild(d);
     }
     const frag = document.createDocumentFragment();
@@ -1022,7 +1352,7 @@
   function updateRunsSub() {
     const jobs = [...surfaces.values()].filter((s) => s.kind === 'job');
     const running = jobs.filter((s) => s.surface.status === 'running').length;
-    runsSub.textContent = !jobs.length ? 'Every job I run shows up here, newest first' : running ? `${running} running · ${jobs.length} total` : `${jobs.length} run${jobs.length === 1 ? '' : 's'}, none running`;
+    runsSub.textContent = !jobs.length ? 'Plans and steps of engine jobs, newest first' : running ? `${running} running · ${jobs.length} total` : `${jobs.length} run${jobs.length === 1 ? '' : 's'}, none running`;
   }
 
   /** Backfill from main: `genuiSurfaces()` -> [{surface, title, ended, ok, count}], then `genuiFrames(surface)` -> frames[]. */
@@ -1057,7 +1387,9 @@
     actionlogEl.hidden = true;
     closeDrawer();
     runsEl.hidden = false;
+    renderTaskSheet();
     renderRuns();
+    refreshTasks();
     await backfillRuns();
     if (!runsEl.hidden) renderRuns();
   }
@@ -1105,5 +1437,6 @@
   refreshExtension({ card: true });
   window.addEventListener('focus', () => { if (extCard) refreshExtension(); });
   refreshState();
+  refreshTasks();
   autosize();
 })();

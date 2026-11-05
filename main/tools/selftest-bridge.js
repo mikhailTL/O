@@ -154,7 +154,7 @@ async function main() {
 
     const list = await rpc('tools/list', {});
     const names = (list.result.tools || []).map((t) => t.name).sort();
-    const want = ['approve', 'cache_lookup', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'script_run', 'see_screen', 'swarm_run', 'ui_emit', 'verify_port', 'web_run', 'workspace_context'];
+    const want = ['approve', 'cache_lookup', 'cancel_schedule', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'list_schedules', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'recall_preferences', 'remember_preference', 'schedule_task', 'script_run', 'see_screen', 'swarm_run', 'ui_emit', 'verify_port', 'web_run', 'workspace_context'];
     check(JSON.stringify(names) === JSON.stringify(want), 'tools/list → ' + names.join(','));
     const prov = list.result.tools.find((t) => t.name === 'provision');
     const stepSchema = prov.inputSchema.properties.steps.items;
@@ -279,10 +279,12 @@ async function main() {
     check(JSON.parse(text(ap)).behavior === 'allow', 'approve (auto mode) → allow');
     await new Promise((r) => setTimeout(r, 100));
     check(stub.log.length === before, 'auto mode posts no policy entry');
-    for (const name of ['provision', 'cache_lookup', 'diagnose', 'verify_port', 'workspace_context', 'computer_run', 'computer_replay', 'computer_find', 'computer_tree', 'mcp_tools', 'mcp_call', 'script_run', 'swarm_run', 'web_run']) {
-      const r = await rpc('tools/call', { name, arguments: {} });
+    for (const name of ['provision', 'cache_lookup', 'diagnose', 'verify_port', 'workspace_context', 'computer_run', 'computer_replay', 'computer_find', 'computer_tree', 'mcp_tools', 'mcp_call', 'script_run', 'swarm_run', 'web_run', 'recall_preferences', 'remember_preference']) {
+      const r = await rpc('tools/call', { name, arguments: name === 'remember_preference' ? { text: 'x' } : {} });
       check(r.result && r.result.isError === true && /engine is not running/.test(text(r)), `${name} without O_ENGINE_URL → isError "engine is not running"`);
     }
+    const sc = await rpc('tools/call', { name: 'schedule_task', arguments: { prompt: 'x', when: { type: 'daily', time: '08:00' } } });
+    check(sc.result && sc.result.isError === true && /not reachable/.test(text(sc)), 'schedule_task without O_SCHEDULE_URL → isError');
     const ue = await rpc('tools/call', { name: 'ui_emit', arguments: { frames: [{ a2ui: '1', type: 'begin' }] } });
     check(ue.result && ue.result.isError === true && /not reachable/.test(text(ue)), 'ui_emit without O_UI_URL → isError');
   });

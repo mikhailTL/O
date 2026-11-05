@@ -14,8 +14,10 @@ if (argv[0] === 'auth') { console.log(JSON.stringify({ loggedIn: process.env.FAK
 const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : undefined; };
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const SID = flag('--resume') || (process.env.FAKE_NEW_SESSION === 'random' ? require('crypto').randomUUID() : 'fake-session-1');
-// Test aid: log each run's arguments (used to check that chats resume their own session).
-if (process.env.FAKE_ARGS_LOG) fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify({ resume: flag('--resume') || null, sid: SID }) + '\n');
+// Test aid: log each run's arguments (used to check that chats resume their own session). spawnedAt / promptAt
+// let selftest-tasks.js check that a pre-warmed process was started before its prompt arrived.
+const SPAWNED_AT = Date.now();
+const argsLog = (extra) => { if (process.env.FAKE_ARGS_LOG) fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify({ resume: flag('--resume') || null, sid: SID, pid: process.pid, ...extra }) + '\n'); };
 
 let prompt = '';
 process.stdin.setEncoding('utf8');
@@ -39,6 +41,7 @@ function rpc(child) {
 }
 
 async function main() {
+  argsLog({ spawnedAt: SPAWNED_AT, promptAt: Date.now(), prompt: prompt.trim().slice(0, 80) });
   if (process.env.FAKE_LOGGED_OUT) {
     out({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', session_id: SID });
     return;
@@ -50,6 +53,12 @@ async function main() {
     const text = process.env.FAKE_TEXT || `You said: ${prompt.trim()}`;
     const delay = Number(process.env.FAKE_DELAY_MS || 0);
     out({ type: 'system', subtype: 'init', session_id: SID, mcp_servers: [] });
+    // A prompt with the word "hang" keeps the task running until it is stopped (selftest-tasks.js).
+    if (/\bhang\b/.test(prompt)) {
+      out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'th', name: 'WebSearch', input: { query: prompt.trim() } }] } });
+      setInterval(() => {}, 1 << 30); // stay alive until killed
+      await new Promise(() => {});
+    }
     for (const piece of text.match(/.{1,24}/gs) || []) {
       out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'text', text: piece }] } });
       if (delay) await new Promise((r) => setTimeout(r, delay));

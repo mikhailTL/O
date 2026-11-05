@@ -1,5 +1,6 @@
 'use strict';
-// O's permission sidebar: one card per pending approval, Allow / Deny right here.
+// O's sidebar: one card per pending approval (Allow / Deny right here), and a short card when a background
+// task finishes ("Done: <title>") or needs the user ("Needs you: <title>"). Clicking a task card opens it.
 (function () {
   const o = window.o;
   const stack = document.getElementById('stack');
@@ -36,7 +37,7 @@
     el.innerHTML = `
       <div class="nhead">
         <img src="../assets/o-icon.png" alt="">
-        <div class="ntitle"><b>O needs your OK</b><span>wants to use <b>${esc(p.toolName || 'a tool')}</b></span></div>
+        <div class="ntitle"><b>O needs your OK</b><span>${p.taskTitle ? `${esc(p.taskTitle)} · ` : ''}wants to use <b>${esc(p.toolName || 'a tool')}</b></span></div>
         <button class="nopen" title="Open O's chat">${OPEN_ICON}</button>
       </div>
       <div class="nwhat">${esc(headline(p))}</div>
@@ -87,6 +88,49 @@
     fit();
   }
 
+  // ---------- task cards ----------
+  const taskStack = document.createElement('div');
+  taskStack.id = 'tasks-stack';
+  stack.parentNode.insertBefore(taskStack, stack.nextSibling);
+  const taskCards = new Map(); // task id -> element
+  const CLOSE_ICON = '<svg viewBox="0 0 20 20"><path d="M6 6l8 8M14 6l-8 8"/></svg>';
+
+  function makeTaskCard(c) {
+    const el = document.createElement('div');
+    el.className = 'ncard ntask ' + (c.kind === 'done' ? 'is-done' : 'is-needs');
+    el.dataset.id = c.id;
+    const head = c.kind === 'done' ? 'Done' : 'Needs you';
+    el.innerHTML = `
+      <button type="button" class="ntask-open" aria-label="${esc(head)}: ${esc(c.title)}. Open the task">
+        <span class="ntask-mark" aria-hidden="true">${c.kind === 'done' ? '✓' : '!'}</span>
+        <span class="ntask-body"><b>${esc(head)}: ${esc(c.title)}</b><span>${esc(String(c.text || '').split('\n')[0].slice(0, 140))}</span></span>
+      </button>
+      <button type="button" class="nopen ntask-close" title="Dismiss" aria-label="Dismiss">${CLOSE_ICON}</button>`;
+    el.querySelector('.ntask-open').addEventListener('click', () => { if (o.openTaskFromNotify) o.openTaskFromNotify(c.id); });
+    el.querySelector('.ntask-close').addEventListener('click', () => { if (o.dismissTaskCard) o.dismissTaskCard(c.id); removeTaskCard(c.id); });
+    return el;
+  }
+
+  function removeTaskCard(id) {
+    const el = taskCards.get(id);
+    if (!el) return;
+    taskCards.delete(id);
+    el.classList.add('out');
+    setTimeout(() => { el.remove(); fit(); }, 230);
+  }
+
+  function renderTasks(list) {
+    const ids = new Set(list.map((c) => c.id));
+    for (const id of [...taskCards.keys()]) if (!ids.has(id)) removeTaskCard(id);
+    list.slice(-4).forEach((c) => {
+      if (taskCards.has(c.id)) return;
+      const el = makeTaskCard(c);
+      taskCards.set(c.id, el);
+      taskStack.appendChild(el);
+    });
+    fit();
+  }
+
   // Tell the main process how tall the sidebar should be.
   function fit() {
     requestAnimationFrame(() => o.notifyResize(Math.ceil(document.body.scrollHeight)));
@@ -109,4 +153,5 @@
   else if (typeof o.getSettings === 'function') o.getSettings().then((s) => applyTheme(s && s.theme)).catch(() => {});
   if (typeof o.onTheme === 'function') o.onTheme(applyTheme);
   o.onNotify((list) => render(Array.isArray(list) ? list : []));
+  if (typeof o.onNotifyTasks === 'function') o.onNotifyTasks((list) => renderTasks(Array.isArray(list) ? list : []));
 })();

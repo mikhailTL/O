@@ -28,8 +28,19 @@ contextBridge.exposeInMainWorld('o', {
     ipcRenderer.on('agent:event', handler);
     return () => ipcRenderer.removeListener('agent:event', handler);
   },
-  sendPrompt: (text) => ipcRenderer.invoke('agent:prompt', String(text || '')),
-  cancel: () => ipcRenderer.invoke('agent:cancel'),
+  // A prompt starts a new task; with {taskId} of an ended task it is a follow-up in that task.
+  sendPrompt: (text, opts) => ipcRenderer.invoke('agent:prompt', String(text || ''), opts && typeof opts.taskId === 'string' ? { taskId: opts.taskId } : {}),
+  cancel: (taskId) => ipcRenderer.invoke('agent:cancel', typeof taskId === 'string' ? taskId : ''),
+  // tasks + schedules + what O has learned
+  listTasks: () => ipcRenderer.invoke('tasks:list'),
+  viewTask: (id) => ipcRenderer.invoke('tasks:view', String(id || '')),
+  stopTask: (id) => ipcRenderer.invoke('tasks:stop', String(id || '')),
+  redoTask: (id) => ipcRenderer.invoke('tasks:redo', String(id || '')),
+  listSchedules: () => ipcRenderer.invoke('schedules:list'),
+  cancelSchedule: (id) => ipcRenderer.invoke('schedules:cancel', String(id || '')),
+  learnProfile: () => ipcRenderer.invoke('learn:profile'),
+  learnForget: (id) => ipcRenderer.invoke('learn:forget', String(id || '')),
+  acceptSuggestion: (sg) => ipcRenderer.invoke('learn:acceptSuggestion', sg && typeof sg === 'object' ? { id: sg.id || null, text: String(sg.text || ''), prompt: String(sg.prompt || ''), when: sg.when || null, cron: sg.cron || null } : null),
   newSession: () => ipcRenderer.invoke('agent:newSession'),
   // chat history
   listChats: () => ipcRenderer.invoke('chats:list'),
@@ -58,6 +69,13 @@ contextBridge.exposeInMainWorld('o', {
     ipcRenderer.on('notify:perms', handler);
     return () => ipcRenderer.removeListener('notify:perms', handler);
   },
+  onNotifyTasks: (cb) => {
+    const handler = (_e, list) => cb(list);
+    ipcRenderer.on('notify:tasks', handler);
+    return () => ipcRenderer.removeListener('notify:tasks', handler);
+  },
+  openTaskFromNotify: (id) => ipcRenderer.send('notify:openTask', String(id || '')),
+  dismissTaskCard: (id) => ipcRenderer.send('notify:dismissTask', String(id || '')),
   notifyResize: (h) => ipcRenderer.send('notify:resize', Number(h) || 0),
   showPanelFromNotify: () => ipcRenderer.send('notify:openChat'),
   getState: () => ipcRenderer.invoke('app:state'),

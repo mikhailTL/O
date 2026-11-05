@@ -17,10 +17,8 @@
       </div>
     </div>
     <div class="spacer"></div>
-    <button id="btn-chats" class="icon" title="Chats" aria-label="Chats"><svg viewBox="0 0 20 20"><rect x="3" y="3.5" width="14" height="13" rx="2.5"/><path d="M8 3.5v13"/></svg></button>
-    <button id="btn-new" class="icon" title="New chat" aria-label="New chat"><svg viewBox="0 0 20 20"><path d="M10.5 3.5H5A1.5 1.5 0 0 0 3.5 5v10A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5"/><path d="M14.6 2.9a1.6 1.6 0 0 1 2.3 2.3L10 12.1l-3 .8.8-3z"/></svg></button>
-    <button id="btn-actionlog" class="icon" title="Action log" aria-label="Action log"><svg viewBox="0 0 20 20"><path d="M7 5.5h9.5M7 10h9.5M7 14.5h9.5"/><path d="M3.5 5.5h.01M3.5 10h.01M3.5 14.5h.01"/></svg><span id="actionlog-badge" class="badge" hidden></span></button>
-    <button id="btn-runs" class="icon" title="Runs" aria-label="Runs"><svg viewBox="0 0 20 20"><path d="M4 5.5h4M4 10h4M4 14.5h4"/><path d="M11 5.5l2 2 4-4"/><path d="M11 10h6M11 14.5h6"/></svg></button>
+    <button id="btn-new" class="icon" title="New task" aria-label="New task"><svg viewBox="0 0 20 20"><path d="M10.5 3.5H5A1.5 1.5 0 0 0 3.5 5v10A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5"/><path d="M14.6 2.9a1.6 1.6 0 0 1 2.3 2.3L10 12.1l-3 .8.8-3z"/></svg></button>
+    <button id="btn-runs" class="icon" title="Tasks" aria-label="Tasks"><svg viewBox="0 0 20 20"><path d="M4 5.5h4M4 10h4M4 14.5h4"/><path d="M11 5.5l2 2 4-4"/><path d="M11 10h6M11 14.5h6"/></svg><span id="tasks-badge" class="badge" hidden></span></button>
     <button id="btn-settings" class="icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg></button>
     <button id="btn-close" class="icon" title="Hide (O keeps working)" aria-label="Hide"><svg viewBox="0 0 20 20"><path d="M5 10h10"/></svg></button>
     <button id="btn-quit" class="icon quit" title="Turn off O" aria-label="Turn off O"><svg viewBox="0 0 20 20"><path d="M10 3v7"/><path d="M6.2 5.6a6 6 0 1 0 7.6 0"/></svg></button>
@@ -49,6 +47,11 @@
       </select>
     </label>
     <h3>Working</h3>
+    <label class="row">
+      <span>Tasks at once</span>
+      <input type="number" id="set-maxParallelTasks" min="1" max="8" step="1" placeholder="3">
+    </label>
+    <p class="hint">Each task runs on its own, in the background. More than this wait their turn.</p>
     <label class="row">
       <span>Permissions</span>
       <select id="set-permissionMode">
@@ -146,10 +149,6 @@
       <span>Engine Python (optional)</span>
       <input type="text" id="set-enginePython" spellcheck="false" placeholder="auto">
     </label>
-    <label class="row check">
-      <input type="checkbox" id="set-logUnreadBadge">
-      <span>Show a badge on the action log when O did things while I was away</span>
-    </label>
     <h3>API proxy</h3>
     <div class="row update-row">
       <span id="proxy-status">Not checked yet</span>
@@ -209,7 +208,7 @@
       <input type="checkbox" id="set-swarmEnabled">
       <span>Let a small crew split the work (audit context, compile the plan, inspect the result)</span>
     </label>
-    <p class="hint">Without Docker or an E2B key, risky steps fall back to the sandbox folder and I say so in the action log. The key stays on this computer and never appears in the log.</p>
+    <p class="hint">Without Docker or an E2B key, risky steps fall back to the sandbox folder and I say so in the activity record. The key stays on this computer and never appears in it.</p>
     <label class="row">
       <span>Computer-use plan candidates</span>
       <input type="number" id="set-cuCandidates" min="1" max="8" step="1" placeholder="1">
@@ -265,6 +264,18 @@
       <span>Allow sandboxed previews inside those cards</span>
     </label>
     <p class="hint">Cards are built from checked, declarative frames, never from raw HTML. Previews run in a locked iframe that can only talk to me through messages, and every message is logged.</p>
+    <h3>Scheduled tasks</h3>
+    <div id="settings-schedules" class="mini-list" aria-live="polite"></div>
+    <p class="hint">Ask in a sentence, for example “Every weekday at 8, summarize what’s new in my inbox”.</p>
+    <h3>O has learned</h3>
+    <div id="learned-suggestions" class="mini-list"></div>
+    <div id="learned-list" class="mini-list" aria-live="polite"></div>
+    <p class="hint">O picks these up from how you use it and from your corrections, and applies them on its own. Remove anything that’s wrong.</p>
+    <h3>Privacy &amp; safety</h3>
+    <div class="row update-row">
+      <span>A private, tamper-evident record of every step O takes stays on this computer.</span>
+      <button id="btn-view-record" type="button">View activity record</button>
+    </div>
     <h3>Opening O</h3>
     <label class="row check">
       <input type="checkbox" id="set-openAtLogin">
@@ -309,7 +320,7 @@
 
   <section id="actionlog" hidden>
     <div class="al-top">
-      <div class="sheet-head"><h2>Action log</h2><button id="btn-actionlog-close" class="icon" title="Close action log" aria-label="Close action log"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
+      <div class="sheet-head"><h2>Activity record</h2><button id="btn-actionlog-close" class="icon" title="Close activity record" aria-label="Close activity record"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
       <p id="actionlog-sub" class="sheet-sub">Nothing new since you last looked</p>
       <div id="actionlog-filters" class="filters" role="group" aria-label="Filter actions">
         <button type="button" class="chip filter" data-filter="all" aria-pressed="true">All</button>
@@ -317,6 +328,7 @@
         <button type="button" class="chip filter" data-filter="engine" aria-pressed="false">Engine</button>
         <button type="button" class="chip filter" data-filter="policy" aria-pressed="false">Policy</button>
         <button type="button" class="chip filter" data-filter="errors" aria-pressed="false">Errors</button>
+        <button type="button" class="chip" id="actionlog-task" hidden>All tasks</button>
       </div>
     </div>
     <div id="actionlog-list" aria-live="polite"></div>
@@ -329,25 +341,45 @@
 
   <section id="runs" hidden>
     <div class="al-top">
-      <div class="sheet-head"><h2>Runs</h2><button id="btn-runs-close" class="icon" title="Close runs" aria-label="Close runs"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
-      <p id="runs-sub" class="sheet-sub">Every job I run shows up here, newest first</p>
+      <div class="sheet-head"><h2>Tasks</h2><button id="btn-runs-close" class="icon" title="Close tasks" aria-label="Close tasks"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
+      <p id="tasks-sub" class="sheet-sub">Everything O is doing, waiting to do, or will do later</p>
     </div>
+    <h3 class="sheet-h">Now</h3>
+    <div id="tasks-now" class="task-list" role="list" aria-live="polite"></div>
+    <h3 class="sheet-h">Scheduled</h3>
+    <div id="tasks-scheduled" class="task-list" role="list"></div>
+    <h3 class="sheet-h">Recent</h3>
+    <div id="tasks-recent" class="task-list" role="list"></div>
+    <button id="btn-all-tasks" type="button" class="link-btn">All past tasks</button>
+    <h3 class="sheet-h">Runs</h3>
+    <p id="runs-sub" class="sheet-sub">Plans and steps of engine jobs, newest first</p>
     <div id="runs-list" aria-live="polite"></div>
   </section>
 
   <div id="scrim" hidden></div>
-  <aside id="drawer" hidden aria-label="Chats">
+  <aside id="drawer" hidden aria-label="Past tasks">
     <div class="drawer-head">
-      <h2>Chats</h2>
-      <button id="btn-drawer-close" class="icon" title="Close" aria-label="Close chats"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+      <h2>Past tasks</h2>
+      <button id="btn-drawer-close" class="icon" title="Close" aria-label="Close past tasks"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
     </div>
-    <button id="btn-drawer-new" class="drawer-new"><svg viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>New chat</button>
+    <button id="btn-drawer-new" class="drawer-new"><svg viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>New task</button>
     <div id="chat-list"></div>
     <div class="drawer-foot">
       <span id="chat-count"></span>
-      <button id="btn-delete-all" class="drawer-danger">Delete all chats</button>
+      <button id="btn-delete-all" class="drawer-danger">Delete all past tasks</button>
     </div>
   </aside>
+
+  <div id="taskbar" hidden>
+    <span class="tb-dot" aria-hidden="true"></span>
+    <div class="tb-text"><span id="taskbar-title"></span><span id="taskbar-status"></span></div>
+    <button id="btn-task-menu" class="icon" type="button" title="More" aria-label="Task options" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 20 20"><path d="M5 10h.01M10 10h.01M15 10h.01" stroke-width="2.6"/></svg></button>
+    <div id="task-menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-act="record">What did O do?</button>
+      <button type="button" role="menuitem" data-act="redo">Redo this task</button>
+      <button type="button" role="menuitem" data-act="stop">Stop</button>
+    </div>
+  </div>
 
   <main id="log" aria-live="polite">
     <div id="hero">
@@ -370,20 +402,21 @@
         <ellipse cx="100" cy="74" rx="18" ry="11" transform="rotate(-32 100 74)" fill="url(#hero-spec)" stroke="none"/>
       </svg>
       <h1 id="hero-greeting">What can I do for you?</h1>
-      <p class="hero-sub">I work inside your own tabs and on your computer, without touching your mouse or keyboard. Everything I do is written in the action log.</p>
+      <p class="hero-sub">Hand me anything: research, shopping, forms, files, apps. Several at once. I work in the background and pick up how you like things.</p>
       <div class="examples">
-        <button class="example">Find the 3 top stories on Hacker News and summarize them</button>
-        <button class="example">What's taking up the most space in my Downloads folder?</button>
-        <button class="example">Set up this project's dev environment and start it</button>
-        <button class="example">Why did my last npm install fail?</button>
+        <button class="example">Find me the 3 best-rated standing desks under $400 and compare them</button>
+        <button class="example">Every weekday at 8, summarize what's new in my inbox</button>
+        <button class="example">Fill out this form with my details from last time</button>
+        <button class="example">Rename all photos in Downloads by the date they were taken</button>
+        <button class="example">Plan a 3-day trip to Austin under $800</button>
       </div>
     </div>
   </main>
 
   <footer id="composer">
-    <div id="queue-line" hidden></div>
+    <div id="task-strip" role="list" aria-label="Running tasks" hidden></div>
     <div class="inputwrap">
-      <textarea id="prompt" rows="1" placeholder="Ask O anything…" aria-label="Message O"></textarea>
+      <textarea id="prompt" rows="1" placeholder="Give O a task…" aria-label="Give O a task"></textarea>
       <div class="composer-row">
         <button id="mode-chip" class="chip" type="button" title="Where O browses (click for settings)"><span class="dot"></span><span id="mode-label">My browser</span></button>
         <div class="spacer"></div>
@@ -391,7 +424,6 @@
         <button id="btn-send" title="Send (Enter)" aria-label="Send" disabled><svg viewBox="0 0 20 20"><path d="M10 15.5V4.5M5 9.5l5-5 5 5"/></svg></button>
       </div>
     </div>
-    <div class="disclaimer">Everything I do is written in the action log. I never make payments.</div>
   </footer>
 
   <script src="genui.js"></script>

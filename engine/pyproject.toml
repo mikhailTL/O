@@ -17,6 +17,10 @@ dependencies = [
   "openai>=1.30",
   "playwright>=1.44",
   "pillow>=10",
+  "mcp>=2.0",
+  "e2b>=1.0",
+  "crewai>=0.100",
+  "browser-use>=0.1.40",
 ]
 
 [project.optional-dependencies]

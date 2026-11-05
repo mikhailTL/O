@@ -1,11 +1,14 @@
 # O AI — architecture
 
-O is opia's desktop shell (a small always-there window, chat panel, non-focus-stealing cards, Claude Code CLI as the brain,
-O Link into the user's own browser tabs) with a Python provisioning engine underneath and one action log
-that records everything either side does. This document describes the components, the merged dataflow,
-the two decisions that reconcile the source specs, the action log, its threat model, isolation, and the
-hard requirements. File paths are given as the build plan names them. No claim of completeness is made
-about the code.
+O is a desktop agent that does almost any task on the user's computer and on the web: research, comparisons,
+forms, files, documents, email and calendar through connected apps, desktop apps and code. Tasks run in parallel
+in the background, recurring ones run on a schedule, and O learns from how the user works. It acts through the
+user's own browser tabs (O Link) and each desktop app's accessibility tree, never the user's mouse or keyboard,
+and never makes payments. Underneath, opia's desktop shell runs Claude Code CLI (the user's Claude subscription)
+as the brain and a Python engine as the hands; one action log records what either side does. This document
+describes the components, the merged dataflow, the two decisions that reconcile the source specs, the action
+log, its threat model, isolation, and the hard requirements. File paths are given as the build plan names them.
+No claim of completeness is made about the code.
 
 ## 1. Components
 

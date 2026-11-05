@@ -112,9 +112,42 @@ class ChatStore {
     this.save();
   }
 
+  // ---------- tasks: every task is a chat with the task's id (main/tasks.js) ----------
+  /** The chat for a task, created (without switching the current chat) if it does not exist yet. */
+  ensureTask(id, title) {
+    let chat = this.get(id);
+    if (chat) return chat;
+    const now = Date.now();
+    chat = { id: String(id), title: title ? clip(String(title).replace(/\s+/g, ' ').trim(), 80) : 'New task', titled: !!title, sessionId: null, createdAt: now, updatedAt: now, messages: [] };
+    this.data.chats.push(chat);
+    if (this.data.chats.length > MAX_CHATS) {
+      this.data.chats.sort((a, b) => b.updatedAt - a.updatedAt);
+      this.data.chats.length = MAX_CHATS;
+    }
+    this.save();
+    return chat;
+  }
+
+  addUserTo(id, text) {
+    const chat = this.ensureTask(id);
+    this._push({ role: 'user', text }, chat);
+    if (!chat.titled && chat.messages.filter((m) => m.role === 'user').length === 1) chat.title = titleFrom(text);
+  }
+
+  /** Record an agent event into the task's own chat (ev.taskId), else into the current chat. */
+  recordTo(id, ev) { this.record(ev, id ? this.get(id) : null); }
+
+  setSessionFor(id, sessionId) {
+    const chat = this.get(id);
+    if (!chat || !sessionId) return;
+    chat.sessionId = sessionId;
+    chat.sessions = [...new Set([...(chat.sessions || []), sessionId])];
+    this.save();
+  }
+
   // ---------- recording what happens in the current chat ----------
-  _push(msg) {
-    const chat = this.current() || this.create();
+  _push(msg, target) {
+    const chat = target || this.current() || this.create();
     msg.at = Date.now();
     if (msg.text != null) msg.text = clip(msg.text, MAX_TEXT);
     chat.messages.push(msg);
@@ -130,32 +163,33 @@ class ChatStore {
   }
 
   /** Record an agent event (the same events the panel shows live). */
-  record(ev) {
+  record(ev, target) {
     if (!ev || !ev.type) return;
-    const chat = this.current();
+    const chat = target || this.current();
+    const push = (m) => this._push(m, chat);
     const last = chat && chat.messages[chat.messages.length - 1];
     switch (ev.type) {
       case 'assistant':
         if (ev.delta && last && last.role === 'assistant' && last.open) { last.text = clip(last.text + (ev.text || ''), MAX_TEXT); this.save(); }
-        else if (ev.text) this._push({ role: 'assistant', text: ev.text, open: !!ev.delta });
+        else if (ev.text) push({ role: 'assistant', text: ev.text, open: !!ev.delta });
         break;
       case 'tool':
         if (last && last.role === 'steps') { last.steps.push({ name: ev.name, summary: clip(ev.summary || ev.name, 200) }); this.save(); }
-        else this._push({ role: 'steps', steps: [{ name: ev.name, summary: clip(ev.summary || ev.name, 200) }] });
+        else push({ role: 'steps', steps: [{ name: ev.name, summary: clip(ev.summary || ev.name, 200) }] });
         break;
       case 'permission-resolved':
-        if (ev.summary || ev.toolName) this._push({ role: 'meta', text: `${ev.allow ? '✓ Allowed' : '✕ Denied'}: ${ev.toolName || ''} ${String(ev.summary || '').split('\n')[0]}`.trim() });
+        if (ev.summary || ev.toolName) push({ role: 'meta', text: `${ev.allow ? '✓ Allowed' : '✕ Denied'}: ${ev.toolName || ''} ${String(ev.summary || '').split('\n')[0]}`.trim() });
         break;
       case 'done': {
         if (last && last.role === 'assistant') delete last.open;
-        if (ev.stopped) { this._push({ role: 'meta', text: '■ stopped' }); break; }
+        if (ev.stopped || ev.result === '(stopped)') { push({ role: 'meta', text: '■ stopped' }); break; }
         const bits = [];
         if (ev.durationMs) bits.push(`${(ev.durationMs / 1000).toFixed(1)}s`);
-        this._push({ role: 'meta', text: `✓ done${bits.length ? ' · ' + bits.join(' · ') : ''}` });
+        push({ role: 'meta', text: `✓ done${bits.length ? ' · ' + bits.join(' · ') : ''}` });
         break;
       }
       case 'error':
-        this._push({ role: 'error', text: ev.message || 'Something went wrong' });
+        push({ role: 'error', text: ev.message || 'Something went wrong' });
         break;
       default:
         break;

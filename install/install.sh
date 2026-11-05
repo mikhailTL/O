@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
 # O AI installer — Linux and macOS.
 # Idempotent: safe to run again at any time. Each step prints "✓ name" or "✗ name — what to do".
-# Exit code = number of failed required steps. vLLM on macOS (or Linux without an NVIDIA GPU)
-# counts as failed-but-continue; the alternative is printed. Phase 2 packages and Docker are optional
-# and never count as failures.
-# Set O_INSTALL_DRY=1 to print the commands instead of running them.
+# Exit code = number of failed required steps. Every step is required except the Docker presence check.
+# Required engine packages: mcp, e2b, crewai, browser-use (in engine/pyproject.toml) and open-interpreter
+# (its own step: its pins conflict with browser-use, see step_open_interpreter).
+# vLLM: installed locally on Linux with an NVIDIA GPU; elsewhere the installer asks for the URL of a
+# remote or Docker vLLM server and writes it to O's settings (vllmUrl).
+#
+# Usage: bash install/install.sh [--dry-run] [--vllm-url URL]
+#   --dry-run       print the commands instead of running them (same as O_INSTALL_DRY=1)
+#   --vllm-url URL  OpenAI-compatible vLLM endpoint, e.g. http://gpu-box:8000/v1; no prompt is shown
 set -u
+
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+
+DRY="${O_INSTALL_DRY:-0}"
+VLLM_URL_ARG=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    --vllm-url) shift; VLLM_URL_ARG="${1:-}"; [ -n "$VLLM_URL_ARG" ] || { echo "✗ --vllm-url needs a URL"; exit 1; } ;;
+    --vllm-url=*) VLLM_URL_ARG="${1#--vllm-url=}" ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "✗ unknown option '$1'"; usage; exit 1 ;;
+  esac
+  shift
+done
 
 # ---------- locate repo root (works from repo root or from install/) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +39,6 @@ else
 fi
 cd "$ROOT" || exit 1
 
-DRY="${O_INSTALL_DRY:-0}"
 OS="$(uname -s)"
 VENV="$ROOT/engine/.venv"
 VENV_PY="$VENV/bin/python"
@@ -176,8 +195,79 @@ step_playwright() {
   fi
 }
 
-# vLLM: Linux with an NVIDIA GPU only. Elsewhere, point O at a remote vLLM.
-VLLM_ALT="run vLLM on a Linux box with CUDA or in Docker 'vllm/vllm-openai' and set Settings → Engine → vLLM URL"
+# O's settings file (Electron userData of app "O AI"); the installer only merges keys into it.
+settings_file() {
+  if [ "$OS" = "Darwin" ]; then
+    echo "$HOME/Library/Application Support/O AI/o-settings.json"
+  else
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/O AI/o-settings.json"
+  fi
+}
+
+# set_setting <key> <value> : merges one string key into the settings JSON, keeping everything else
+set_setting() {
+  local file py
+  file="$(settings_file)"
+  if [ "$DRY" = "1" ]; then
+    echo "  [dry] set $1=$2 in $file"
+    return 0
+  fi
+  py="${PYTHON:-python3}"
+  "$py" - "$file" "$1" "$2" <<'EOF'
+import json, os, sys
+path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    pass
+data[key] = value
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, path)
+EOF
+}
+
+# vLLM: local install on Linux with an NVIDIA GPU. Elsewhere: a remote or Docker vLLM URL is required.
+VLLM_DOCKER="docker run --gpus all -p 8000:8000 vllm/vllm-openai --model meta-llama/Meta-Llama-3-8B-Instruct (on a machine with an NVIDIA GPU)"
+step_vllm_url() {
+  local url="$VLLM_URL_ARG"
+  if [ -z "$url" ] && [ "$DRY" != "1" ] && [ -t 0 ]; then
+    echo "  vLLM cannot run locally here. Start one elsewhere, e.g.: $VLLM_DOCKER"
+    printf "  vLLM URL (OpenAI-compatible, e.g. http://gpu-box:8000/v1): "
+    read -r url
+  fi
+  if [ -z "$url" ]; then
+    if [ "$DRY" = "1" ]; then
+      echo "  [dry] prompt for vLLM URL (or pass --vllm-url URL), then save it as vllmUrl"
+      ok "vllm (remote URL)"
+      return
+    fi
+    fail "vllm" "no vLLM URL given; start one with '$VLLM_DOCKER' and run this script again with --vllm-url http://<host>:8000/v1"
+    return
+  fi
+  case "$url" in
+    http://*|https://*) ;;
+    *) fail "vllm" "'$url' is not an http(s) URL; pass e.g. --vllm-url http://gpu-box:8000/v1"; return ;;
+  esac
+  url="${url%/}"
+  if ! set_setting vllmUrl "$url"; then
+    fail "vllm" "could not write vllmUrl to $(settings_file); set Settings → Engine → vLLM URL to $url by hand"
+    return
+  fi
+  if [ "$DRY" = "1" ]; then
+    echo "  [dry] curl -fsS $url/models"
+    ok "vllm (remote URL $url)"
+  elif curl -fsS --max-time 10 "$url/models" >/dev/null 2>&1; then
+    ok "vllm (remote URL $url saved as vllmUrl, reachable)"
+  else
+    fail "vllm" "saved vllmUrl=$url but $url/models did not answer; start the server ($VLLM_DOCKER) and run this script again"
+  fi
+}
+
 step_vllm() {
   if [ "$OS" = "Linux" ] && command -v nvidia-smi >/dev/null 2>&1; then
     if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
@@ -185,14 +275,14 @@ step_vllm() {
       return
     fi
     if run "$VENV_PY" -m pip install vllm; then
-      ok "vllm"
+      ok "vllm (local; start it with '$VENV_PY -m vllm.entrypoints.openai.api_server --model <vllmModel> --port 8000')"
     else
-      fail "vllm" "run '$VENV_PY -m pip install vllm' and read its errors, or $VLLM_ALT"
+      fail "vllm" "run '$VENV_PY -m pip install vllm' and read its errors, or run this script with --vllm-url pointing at a remote vLLM"
     fi
-  elif [ "$OS" = "Linux" ]; then
-    fail "vllm" "no NVIDIA GPU (nvidia-smi) found on this Linux machine; $VLLM_ALT"
+    [ -n "$VLLM_URL_ARG" ] && step_vllm_url
   else
-    fail "vllm" "not supported locally on $OS; $VLLM_ALT"
+    [ "$OS" = "Linux" ] && echo "  no NVIDIA GPU (nvidia-smi) found; vLLM must run on another machine or in Docker on a GPU host"
+    step_vllm_url
   fi
 }
 
@@ -242,30 +332,51 @@ step_xvfb() {
   fi
 }
 
-# Phase 2 packages: MCP routing, Open Interpreter runner, E2B containment, crewAI swarm, browser-use.
-# Each is optional; the engine falls back without it. One pip call per package, none fatal.
-PHASE2_PKGS="mcp open-interpreter e2b crewai browser-use"
-step_phase2_packages() {
+# Required engine packages: installed by 'pip install -e engine' (engine/pyproject.toml); verified by import.
+# mcp = MCP tool routing, e2b = E2B containment, crewai = three-role swarm, browser_use = headless web agent.
+REQUIRED_MODULES="mcp:mcp e2b:e2b crewai:crewai browser_use:browser-use"
+step_required_packages() {
   if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
-    fail "phase 2 packages" "skipped: engine venv missing"
+    fail "engine packages" "skipped: engine venv missing"
     return
   fi
-  local pkg missing=()
-  for pkg in $PHASE2_PKGS; do
+  local pair mod pkg
+  for pair in $REQUIRED_MODULES; do
+    mod="${pair%%:*}"; pkg="${pair#*:}"
     if [ "$DRY" = "1" ]; then
-      echo "  [dry] $VENV_PY -m pip install $pkg"
-      ok "phase 2: $pkg"
-    elif "$VENV_PY" -m pip install "$pkg" >/dev/null 2>&1; then
-      ok "phase 2: $pkg"
+      echo "  [dry] $VENV_PY -c 'import $mod'"
+      ok "$pkg"
+    elif "$VENV_PY" -c "import $mod" >/dev/null 2>&1; then
+      ok "$pkg"
     else
-      echo "  ✗ phase 2: $pkg — optional; run '$VENV_PY -m pip install $pkg' later if you want it"
-      missing+=("$pkg")
+      fail "$pkg" "run '$VENV_PY -m pip install -e $ROOT/engine' and read its errors (then '$VENV_PY -c \"import $mod\"')"
     fi
   done
-  if [ "${#missing[@]}" -eq 0 ]; then
-    ok "phase 2 packages"
+}
+
+# open-interpreter: required, installed on its own. Its release pins anthropic<0.38 and psutil<6, while
+# browser-use needs psutil>=7 and a newer anthropic, so pip cannot resolve both. It is installed with
+# --no-deps plus its runtime dependencies unpinned; setuptools<81 keeps pkg_resources, which it imports.
+OI_SPEC="open-interpreter>=0.4.3,<0.5"
+OI_DEPS="astor git-python google-generativeai html2image html2text inquirer ipykernel jupyter-client litellm matplotlib nltk platformdirs pyperclip pyyaml selenium send2trash shortuuid six tiktoken tokentrim toml webdriver-manager wget yaspin setuptools<81"
+step_open_interpreter() {
+  if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
+    fail "open-interpreter" "skipped: engine venv missing"
+    return
+  fi
+  local fix="run '$VENV_PY -m pip install --no-deps \"$OI_SPEC\"' and '$VENV_PY -m pip install $OI_DEPS' and read their errors"
+  # shellcheck disable=SC2086
+  if run "$VENV_PY" -m pip install --no-deps "$OI_SPEC" && run "$VENV_PY" -m pip install $OI_DEPS; then
+    if [ "$DRY" = "1" ]; then
+      echo "  [dry] $VENV_PY -c 'from interpreter import interpreter'"
+      ok "open-interpreter"
+    elif "$VENV_PY" -W ignore -c "from interpreter import interpreter" >/dev/null 2>&1; then
+      ok "open-interpreter"
+    else
+      fail "open-interpreter" "installed but 'from interpreter import interpreter' fails; $fix"
+    fi
   else
-    ok "phase 2 packages (${#missing[@]} optional package(s) not installed: ${missing[*]})"
+    fail "open-interpreter" "$fix"
   fi
 }
 
@@ -310,14 +421,15 @@ step_playwright
 step_vllm
 step_screenpipe
 step_xvfb
-step_phase2_packages
+step_required_packages
+step_open_interpreter
 step_docker
 step_engine_check
 
 echo
 echo "Set Settings → Engine → Python to: $VENV_PY"
 echo "  (copy exactly: $VENV_PY)"
-echo "If Claude Code was just installed, run 'claude' once in a terminal to log in."
+echo "If Claude Code was just installed, run 'claude' once in a terminal to log in (your Claude subscription powers O)."
 echo
 
 if [ "${#FAILED[@]}" -eq 0 ]; then

@@ -639,3 +639,87 @@ def test_computer_interfaces_route_empty_store(settings, tmp_path):
     app = create_app(settings, deps_factory=lambda s: deps)
     with TestClient(app) as client:
         assert client.get("/computer/interfaces", headers=_h()).json() == {"apps": []}
+
+
+# ------------------------------------------------------------------ learning routes + adaptation hook
+
+
+def _learn_log_notes(settings):
+    path = settings.data_dir_path / "engine-actions.jsonl"
+    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [r for r in rows if r["kind"] == "note" and r["summary"].startswith("learning:")]
+
+
+def test_learn_routes_require_token(client):
+    assert client.get("/learn/profile").status_code == 401
+    assert client.post("/learn/observe", json={"source": "task", "text": "x"}).status_code == 401
+    assert client.post("/learn/feedback", json={"forget": "x"}, headers={"x-o-token": "wrong"}).status_code == 401
+
+
+def test_learn_observe_profile_feedback_round_trip(client, settings):
+    r = client.post("/learn/observe", json={"source": "correction", "text": "Always name files YYYY-MM-DD, mail me at a@b.com"},
+                    headers=_h())
+    assert r.status_code == 200 and r.json()["ok"] is True and r.json()["id"].startswith("obs-")
+    for city in ("NYC", "Boston"):
+        assert client.post("/learn/observe", json={"source": "task", "text": f"book a flight to {city} under $300",
+                                                   "app": "Chrome", "outcome": "ok"}, headers=_h()).status_code == 200
+    prof = client.get("/learn/profile", headers=_h()).json()
+    assert set(prof) == {"preferences", "habits", "app_skills", "suggestions"}
+    assert len(prof["preferences"]) == 2 and prof["app_skills"][0]["app"] == "Chrome"
+    item = prof["preferences"][0]
+    assert set(item) >= {"id", "kind", "text", "evidence", "confidence", "last_seen"}
+    flight = client.get("/learn/profile", params={"topic": "FLIGHT"}, headers=_h()).json()
+    assert [p["text"] for p in flight["preferences"]] == ["prefers under $300 for book flight tasks"]
+    assert flight["app_skills"] == []
+    pid = flight["preferences"][0]["id"]
+    before = flight["preferences"][0]["confidence"]
+    c = client.post("/learn/feedback", json={"confirm": pid}, headers=_h()).json()
+    assert c["ok"] is True and c["item"]["confidence"] > before
+    f = client.post("/learn/feedback", json={"forget": pid}, headers=_h()).json()
+    assert f["ok"] is True and f["item"] is None
+    assert pid not in {p["id"] for p in client.get("/learn/profile", headers=_h()).json()["preferences"]}
+    assert client.post("/learn/feedback", json={"forget": pid}, headers=_h()).status_code == 404
+    assert client.post("/learn/feedback", json={}, headers=_h()).status_code == 422
+    assert client.post("/learn/observe", json={"source": "bogus", "text": "x"}, headers=_h()).status_code == 422
+    notes = _learn_log_notes(settings)
+    assert len(notes) == 5  # 3 observe + confirm + forget
+    assert all(len(n["summary"]) < 140 and "a@b.com" not in json.dumps(n) for n in notes)
+    raw = (settings.data_dir_path / "learning" / "observations.jsonl").read_text()
+    assert "a@b.com" not in raw
+
+
+def test_learn_disabled_is_503(settings):
+    app = create_app(settings.model_copy(update={"learning": False}), deps_factory=lambda s: StubDeps(_ok_run_cu_job))
+    with TestClient(app) as c:
+        assert c.get("/learn/profile", headers=_h()).status_code == 503
+
+
+def test_cu_job_outcome_is_learned(settings):
+    from o_engine.learning import LearningStore
+
+    deps = StubDeps(_ok_run_cu_job)
+    deps.learning = LearningStore(settings.data_dir_path / "learning")
+    app = create_app(settings, deps_factory=lambda s: deps)
+    with TestClient(app) as c:
+        job_id = c.post("/computer/run", json={"goal": "Put 42 in A1", "app": "libreoffice-calc"}, headers=_h()).json()["job_id"]
+        deadline = time.time() + 5
+        while time.time() < deadline and not c.get(f"/jobs/{job_id}", headers=_h()).json().get("done"):
+            time.sleep(0.02)
+        time.sleep(0.05)
+        skills = c.get("/learn/profile", headers=_h()).json()["app_skills"]
+    assert skills and skills[0]["stats"]["tasks"] == 1 and skills[0]["evidence"]
+
+
+def test_cu_planner_notes_carry_learned_profile(settings, monkeypatch):
+    from o_engine.learning import LearnedNotes, LearningStore
+
+    deps = _wave2_deps(settings, monkeypatch)
+    assert isinstance(deps.learning, LearningStore)
+    assert deps.learning.dir == settings.data_dir_path / "learning"
+    deps.learning.observe("correction", "Always save spreadsheets as xlsx")
+    cu = deps.cu_deps
+    assert isinstance(cu.notes, LearnedNotes) and cu.planner.notes is cu.notes
+    text = cu.planner._notes_for("libreoffice-calc")
+    assert "Always save spreadsheets as xlsx" in text and len(text.splitlines()) <= 15
+    off = _wave2_deps(settings, monkeypatch, learning=False)
+    assert off.learning is None and not isinstance(off.cu_deps.notes, LearnedNotes)

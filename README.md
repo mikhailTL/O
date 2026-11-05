@@ -1,41 +1,46 @@
-# O AI
+# O
 
-A small desktop app with a chat panel that does things on your computer. O works **inside your own Edge or Chrome tabs** through **O Link**, its own small extension: it reads and clicks in the page directly and never touches your mouse, keyboard or screen. Its brain is the **Claude Code CLI** (`claude -p`) with your own Claude login; no API key. Underneath sits a Python **engine** that sets up dev environments, runs commands in a **sandbox**, replays saved scripts from a **script cache** and repairs failures by bounded **remediation**. Everything either side does is written to one append-only **action log**.
+O is a desktop agent that does almost any task on your computer and on the web. Many tasks run at once in the background, recurring ones run on a schedule, and O gets on with the work instead of asking questions. Your Claude Code subscription powers it.
 
 **Credit:** the design and the desktop shell are based on [opia](https://github.com/samuelsortland-cmyk/opia) (MIT) by samuelsortland-cmyk.
 
-## The action log
+## What it does
 
-Security and safety in O come from recording, not from asking. Every entry has a `kind`:
+- **Research:** "Find what changed in the new tenancy rules and summarize it in a page."
+- **Comparisons:** "Compare these four laptops on battery, weight and price in a table."
+- **Forms:** "Fill in this application with the details from my CV."
+- **Files:** "Rename the photos in Downloads by date and move them into one folder per month."
+- **Documents:** "Turn these notes into a two-page report."
+- **Email and calendar,** through the apps you connect: "Draft replies to the unread messages from the school and put the parents' evening in my calendar."
+- **Desktop apps:** "Open the budget sheet, add this month's column and save a copy as CSV."
+- **Code:** "Set up this repo and get the tests passing."
+- **Recurring:** "Every Monday at 8, collect the week's deadlines from my email."
 
-| kind | What it records |
-|---|---|
-| `task` | a task you gave O started or finished |
-| `tool` / `result` | every tool call Claude Code makes, and its result status (`is_error`) |
-| `policy` | each permission decision (allowed, denied, timed out) and the mode it was made under |
-| `graph` | engine graph transitions (`context → validate → …`) |
-| `cache` | script cache lookups, hits and stores |
-| `remediate` | each remediation attempt and the patch it applied |
-| `verify` | headless port/HTTP checks after a provision |
-| `settings` | any settings change |
-| `note` | one-line explanations the agent writes (`log_note`) |
+## Why it's different
 
-- **Files:** app side `<userData>/o-actions.jsonl` plus a text twin `o-actions.log`; engine side `<dataDir>/engine-actions.jsonl` plus `.log`. The engine also posts each entry to the app, which re-chains it into the app file.
-- **Hash chain:** each entry carries `prev` (sha256 of the previous entry) and `hash` (sha256 of itself). Append-only. **Verify chain** in the log sheet recomputes every link and reports ✓ intact or ✗ broken at #n.
-- **Reading it:** click the list icon in the panel header (it carries an unread badge) or use **tray → Open action log**. The pet says how many actions happened since you last looked; the sheet shows the same count as its subtitle, with filter chips (All · Tools · Engine · Policy · Errors) and **Open log file**.
-- **Away notification:** "O did N things while you were away", only when the panel is closed and something was logged since you last read it (debounced 30 s). Turn off with `logUnreadBadge`.
+- **Many tasks at once.** Each task runs in the background next to the others. Close the panel and they keep going.
+- **Works in desktop apps without taking over your machine.** O acts through your browser tabs and each app's accessibility interface, not your mouse and keyboard. You keep using your computer while it works.
+- **Learns a task once, then replays it.** A solved task is saved; the next time, O replays the saved steps instantly, with no thinking time.
+- **Learns how you work.** O remembers how you like things done, notices routines and offers to schedule them, and gets faster at apps it has used before. You can see and delete what it learned in Settings.
+- **Acts instead of asking.** O starts fast, reads the context it needs from your screen and files, and asks only when it cannot go on.
+- **Safe by design.** It never moves your mouse or types on your keyboard. It never makes payments: card fields, payment pages and checkout buttons are locked while it works. Risky code runs in a disposable sandbox. It keeps a private, tamper-evident record of what it did.
 
-### Permission modes (Settings → Permissions)
+## Install
 
-| Mode | Behaviour |
-|---|---|
-| `log` (default) | Nothing asks. Every tool call and engine step is allowed and recorded. |
-| `ask` | Shell commands, file changes and engine gates show a blocking card (Allow / Deny) that never takes focus. No answer within **60 s** denies it **and destroys the task queue**. |
-| `auto` | No gating, no cards. Still logged. |
+One command, then start O.
 
-Payment blocking in O Link applies in every mode: while O works in a tab, card and bank fields, payment pages and pay / buy / checkout buttons are locked and the page shows "Blocked by O". The guard is unchanged from opia.
+| OS | Install | Start |
+|---|---|---|
+| Linux / macOS | `git clone https://github.com/slithr-in4/O && bash O/install/install.sh` | `cd O && npm start` |
+| Windows (PowerShell) | `git clone https://github.com/slithr-in4/O; powershell -ExecutionPolicy Bypass -File O\install\install.ps1` | double-click **`Start O.bat`** |
 
-## Requirements
+Needs Node.js 18+, Python 3.10+ and a Claude subscription (run `claude` once to sign in). vLLM installs locally on Linux with an NVIDIA GPU; elsewhere the installer asks for a vLLM server URL (`--vllm-url URL` skips the question). O appears bottom-right with a tray icon.
+
+## How it works
+
+O is an Electron app with a chat panel. Its brain is the **Claude Code CLI** (`claude -p`) with your own Claude login; no API key. It works **inside your own Edge or Chrome tabs** through **O Link**, its own small extension, and in desktop apps through their accessibility tree. Underneath sits a Python **engine** that runs commands in a **sandbox**, replays saved scripts from a **script cache**, drives desktop apps, and repairs failures by bounded **remediation**. Everything either side does is written to one append-only **action log**.
+
+### Requirements
 
 Checked at startup and shown green/red in **Settings → Engine → Check requirements**, each with a one-line fix.
 
@@ -49,28 +54,26 @@ Checked at startup and shown green/red in **Settings → Engine → Check requir
 | Playwright + Chromium | headless browser for `verify_port` and O's own invisible browser |
 | Xvfb (Linux only) | isolated display `:99` for engine steps that need a screen |
 
-## Install
+### Installer details
 
-1. Get the code: `git clone https://github.com/slithr-in4/O` (or download and unzip).
-2. Run the installer for your OS. Both are idempotent and end with `o-engine check`.
+Both installers are idempotent and end with `o-engine check`. Every step is required except the Docker check; the exit code is the number of failed steps, and each failure prints its fix. `--dry-run` (`-DryRun` on Windows) prints every step's commands without running them.
 
 | OS | Command | What it does |
 |---|---|---|
-| Linux / macOS | `bash install/install.sh` | Node deps, Python venv + `pip install -e engine`, `playwright install chromium`, vLLM (`pip install vllm` on Linux with an NVIDIA GPU; on macOS or a Linux box without one the step is marked failed, the alternative is printed and the script continues; the final exit code is the number of failed steps), screenpipe (official installer), Xvfb via `apt`/`dnf` on Linux, Phase 2 packages (`mcp open-interpreter e2b crewai browser-use`, each reported on its own, none fatal), Docker presence check (reports only; never installs Docker) |
-| Windows | `powershell -ExecutionPolicy Bypass -File install\install.ps1` | same, minus Xvfb; the vLLM step is always marked failed with the alternative printed, and the script continues; the final exit code is the number of failed steps |
+| Linux / macOS | `bash install/install.sh [--dry-run] [--vllm-url URL]` | Node deps, Claude Code CLI, Python venv + `pip install -e engine` (includes `mcp`, `e2b`, `crewai`, `browser-use`, each then checked by import), `playwright install chromium`, `open-interpreter` (its own step, see `engine/README.md`: its pins conflict with `browser-use`), vLLM (`pip install vllm` on Linux with an NVIDIA GPU; elsewhere the installer asks for the URL of a remote or Docker vLLM, or takes `--vllm-url`, saves it as `vllmUrl` and checks `<url>/models`), screenpipe (official installer), Xvfb via `apt`/`dnf` on Linux, Docker presence check (reports only; never installs Docker) |
+| Windows | `powershell -ExecutionPolicy Bypass -File install\install.ps1 [-DryRun] [-VllmUrl URL]` | same, minus Xvfb; vLLM always uses the remote URL (prompt or `-VllmUrl`) |
 
-3. Start O: `npm start` (Linux/macOS) or double-click **`Start O.bat`** (Windows; installs Node deps on first run). O appears bottom-right with a tray icon.
-4. First run: open Settings → Engine → **Check requirements** and fix anything red. Connect your browser with **Connect my Edge** (one-time, Developer mode → Load unpacked → the `extension` folder).
+First run: open Settings → Engine → **Check requirements** and fix anything red. Connect your browser with **Connect my Edge** (one-time, Developer mode → Load unpacked → the `extension` folder).
 
-## Using O
+### Using O
 
 | Do this | What happens |
 |---|---|
 | Hover O and click **✦** (or **Ctrl/Cmd+Shift+O**, or double-click O) | Opens the panel |
 | **Right-click O** | Menu: Open O, Stop current task, Snooze wandering, Hide O, Turn off O |
-| Type a task, press **Enter** | O thinks, browses, works; progress in the panel and speech bubble; every step goes to the action log |
+| Type a task, press **Enter** | O thinks, browses, works; progress in the panel and speech bubble |
 | Close the panel (✕ / Esc) | O keeps working in the background |
-| Send another task while busy | Queued, runs next |
+| Send another task while busy | Runs alongside the others, up to `maxParallelTasks` (default 3); more wait in a queue |
 | **■ Stop** (or **Ctrl+.**, or tray → Stop current task) | Stops immediately: Claude Code, browser tools and engine jobs are shut down, queue cleared |
 | List icon in the header | Opens the action log sheet; the badge is the unread count |
 | **Chats** (▯) | Chat history; each chat is its own Claude Code session. Rename ✎, delete 🗑, **Delete all chats** at the bottom |
@@ -80,9 +83,27 @@ Checked at startup and shown green/red in **Settings → Engine → Check requir
 
 When a provision request matches a saved script, the status line reads "Déjà vu — replaying a saved script, no thinking needed".
 
-## How the engine works
+### Parallel tasks and schedules
 
-The engine is a FastAPI server on `127.0.0.1` (port chosen by the app, header `x-o-token` required), spawned by the app as `python -m o_engine serve`. Claude Code reaches it through MCP tools `mcp__o__provision`, `cache_lookup`, `diagnose`, `verify_port`, `workspace_context`, `log_note`, for computer use `computer_run`, `computer_replay`, `computer_find`, `computer_tree`, for Phase 2 `mcp_tools`, `mcp_call`, `script_run`, `swarm_run`, `web_run`, and for generative UI `ui_emit`. A provision request is a strict schema: `{label, steps: [{target_directory, command_string | script, timeout_seconds}], verify?, isolated_display, risk?}`; prose, fences and extra keys are rejected.
+- **Task pool:** each task is its own Claude Code process (`main/agent.js`, `main/tasks.js`). Up to `maxParallelTasks` run at once (default 3, 1..8); the rest wait in a queue. Tasks run whether the panel is open or closed. **■ Stop** stops all of them.
+- **Scheduler:** when you ask for something at a time or on repeat ("every Monday at 8", "tomorrow at 9", "every 3 hours"), Claude Code calls `mcp__o__schedule_task` with the prompt and a structured `when`; `mcp__o__list_schedules` and `mcp__o__cancel_schedule` manage them. Each firing starts a normal task in the pool.
+
+### Learning
+
+The engine's `LearningStore` (`engine/o_engine/learning.py`) keeps what O learns from you and from its own results: an append-only `observations.jsonl` and a `profile.json` derived from it.
+
+| Route | What it does |
+|---|---|
+| `GET /learn/profile` | what O has learned (preferences, routines, per-app knowledge), filtered by `topic` or `app`; read by `mcp__o__recall_preferences` |
+| `POST /learn/observe` | records one observation (`source`, `text`, optional `task_id`, `outcome`, `app`, `duration_s`); `mcp__o__remember_preference` sends stated preferences with source `correction`; the profile is re-merged in the background |
+| `POST /learn/feedback` | exactly one of `forget` or `confirm` for one profile item; Settings uses `forget` to delete what O learned |
+
+- Stated preferences are applied to later tasks. Repeated tasks are noticed and offered as schedules. Apps O has used before get faster through stored procedures, cached locators and interface notes (see Computer use).
+- Everything learned is listed in Settings, where any item can be deleted.
+
+### The engine
+
+The engine is a FastAPI server on `127.0.0.1` (port chosen by the app, header `x-o-token` required), spawned by the app as `python -m o_engine serve`. Claude Code reaches it through MCP tools `mcp__o__provision`, `cache_lookup`, `diagnose`, `verify_port`, `workspace_context`, `log_note`, for computer use `computer_run`, `computer_replay`, `computer_find`, `computer_tree`, for tooling `mcp_tools`, `mcp_call`, `script_run`, `swarm_run`, `web_run`, and for generative UI `ui_emit`. A provision request is a strict schema: `{label, steps: [{target_directory, command_string | script, timeout_seconds}], verify?, isolated_display, risk?}`; prose, fences and extra keys are rejected.
 
 ```
 context -> validate -> cache_lookup -> gate -> execute -> verify -> cache_store -> report
@@ -109,7 +130,38 @@ context -> validate -> cache_lookup -> gate -> execute -> verify -> cache_store 
 - **Isolated display:** on Linux the engine starts `Xvfb :99` and runs isolated steps with `DISPLAY=:99`. On macOS and Windows there is no isolated display; browser work is headless-only, and the requirements check says so.
 - Edges are fixed in `graph.py`; no node can add or change them at runtime.
 
-## API proxy
+### The action log
+
+Security and safety in O come from recording, not from asking. Every entry has a `kind`:
+
+| kind | What it records |
+|---|---|
+| `task` | a task you gave O started or finished |
+| `tool` / `result` | every tool call Claude Code makes, and its result status (`is_error`) |
+| `policy` | each permission decision (allowed, denied, timed out) and the mode it was made under |
+| `graph` | engine graph transitions (`context → validate → …`) |
+| `cache` | script cache lookups, hits and stores |
+| `remediate` | each remediation attempt and the patch it applied |
+| `verify` | headless port/HTTP checks after a provision |
+| `settings` | any settings change |
+| `note` | one-line explanations the agent writes (`log_note`) |
+
+- **Files:** app side `<userData>/o-actions.jsonl` plus a text twin `o-actions.log`; engine side `<dataDir>/engine-actions.jsonl` plus `.log`. The engine also posts each entry to the app, which re-chains it into the app file.
+- **Hash chain:** each entry carries `prev` (sha256 of the previous entry) and `hash` (sha256 of itself). Append-only. **Verify chain** in the log sheet recomputes every link and reports ✓ intact or ✗ broken at #n.
+- **Reading it:** click the list icon in the panel header (it carries an unread badge) or use **tray → Open action log**. The pet says how many actions happened since you last looked; the sheet shows the same count as its subtitle, with filter chips (All · Tools · Engine · Policy · Errors) and **Open log file**.
+- **Away notification:** "O did N things while you were away", only when the panel is closed and something was logged since you last read it (debounced 30 s). Turn off with `logUnreadBadge`.
+
+#### Permission modes (Settings → Permissions)
+
+| Mode | Behaviour |
+|---|---|
+| `log` (default) | Nothing asks. Every tool call and engine step is allowed and recorded. |
+| `ask` | Shell commands, file changes and engine gates show a blocking card (Allow / Deny) that never takes focus. No answer within **60 s** denies it **and destroys the task queue**. |
+| `auto` | No gating, no cards. Still logged. |
+
+Payment blocking in O Link applies in every mode: while O works in a tab, card and bank fields, payment pages and pay / buy / checkout buttons are locked and the page shows "Blocked by O". The guard is unchanged from opia.
+
+### API proxy
 
 A localhost, OpenAI-compatible endpoint over your own Claude Code login. Any client that speaks the OpenAI chat API can use O as its model: each request becomes one `claude -p` run, the stream is normalized back into standard JSON / SSE, and the request is recorded in the action log. URL and token are in **Settings → API proxy**; the token is generated once and shown masked with a copy button.
 
@@ -151,7 +203,7 @@ Two decisions, stated plainly:
 
 Ruled out: non-loopback interfaces, running without a bearer token, `--dangerously-skip-permissions`.
 
-## Computer use
+### Computer use
 
 O can drive desktop apps, not only browser tabs. A goal ("save this sheet as CSV") becomes an **OScript**, a strict JSON plan that O runs against the app's accessibility tree, judges step by step, and saves as a **procedure** it can replay later with no model calls.
 
@@ -181,7 +233,7 @@ A goal is not scripted blind: the planner writes a few milestones once, then pla
 
 MCP tools: `mcp__o__computer_run`, `computer_replay`, `computer_find`, `computer_tree`. Engine routes: `POST /computer/run`, `POST /computer/replay`, `GET /computer/procedures`, `GET /computer/interfaces`, `GET /computer/tree`, `POST /computer/find`. A job's result carries `infeasible: true` when the gate stopped it. `/health` reports `cu_backend`; a backend whose platform package fails to import is `available=False`.
 
-### How it compares to Simular
+#### Design points next to Simular
 
 Design points from Simular's own pages ([Agent S3 / Behavior Best-of-N](https://simular.ai/articles/simulars-computer-use-agent-outperforms-humans), [what an autonomous computer is](https://www.simular.ai/articles/what-is-an-autonomous-computer)), matched against O:
 
@@ -198,11 +250,11 @@ Design points from Simular's own pages ([Agent S3 / Behavior Best-of-N](https://
 
 Ruled out: claiming a benchmark result not produced by a run; pixel actions on the host display; deleting procedures; any backend that takes over your mouse outside the isolated display.
 
-## Phase 2: tooling core
+### Tooling core
 
-Five additions to the engine, each optional at runtime and each falling back to something already in the repo. Nothing in them changes the graph's edges, the schema's `extra=forbid`, or the action log.
+Five parts of the engine. Their packages are installed by default; each still falls back to something already in the repo if its package cannot load. Nothing in them changes the graph's edges, the schema's `extra=forbid`, or the action log.
 
-| Addition | What it does | When its package is missing |
+| Part | What it does | When its package is missing |
 |---|---|---|
 | MCP tool routing | Claude Code is not the only thing that can call MCP servers. The engine's `MCPRouter` reads the `mcpServers` setting (JSON text, same shape as Claude Code's `mcpServers`: `{name: {command, args, env} \| {url}}`), lists their tools (`mcp_tools`) and calls them (`mcp_call`) over stdio or SSE. **Every call is validated against the tool's JSON schema before dispatch**; a call that does not fit is rejected, not sent. The same servers are merged into the `o-mcp.json` that Claude Code is started with, so both brains see one list. Each call is a `tool` entry and its result a `result` entry in the action log. | `mcp` absent: the router is unavailable and both tools say so. |
 | Multi-language script steps | A provision step is either `{target_directory, command_string, timeout_seconds}` or `{target_directory, timeout_seconds, script: {language, code, target_directory, timeout_seconds}}`; exactly one of `command_string` / `script`. `language` is `python`, `bash`, `javascript` or `powershell`; `code` up to 64k characters. The engine writes the code to a temp file inside the sandbox and runs it with the native interpreter (`NativeRunner`: `python3` / `bash` / `node` / `pwsh`). Open Interpreter is a second backend (`OpenInterpreterRunner`, `interpreter.computer.run(language, code)`, `DISPLAY` from the isolated display) used when it is importable. Standalone: `script_run`, `POST /script/run`. | Open Interpreter absent: `available=False`, the native runner is used. |
@@ -212,7 +264,7 @@ Five additions to the engine, each optional at runtime and each falling back to 
 
 Ruled out: CAPTCHA circumvention; proxy rotation; running high-risk code on the host when a disposable backend is configured and available; any MCP tool call that is not schema-validated before dispatch.
 
-## Generative UI
+### Generative UI
 
 O's panel can show plans, progress and results as components instead of prose. The rule that makes this safe: **the model never renders raw HTML or markdown in the panel.** The agent (Claude Code) and the engine emit small declarative **frames**; the renderer validates each one and maps it onto O's own design tokens and native DOM. A frame that does not fit is dropped and logged, never drawn.
 
@@ -246,14 +298,15 @@ Step#s1[l="npm test"]
 
 Ruled out: rendering model-produced HTML or markdown outside the sandbox; `allow-same-origin` on the Preview iframe; any component or Button action outside the closed sets; a UI frame or sandbox event that skips the action log.
 
-## Settings (⚙ in the panel)
+### Settings (⚙ in the panel)
 
 | Key | Meaning |
 |---|---|
 | `permissionMode` | `log` (default) / `ask` / `auto` |
+| `maxParallelTasks` | tasks that run at once, each its own Claude Code process, default 3 (1..8); more wait in a queue |
 | `theme` | panel look: `glass` (default, black translucent), `light`, `dark` |
 | `enginePython` | Python for the engine; empty = auto (`python3` / `python` / `py -3`) |
-| `vllmUrl` | OpenAI-compatible vLLM endpoint, default `http://127.0.0.1:8000/v1` |
+| `vllmUrl` | OpenAI-compatible vLLM endpoint, default `http://127.0.0.1:8000/v1`; the installer sets it when vLLM runs elsewhere |
 | `vllmModel` | default `meta-llama/Meta-Llama-3-8B-Instruct` |
 | `screenpipeDb` | screenpipe SQLite path; empty = default |
 | `sandboxRoot` | engine command tree, default `<home>/o-sandbox` |
@@ -298,7 +351,7 @@ Ruled out: rendering model-produced HTML or markdown outside the sandbox; `allow
 
 Settings live in O's JSON settings file in Electron's userData folder.
 
-## Demos and launch video
+### Demos and launch video
 
 `tools/demo/` renders the launch film and four short demos as *scenes*, not screen recordings: `tools/demo/motion/` is a small scene system (Playwright, one 1920×1080 composition at 2× → 3840×2160, animations seeked frame by frame at 30 fps, one h264 file per scene joined with ffmpeg's concat demuxer). The real `renderer/panel.html` is embedded where a scene shows the product (the glass composer, the Runs sheet, the action log) and every fact on screen comes from a real run made just before rendering (`motion/films.js`): the Python engine (`python3 -m o_engine serve`), the action log (`main/actionlog.js`, hash chain verified before and after one byte is changed on disk), the API proxy (`main/proxy.js` over `main/tools/fake-claude.js`, so no Claude login is needed) and the computer-use graph on a scripted accessibility tree (`cu-tree.json`). The chat replies are scripted; the launch film says so once, in its second frame. Black glass, white light only; no caption bars, badges or music.
 
@@ -319,7 +372,7 @@ node tools/demo/launch.js --audio music.m4a   # mux a track (video copied); --st
 
 Needs Playwright with Chromium (`npx playwright install chromium`) and `ffmpeg`/`ffprobe` on PATH. Encoder settings are identical for every scene (`libx264 -preset medium -crf 18 yuv420p`, 30 fps); files are written to a temp name and renamed on success.
 
-## Troubleshooting
+### Troubleshooting
 
 - **"Claude Code is not logged in"**: run `claude` once in a terminal and sign in. On macOS, apps launched from Finder do not see your shell PATH; set `claudePath` (find it with `which claude`).
 - **Python row red, "no python3/python/py found"**: install Python 3.10+ or set Settings → Engine → Python path.
@@ -332,7 +385,7 @@ Needs Playwright with Chromium (`npx playwright install chromium`) and `ffmpeg`/
 - **"Blocked by O" on a page**: the payment guard. O never pays.
 - **Linux: black box instead of transparency**: O already starts with `--disable-gpu` and `--enable-transparent-visuals`; a compositing window manager (picom, Mutter, KWin) is still required.
 
-## Project layout
+### Project layout
 
 ```
 O/
@@ -340,6 +393,7 @@ O/
   main/preload.js          window.o bridge (logTail, logMarkRead, logVerifyChain, engineStatus, checkRequirements, onGenui, genuiFrames, genuiSurfaces, genuiAction, logNote)
   main/settings.js         JSON settings
   main/agent.js            Claude Code CLI wrapper; log/ask/auto decisions; records tool/result entries; POST /ui envelope check for GenUI frames
+  main/tasks.js            task pool: up to maxParallelTasks Claude Code processes at once, the rest queued
   main/actionlog.js        hash-chained action log: record, ingest, tail, verifyChain
   main/engine.js           spawns and supervises the Python engine, HTTP client
   main/chats.js            chat history
@@ -347,7 +401,7 @@ O/
   main/proxy.js            API proxy: OpenAI-compatible HTTP on 127.0.0.1, claude -p per request, SSE/JSON normalizer
   main/promptmod.js        buildSystemPrompt (code | chat), stripPersona rules
   main/tokenfilter.js      node port of TokenFilter (first balanced JSON)
-  main/tools/bridge-mcp.js MCP server `o`: approve, see_screen, log_note, provision, cache_lookup, diagnose, verify_port, workspace_context, computer_run, computer_replay, computer_find, computer_tree, mcp_tools, mcp_call, script_run, swarm_run, web_run, ui_emit
+  main/tools/bridge-mcp.js MCP server `o`: approve, see_screen, log_note, provision, cache_lookup, diagnose, verify_port, workspace_context, computer_run, computer_replay, computer_find, computer_tree, mcp_tools, mcp_call, script_run, swarm_run, web_run, ui_emit, schedule_task, list_schedules, cancel_schedule, recall_preferences, remember_preference
   main/tools/selftest-proxy.js  proxy selftest against main/tools/fake-claude.js
   extension/               O Link browser extension + payment guard
   renderer/                pet window, panel, log sheet, Runs sheet, sprite
@@ -373,6 +427,7 @@ O/
     containment.py         DisposableSandbox: E2BSandbox, DockerSandbox, select_sandbox, run_high_risk
     swarm.py               three roles; SimpleCrew (threads) and CrewAICrew (crewAI); get_crew
     web.py                 BrowserUseRunner (headless, isolated display), PlaywrightDomRunner fallback
+    learning.py            LearningStore: preferences, routines, per-app learning; /learn/profile, /learn/observe, /learn/feedback
     genui.py               GenUI frames (pydantic, closed component set), UIStore ring buffer per surface, JobSurface emitters, oui compile/decode
     cu/schema.py           OScript (pydantic, frozen, extra=forbid)
     cu/backends/           CUBackend: atspi.py (Linux), uia.py (Windows), ax.py (macOS)

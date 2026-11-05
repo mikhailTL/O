@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,6 +95,10 @@ class EngineSettings(BaseModel):
     # ---- Phase 3 (GenUI) ----
     genui: bool = True  # O_GENUI: emit GenUI frames at all
     ui_url: str | None = None  # O_UI_URL: the app endpoint every GenUI frame is pushed to (optional)
+    # ---- learning / adaptation ----
+    learning: bool = True  # O_LEARNING: record observations, derive the profile, inject it into cu prompts
+    learning_dir: str = ""  # O_LEARNING_DIR: "" -> <data_dir>/learning (see learning_path)
+    learning_model: bool = True  # O_LEARNING_MODEL: allow one local-only merge call for near-duplicate items
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EngineSettings":
@@ -133,6 +137,10 @@ class EngineSettings(BaseModel):
             # Phase 3
             "genui": _truthy_env("O_GENUI", True),
             "ui_url": _env("O_UI_URL") or None,
+            # learning
+            "learning": _truthy_env("O_LEARNING", True),
+            "learning_dir": _env("O_LEARNING_DIR", ""),
+            "learning_model": _truthy_env("O_LEARNING_MODEL", True),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)
@@ -149,6 +157,10 @@ class EngineSettings(BaseModel):
     @property
     def mcp_servers_path(self) -> Path:
         return Path(self.mcp_servers_file) if self.mcp_servers_file else self.data_dir_path / "mcp-servers.json"
+
+    @property
+    def learning_path(self) -> Path:
+        return Path(self.learning_dir) if self.learning_dir else self.data_dir_path / "learning"
 
     @property
     def settings_like(self) -> dict[str, Any]:
@@ -314,7 +326,11 @@ class EngineDeps:
         with self._cu_lock:
             if "deps" not in self._cu:
                 vision_model = s.vllm_vision_model or s.vllm_model
-                notes = InterfaceNotes(str(s.data_dir_path / "interfaces"))
+                notes: Any = InterfaceNotes(str(s.data_dir_path / "interfaces"))
+                if self.learning is not None:
+                    from .learning import LearnedNotes
+
+                    notes = LearnedNotes(notes, self.learning)  # planner + graph notes seam: for_prompt(app)
                 model = ModelClient(LocalModelClient(s.vllm_url, s.vllm_model), ClaudeCodeClient(s.claude_path))
                 primary: Any = VisionGrounder(s.vllm_url, vision_model)
                 if s.cu_zoom:
@@ -375,6 +391,17 @@ class EngineDeps:
 
         return run_cu_job(graph, goal, app, job_id, candidates, max_heals=self.settings.cu_max_heals, **kw)
 
+    @property
+    def learning(self) -> Any:
+        """``LearningStore`` under ``learning_path`` (None when ``learning`` is off). Reads screenpipe app
+        focus, interface fitness and procedure counts; its optional merge call is local-only."""
+        if not self.settings.learning:
+            return None
+        with self._cu_lock:
+            if "learning" not in self._cu:
+                self._cu["learning"] = build_learning(self.settings, lambda: self.cu_interfaces, lambda: self.cu_procedures)
+            return self._cu["learning"]
+
     # ------------------------------------------------------------------ Phase 2
 
     @property
@@ -419,6 +446,50 @@ class EngineDeps:
             return PlaywrightDomRunner(display=display)
         s = self.settings
         return get_web_runner(s.web_prefer, s.vllm_url, s.vllm_model, display=display)
+
+
+def build_learning(settings: EngineSettings, interfaces: Any = None, procedures: Any = None) -> Any:
+    from .cu.planner import LocalModelClient, ModelClient
+    from .learning import LearningStore
+
+    model = ModelClient(LocalModelClient(settings.vllm_url, settings.vllm_model), None) if settings.learning_model else None
+    return LearningStore(settings.learning_path, screenpipe_db=settings.screenpipe_db or None,
+                         interfaces=interfaces, procedures=procedures, model=model)
+
+
+class LearnObserveRequest(BaseModel):
+    """Body of ``POST /learn/observe``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str = Field(pattern="^(task|correction|screen|own)$")
+    text: str = Field(min_length=1, max_length=2000)
+    task_id: str | None = Field(default=None, max_length=128)
+    outcome: str | None = Field(default=None, max_length=32)
+    app: str | None = Field(default=None, max_length=200)
+    duration_s: float | None = Field(default=None, ge=0)
+    ts: float | None = None
+
+
+class LearnFeedbackRequest(BaseModel):
+    """Body of ``POST /learn/feedback``: exactly one of ``forget`` / ``confirm`` (a profile item id)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    forget: str | None = Field(default=None, min_length=1, max_length=64)
+    confirm: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+def learn_outcome(store: Any, text: str, job_id: str, final: dict[str, Any], app: str = "", elapsed_s: float = 0.0) -> None:
+    """Record one finished job as a ``task`` observation (the user's request + O's outcome). Never raises."""
+    if store is None or not str(text or "").strip():
+        return
+    outcome = "infeasible" if final.get("infeasible") else ("ok" if final.get("ok") else "failed")
+    try:
+        store.observe("task", str(text), task_id=job_id, outcome=outcome, app=app or None,
+                      duration_s=max(0.0, float(elapsed_s)))
+    except Exception:
+        pass
 
 
 def cu_display_names(candidates: int) -> list[str]:
@@ -869,6 +940,7 @@ def create_app(
         except Exception as exc:
             final = {**job.state, "phase": "report", "done": True, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
         jobs.set_state(job.id, final)
+        learn_outcome(getattr(d, "learning", None), job.request.label, job.id, final, elapsed_s=time.monotonic() - started)
         log.record(
             "result",
             f"job {job.id} {'ok' if final['ok'] else 'failed'}",
@@ -990,6 +1062,7 @@ def create_app(
             final = {**job.state, "phase": "report", "done": True, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
         final["infeasible"] = bool(final.get("infeasible", False))
         jobs.set_state(job.id, final)
+        learn_outcome(getattr(d, "learning", None), req.goal, job.id, final, req.app, time.monotonic() - started)
         log.record(
             "result",
             f"computer job {job.id} {'infeasible' if final['infeasible'] else 'ok' if final['ok'] else 'failed'}",
@@ -1354,6 +1427,62 @@ def create_app(
 
     app.state.ui_store = ui_store  # callable: the UIStore the graphs emit into (deps.ui, else the fallback)
     # ------------------------------------------------------------ end Phase 3
+
+    # ------------------------------------------------------------ learning
+    fallback_learning: dict[str, Any] = {}
+
+    def learning_store() -> Any:
+        if not settings.learning:
+            raise HTTPException(status_code=503, detail="learning is disabled (O_LEARNING=0)")
+        store = getattr(deps(), "learning", None)
+        if store is not None:
+            return store
+        with deps_lock:
+            if "store" not in fallback_learning:
+                fallback_learning["store"] = build_learning(settings)
+            return fallback_learning["store"]
+
+    def _short(text: str) -> str:
+        from .learning import LOG_TEXT, scrub
+
+        t = scrub(" ".join(str(text or "").split()))
+        return t if len(t) <= LOG_TEXT else t[: LOG_TEXT - 1] + "…"
+
+    @app.get("/learn/profile", dependencies=guarded)
+    def learn_profile(topic: str | None = None, app_name: str | None = Query(default=None, alias="app")) -> dict[str, Any]:
+        return learning_store().profile(topic=topic, app=app_name)
+
+    @app.post("/learn/observe", dependencies=guarded)
+    def learn_observe(body: dict[str, Any]) -> dict[str, Any]:
+        req = _validate(LearnObserveRequest, body)
+        store = learning_store()
+        try:
+            obs = store.observe(req.source, req.text, task_id=req.task_id, outcome=req.outcome, app=req.app,
+                                duration_s=req.duration_s, ts=req.ts)
+        except ValueError as exc:
+            raise SchemaViolation(str(exc)) from None
+        store.merge_async()
+        log.record("note", f"learning: observed {obs.source}: {_short(obs.text)}", id=obs.id, source=obs.source,
+                   app=obs.app, outcome=obs.outcome, items=len(store.items()))
+        return {"ok": True, "id": obs.id}
+
+    @app.post("/learn/feedback", dependencies=guarded)
+    def learn_feedback(body: dict[str, Any]) -> dict[str, Any]:
+        req = _validate(LearnFeedbackRequest, body)
+        if bool(req.forget) == bool(req.confirm):
+            raise SchemaViolation("exactly one of forget or confirm is required")
+        store = learning_store()
+        item_id = str(req.forget or req.confirm)
+        item = store.item(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="unknown profile item")
+        obs = store.forget(item_id) if req.forget else store.confirm(item_id)
+        after = store.item(item_id)
+        verb = "forget" if req.forget else "confirm"
+        log.record("note", f"learning: {verb} {item['kind']}: {_short(item['text'])}", id=obs.id, item_id=item_id,
+                   verb=verb, item_kind=item["kind"])
+        return {"ok": True, "id": obs.id, "item": after}
+    # ------------------------------------------------------------ end learning
 
     app.state.settings = settings
     app.state.log = log

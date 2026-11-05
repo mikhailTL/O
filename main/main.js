@@ -60,7 +60,10 @@ let actionLog = null; // append-only, hash-chained record of everything O did
 let engine = null;    // the Python engine (provisioning, cache, remediation)
 let proxy = null;     // the localhost OpenAI-compatible API proxy (main/proxy.js)
 
-const queue = [];               // prompts waiting while the agent is busy
+let tasks = null;               // the task pool (main/tasks.js): one Claude Code process per task
+let scheduler = null;           // saved schedules (main/scheduler.js)
+let unseenDone = 0;             // tasks that ended while the panel was closed (tray / dock badge)
+const taskCards = new Map();    // task id -> notify-sidebar card {id, kind: 'done'|'needs', title, text, at}
 const pendingPerms = new Map(); // id -> { resolve, toolName, input, summary, expiresAt }
 // GenUI (Phase 3): frames from the engine and the agent, kept in memory per surface so the panel
 // can redraw a surface after a reload. The renderer validates the components; main only relays.
@@ -125,21 +128,6 @@ function sendTheme(theme) {
 }
 
 // ---------------------------------------------------------------- action log + engine
-
-/** "O did N things while you were away": only with the panel closed, at most once per 30 s. */
-function maybeNotifyUnread() {
-  if (!actionLog || panelVisible() || !settings.get().logUnreadBadge) return;
-  if (unreadNotifyTimer) return;
-  unreadNotifyTimer = setTimeout(() => {
-    unreadNotifyTimer = null;
-    const n = actionLog.unread;
-    if (!n || panelVisible() || !settings.get().logUnreadBadge) return;
-    let last = '';
-    try { const t = actionLog.tail(1); last = (t && t[0] && t[0].summary) || ''; } catch (_) {}
-    notify(`O did ${n} thing${n === 1 ? '' : 's'} while you were away`, last);
-  }, UNREAD_NOTIFY_DEBOUNCE_MS);
-  unreadNotifyTimer.unref();
-}
 
 // ---------------------------------------------------------------- GenUI relay
 
@@ -494,24 +482,27 @@ function placeNotify(height) {
 }
 
 function pendingList() {
-  return [...pendingPerms.values()].map(({ id, toolName, input, summary, expiresAt }) => ({ id, toolName, input, summary, expiresAt }));
+  return [...pendingPerms.values()].map(({ id, toolName, input, summary, expiresAt, taskId, taskTitle }) => ({ id, toolName, input, summary, expiresAt, taskId: taskId || null, taskTitle: taskTitle || '' }));
 }
 
-/** Show, update or hide the sidebar to match the pending approvals. */
+/** Show, update or hide the sidebar to match the pending approvals and the task cards. */
 function syncNotify() {
   const list = pendingList();
-  const want = list.length > 0 && !panelVisible();
+  const cards = [...taskCards.values()];
+  const want = (list.length > 0 || cards.length > 0) && !panelVisible();
   if (!want) {
     if (notifyWin && !notifyWin.isDestroyed()) {
       notifyWin.webContents.send('notify:perms', []);
+      notifyWin.webContents.send('notify:tasks', []);
       clearTimeout(notifyHideTimer);
-      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !(pendingPerms.size && !panelVisible())) notifyWin.hide(); }, 260);
+      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !((pendingPerms.size || taskCards.size) && !panelVisible())) notifyWin.hide(); }, 260);
     }
     return;
   }
   clearTimeout(notifyHideTimer);
   if (!notifyWin || notifyWin.isDestroyed()) { createNotifyWindow(); return; } // did-finish-load syncs again
   notifyWin.webContents.send('notify:perms', list);
+  notifyWin.webContents.send('notify:tasks', cards);
   if (!notifyWin.isVisible()) { placeNotify(notifyWin.getBounds().height); notifyWin.showInactive(); }
 }
 
@@ -525,6 +516,10 @@ function showPanel({ focus = true } = {}) {
     panelWin.showInactive();
   }
   broadcast({ type: 'panel', open: true });
+  // The panel lists every task now: the sidebar's task cards and the badge are done with.
+  taskCards.clear();
+  unseenDone = 0;
+  updateBadge();
   syncNotify(); // the chat shows the approval cards now
 }
 
@@ -583,7 +578,7 @@ function rebuildTrayMenu() {
       label: 'Snooze wandering', type: 'checkbox', checked: wanderSnoozed,
       click: (item) => { wanderSnoozed = item.checked; broadcast({ type: 'wander', paused: wanderSnoozed }); },
     },
-    { label: 'Stop current task', click: () => stopTask(), enabled: !!(agent && agent.busy) },
+    { label: tasks && tasks.running().length > 1 ? `Stop all ${tasks.running().length} tasks` : 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
     { type: 'separator' },
     {
       label: 'Start O when I log in', type: 'checkbox', checked: shortcuts.getOpenAtLogin(app),
@@ -602,81 +597,174 @@ function rebuildTrayMenu() {
   ]));
 }
 
-// ---------------------------------------------------------------- agent
+// ---------------------------------------------------------------- agent + task pool
+
+// A follow-up that reads like a correction of the last result is a learning signal (POST /learn/observe).
+const CORRECTION_RE = /^\s*(no\b|nope|not (that|quite|what)|actually|instead|wrong|that's (not|wrong)|redo|try again|again,|do it again|fix (it|that)|change (it|that)|make it|i (said|meant|wanted))/i;
+const TASK_CARD_MS = 12 * 1000; // "Done" cards leave on their own; "Needs you" cards stay until seen
+
+/** Engine POST /learn/observe: best effort, never blocks a task. */
+function observe(body) {
+  if (!engine) return;
+  let st;
+  try { st = engine.status(); } catch (_) { return; }
+  if (!st || !st.ready) return;
+  Promise.resolve().then(() => engine.call('POST', '/learn/observe', body, 5000)).catch(() => {});
+}
+
+function logApp(kind, summary, detail) {
+  if (!actionLog) return;
+  try { actionLog.record({ kind, summary, detail: detail || {} }); } catch (_) {}
+}
+
+let tasksTimer = null;
+/** The task list changed: one 'tasks' broadcast per 120 ms at most (status lines change often). */
+function broadcastTasks() {
+  if (tasksTimer) return;
+  tasksTimer = setTimeout(() => {
+    tasksTimer = null;
+    broadcast({ type: 'tasks', tasks: tasks ? tasks.list() : [], schedules: scheduler ? scheduler.list() : [] });
+    updateBadge();
+  }, 120);
+}
+
+/** Tray + dock badge: tasks that finished while the panel was closed, and the running count in the tooltip. */
+function updateBadge() {
+  const running = tasks ? tasks.running().length : 0;
+  try { app.setBadgeCount(unseenDone); } catch (_) {}
+  if (!tray) return;
+  try {
+    tray.setToolTip(`O AI${running ? ` — ${running} running` : ''}${unseenDone ? ` — ${unseenDone} new` : ''}`);
+    if (process.platform === 'darwin') tray.setTitle(unseenDone ? String(unseenDone) : running ? '•' : '');
+  } catch (_) {}
+}
+
+/** A permission request from one task's agent: the chat card, the sidebar, a 60 s auto-deny. */
+function askUser(req) {
+  return new Promise((resolve) => {
+    const expiresAt = Date.now() + PERMISSION_TIMEOUT_MS;
+    const t = req.taskId && tasks ? tasks.get(req.taskId) : null;
+    pendingPerms.set(req.id, { resolve, ...req, taskTitle: t ? t.title : '', expiresAt });
+    setTimeout(() => {
+      if (!pendingPerms.has(req.id)) return;
+      pendingPerms.delete(req.id);
+      broadcast({ type: 'permission-resolved', id: req.id, allow: false, taskId: req.taskId });
+      syncNotify();
+    }, PERMISSION_TIMEOUT_MS + 500).unref();
+    // The sidebar slides in at the screen edge (no focus stolen, safe while gaming).
+    // With quiet mode off, the chat panel opens too (also without taking focus).
+    if (!panelVisible() && !settings.get().quiet) showPanel({ focus: false });
+    syncNotify();
+  });
+}
+
+/** POST /schedule from a task's bridge (schedule_task / list_schedules / cancel_schedule). Every change is logged. */
+function handleSchedule(body) {
+  if (!scheduler) return { ok: false, error: 'scheduler unavailable' };
+  const r = scheduler.handle(body);
+  if (r.ok && body.op === 'add') logApp('note', `Schedule added: ${r.schedule.title} — ${r.schedule.label}`, { schedule: r.schedule, taskId: body.taskId || null });
+  else if (r.ok && body.op === 'cancel') logApp('note', `Schedule cancelled: ${r.cancelled ? r.cancelled.title : body.id}`, { id: body.id, taskId: body.taskId || null });
+  else if (!r.ok && body.op !== 'list') logApp('note', `Schedule refused: ${r.error}`, { op: body.op, taskId: body.taskId || null });
+  broadcastTasks();
+  return r;
+}
+
+function fireSchedule(s) {
+  logApp('task', `Scheduled task started: ${s.title} (${s.label})`, { scheduleId: s.id });
+  startTask({ prompt: s.prompt, title: s.title, source: 'schedule', scheduleId: s.id });
+}
 
 function loadAgent() {
-  let mod;
+  let mod, TaskManager, Scheduler;
   try {
     mod = require('./agent');
+    ({ TaskManager } = require('./tasks'));
+    ({ Scheduler } = require('./scheduler'));
   } catch (err) {
     console.error('[o] could not load agent:', err.message);
     return;
   }
   if (typeof mod.checkClaude === 'function') checkClaudeFn = mod.checkClaude;
-  agent = new mod.OAgent({
+  const common = {
     userDataDir: app.getPath('userData'),
     getSettings: () => settings.get(),
     captureScreen,
     actionLog,
     getEngine: () => (engine && engine.status().ready ? { url: engine.status().url, token: engine.status().token } : null),
     getLinkEndpoint: () => (link ? link.cdpEndpoint() : null),
-    getChatId: () => ((chats && chats.current()) || {}).id || null,
-    onPermissionRequest: (req) => new Promise((resolve) => {
-      const expiresAt = Date.now() + PERMISSION_TIMEOUT_MS;
-      pendingPerms.set(req.id, { resolve, ...req, expiresAt });
-      // The agent auto-denies after the timeout; drop the card then too.
-      setTimeout(() => {
-        if (!pendingPerms.has(req.id)) return;
-        pendingPerms.delete(req.id);
-        broadcast({ type: 'permission-resolved', id: req.id, allow: false });
-        syncNotify();
-      }, PERMISSION_TIMEOUT_MS + 500).unref();
-      // The sidebar slides in at the screen edge (no focus stolen, safe while gaming).
-      // With quiet mode off, the chat panel opens too (also without taking focus).
-      if (!panelVisible() && !settings.get().quiet) showPanel({ focus: false });
-      syncNotify();
+  };
+  // The host agent runs no tasks: its HTTP server is the engine's log/GenUI endpoint and the proxy's config writer.
+  agent = new mod.OAgent({ ...common, getChatId: () => null, onPermissionRequest: askUser, onSchedule: handleSchedule });
+  agent.on('event', (ev) => { if (ev.type === 'genui') onGenuiFrame(ev.frame); });
+
+  tasks = new TaskManager({
+    getSettings: () => settings.get(),
+    createAgent: (taskId) => new mod.OAgent({
+      ...common, taskId, getChatId: () => taskId, onSchedule: handleSchedule,
+      onPermissionRequest: (req) => askUser({ ...req, taskId }),
     }),
   });
+  tasks.on('changed', broadcastTasks);
+  tasks.on('event', onTaskEvent);
+  tasks.on('end', onTaskEnd);
 
-  if (chats) agent.sessionId = (chats.current() || {}).sessionId || null; // resume the open chat
-  agent.on('event', (ev) => {
-    if (ev.type === 'genui') { onGenuiFrame(ev.frame); return; } // stored + broadcast there; not chat history
-    broadcast(ev);
-    if (ev.type === 'permission-timeout') {
-      // Ask mode: no answer in 60 s destroys the queue (nothing runs on a stale approval).
-      const dropped = stopTask().dropped;
-      if (actionLog) {
-        try {
-          actionLog.record({
-            kind: 'policy',
-            summary: `Approval timed out after 60 s: ${ev.toolName || ev.summary || 'tool'} — task stopped, ${dropped} queued prompt(s) dropped`,
-            detail: { id: ev.id, toolName: ev.toolName, summary: ev.summary, dropped },
-          });
-        } catch (_) {}
-      }
-      sendToPet({ type: 'status', mood: 'error', text: 'No answer in time — I stopped and cleared the queue.' });
-    }
-    if (chats) {
-      chats.record(ev);
-      if (ev.type === 'done' || ev.type === 'error') { chats.setSession(agent.sessionId); broadcast({ type: 'chats' }); }
-    }
-    if (ev.type === 'done' || ev.type === 'error') {
-      // Any approval still open (e.g. timed out inside the agent) is now moot.
-      for (const id of pendingPerms.keys()) broadcast({ type: 'permission-resolved', id, allow: false });
-      pendingPerms.clear();
-      syncNotify();
-      if (!panelVisible()) {
-        notify(ev.type === 'done' ? 'O finished' : 'O hit a snag',
-          ev.type === 'done' ? (ev.result || 'Task complete.') : ev.message);
-      }
-      rebuildTrayMenu();
-    }
-  });
+  scheduler = new Scheduler({ file: path.join(app.getPath('userData'), 'o-schedules.json'), onFire: fireSchedule });
+  scheduler.on('changed', broadcastTasks);
+  scheduler.on('error', (err) => console.error('[o] scheduler:', err.message));
+  scheduler.start();
 }
 
-/** Turn O off completely: stop any task (killing Claude Code and its tools), then quit. */
+function onTaskEvent(ev) {
+  if (ev.type === 'genui') { onGenuiFrame(ev.frame); return; } // stored + broadcast there; not chat history
+  broadcast(ev);
+  if (ev.type === 'permission-timeout') {
+    // Ask mode: no answer in 60 s stops that task and drops the tasks still waiting (nothing runs on a stale approval).
+    tasks.stop(ev.taskId);
+    const dropped = tasks.dropQueued();
+    logApp('policy', `Approval timed out after 60 s: ${ev.toolName || ev.summary || 'tool'} — task stopped, ${dropped} queued task(s) dropped`,
+      { id: ev.id, toolName: ev.toolName, summary: ev.summary, dropped, taskId: ev.taskId });
+    sendToPet({ type: 'status', mood: 'error', text: 'No answer in time. I stopped that task.' });
+  }
+  if (chats && ev.taskId && ev.type !== 'status') chats.recordTo(ev.taskId, ev);
+  if (ev.type === 'done' || ev.type === 'error') {
+    // That task's approvals still open (e.g. timed out inside the agent) are now moot.
+    for (const [id, p] of pendingPerms) {
+      if (p.taskId !== ev.taskId) continue;
+      pendingPerms.delete(id);
+      broadcast({ type: 'permission-resolved', id, allow: false, taskId: ev.taskId });
+    }
+    syncNotify();
+  }
+}
+
+function onTaskEnd({ task, ok, sessionId, durationMs }) {
+  if (chats) { chats.setSessionFor(task.id, sessionId); broadcast({ type: 'chats' }); }
+  // The engine records finished /provision and /computer/run jobs itself: observe only the other tasks.
+  const viaEngine = (task.tools || []).some((n) => n === 'mcp__o__provision' || n === 'mcp__o__computer_run' || n === 'mcp__o__computer_replay');
+  if (task.status !== 'stopped' && !viaEngine) {
+    const used = (task.tools || []).map((n) => n.replace(/^mcp__/, '')).slice(0, 8).join(', ');
+    const text = `${task.title}${task.prompt && task.prompt !== task.title ? ' — ' + task.prompt : ''}${used ? ` (tools: ${used})` : ''}`;
+    observe({ source: 'task', task_id: task.id, text: text.slice(0, 2000), outcome: ok ? 'ok' : 'failed', duration_s: Math.round((durationMs || 0) / 100) / 10 });
+  }
+  if (!panelVisible() && task.status !== 'stopped') {
+    unseenDone += 1;
+    addTaskCard(task, ok);
+  }
+  updateBadge();
+  rebuildTrayMenu();
+}
+
+/** "Done: <title>" / "Needs you: <title>" in the notify sidebar while the panel is closed. */
+function addTaskCard(task, ok) {
+  const card = { id: task.id, kind: ok ? 'done' : 'needs', title: task.title, text: ok ? (task.result || 'Finished.') : (task.error || task.statusLine || 'It hit a snag.'), at: Date.now() };
+  taskCards.set(task.id, card);
+  if (ok) setTimeout(() => { if (taskCards.get(task.id) === card) { taskCards.delete(task.id); syncNotify(); } }, TASK_CARD_MS).unref();
+  syncNotify();
+}
+
+/** Turn O off completely: stop every task (killing Claude Code and its tools), then quit. */
 function turnOff() {
-  if (agent && agent.busy) stopTask();
+  if (tasks) tasks.stopAll();
   quitting = true;
   app.quit();
 }
@@ -686,57 +774,54 @@ function resolvePermission(id, allow) {
   const p = pendingPerms.get(id);
   if (!p) return false;
   pendingPerms.delete(id);
-  if (chats) chats.record({ type: 'permission-resolved', id, allow: !!allow, toolName: p.toolName, summary: p.summary });
+  if (chats) chats.recordTo(p.taskId, { type: 'permission-resolved', id, allow: !!allow, toolName: p.toolName, summary: p.summary });
   p.resolve(allow ? { allow: true } : { allow: false, message: 'The user denied this action.' });
-  broadcast({ type: 'permission-resolved', id, allow: !!allow });
+  broadcast({ type: 'permission-resolved', id, allow: !!allow, taskId: p.taskId });
   syncNotify();
   return true;
 }
 
-/** Stop now: drop queued prompts, deny pending approvals, kill the running task. */
-function stopTask() {
-  const dropped = queue.length;
-  queue.length = 0;
-  broadcast({ type: 'queue', length: 0 });
-  for (const [id, p] of pendingPerms) { p.resolve({ allow: false, message: 'Cancelled by user' }); pendingPerms.delete(id); }
-  syncNotify();
-  if (agent) agent.cancel();
-  rebuildTrayMenu();
-  return { ok: true, dropped };
-}
-
-async function runNext() {
-  if (!agent || agent.busy || queue.length === 0) return;
-  const text = queue.shift();
-  broadcast({ type: 'queue', length: queue.length });
-  rebuildTrayMenu();
-  try {
-    await agent.run(text);
-  } catch (err) {
-    broadcast({ type: 'error', message: err && err.message ? err.message : String(err) });
+/** Stop one task (its approvals are denied), or every task and the queue when no id is given. */
+function stopTask(taskId) {
+  if (!tasks) return { ok: false, dropped: 0 };
+  for (const [id, p] of pendingPerms) {
+    if (taskId && p.taskId !== taskId) continue;
+    p.resolve({ allow: false, message: 'Cancelled by user' });
+    pendingPerms.delete(id);
   }
+  syncNotify();
+  const r = taskId ? tasks.stop(taskId) : tasks.stopAll();
   rebuildTrayMenu();
-  // Let the agent settle its busy flag before starting the next one.
-  setTimeout(runNext, 50);
+  return { ok: !!r.ok, dropped: r.dropped || 0, error: r.error };
 }
 
-function enqueuePrompt(text) {
+/** Start a task (or a follow-up in an ended one); its chat is created with the task's id. */
+function startTask({ prompt, taskId, title, source, scheduleId } = {}) {
+  if (!tasks) return { ok: false, error: 'O\'s task runner did not load. Check the terminal for errors.' };
+  const prior = taskId ? tasks.get(taskId) : null;
+  if (taskId && !prior && chats && chats.get(taskId)) {
+    // A task from an earlier session of O: resume its saved Claude Code session.
+    const c = chats.get(taskId);
+    tasks.tasks.set(taskId, { id: taskId, title: c.title, prompt: '', status: 'done', statusLine: 'Done', mood: 'idle', createdAt: c.createdAt, startedAt: null, endedAt: c.updatedAt, source: 'user', scheduleId: null, sessionId: c.sessionId || null, agent: null, result: '', error: '', runs: 0, tools: new Set() });
+  }
+  const r = tasks.start({ prompt, taskId, title, source, scheduleId });
+  if (!r.ok) return r;
+  if (chats) { chats.ensureTask(r.taskId, title || null); chats.addUserTo(r.taskId, prompt); broadcast({ type: 'chats' }); }
+  if (r.followUp && CORRECTION_RE.test(prompt)) observe({ source: 'correction', task_id: r.taskId, text: prompt.slice(0, 2000), ...(prior ? { outcome: prior.status === 'done' ? 'ok' : 'failed' } : {}) });
+  rebuildTrayMenu();
+  return r;
+}
+
+function enqueuePrompt(text, opts) {
   text = String(text || '').trim();
   if (!text) return { ok: false, error: 'empty prompt' };
-  if (!agent) {
+  if (!tasks) {
     const message = 'O\'s brain (agent module) did not load. Check the terminal for errors.';
     broadcast({ type: 'error', message });
     return { ok: false, error: message };
   }
-  queue.push(text);
-  if (chats) { chats.addUser(text); broadcast({ type: 'chats' }); }
-  const queued = agent.busy;
-  if (queued) {
-    broadcast({ type: 'queue', length: queue.length });
-    broadcast({ type: 'status', mood: 'listening', text: `Got it, queued (#${queue.length}).` });
-  }
-  runNext();
-  return { ok: true, queued, position: queued ? queue.length : 0 };
+  const taskId = opts && typeof opts.taskId === 'string' ? opts.taskId : null;
+  return startTask({ prompt: text, taskId });
 }
 
 // ---------------------------------------------------------------- IPC
@@ -769,7 +854,7 @@ function registerIpc() {
     Menu.buildFromTemplate([
       { label: 'Open O', click: () => showPanel() },
       { label: 'Open action log', click: () => openActionLog() },
-      { label: 'Stop current task', click: () => stopTask(), enabled: !!(agent && agent.busy) },
+      { label: 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
       {
         label: 'Snooze wandering', type: 'checkbox', checked: wanderSnoozed,
         click: (item) => { wanderSnoozed = item.checked; broadcast({ type: 'wander', paused: wanderSnoozed }); rebuildTrayMenu(); },
@@ -780,30 +865,100 @@ function registerIpc() {
     ]).popup({ window: petWin });
   });
 
-  ipcMain.handle('agent:prompt', (_e, text) => enqueuePrompt(text));
-  ipcMain.handle('agent:cancel', () => stopTask());
+  ipcMain.handle('agent:prompt', (_e, text, opts) => enqueuePrompt(text, opts));
+  ipcMain.handle('agent:cancel', (_e, taskId) => stopTask(typeof taskId === 'string' && taskId ? taskId : undefined));
+  // ---------- tasks + schedules ----------
+  const taskList = () => ({ tasks: tasks ? tasks.list() : [], schedules: scheduler ? scheduler.list() : [], max: tasks ? tasks.maxParallel() : 3 });
+  ipcMain.handle('tasks:list', () => taskList());
+  ipcMain.handle('tasks:stop', (_e, id) => stopTask(String(id || '')));
+  ipcMain.handle('tasks:view', (_e, id) => {
+    id = String(id || '');
+    const t = tasks && tasks.get(id);
+    const c = chats && chats.get(id);
+    if (!t && !c) return { ok: false, error: 'That task no longer exists.' };
+    if (c) chats.open(id);
+    return { ok: true, task: t ? tasks.snapshot(t) : null, chat: chatOut(c) };
+  });
+  ipcMain.handle('tasks:redo', (_e, id) => {
+    id = String(id || '');
+    const t = tasks && tasks.get(id);
+    if (t && ['queued', 'running'].includes(t.status)) return { ok: false, error: 'That task is still running.' };
+    const c = chats && chats.get(id);
+    const users = c ? c.messages.filter((m) => m.role === 'user') : [];
+    const prompt = (t && t.prompt) || (users.length ? users[users.length - 1].text : '');
+    if (!prompt) return { ok: false, error: 'Nothing to redo.' };
+    observe({ source: 'correction', task_id: id, text: ('Redo requested: ' + prompt).slice(0, 2000), ...(t ? { outcome: t.status === 'done' ? 'ok' : 'failed' } : {}) });
+    logApp('note', 'Redo: ' + prompt.slice(0, 120), { taskId: id });
+    return startTask({ prompt: 'Do this again from scratch, and do it better than last time: ' + prompt, taskId: id });
+  });
+  ipcMain.handle('schedules:list', () => (scheduler ? scheduler.list() : []));
+  ipcMain.handle('schedules:cancel', (_e, id) => {
+    if (!scheduler) return { ok: false };
+    const s = scheduler.get(String(id || ''));
+    const ok = scheduler.cancel(String(id || ''));
+    if (ok) logApp('note', `Schedule cancelled: ${s ? s.title : id}`, { id, by: 'user' });
+    broadcastTasks();
+    return { ok };
+  });
+  // ---------- what O has learned (engine /learn) ----------
+  const engineReady = () => { try { return !!(engine && engine.status().ready); } catch (_) { return false; } };
+  ipcMain.handle('learn:profile', async () => {
+    if (!engineReady()) return { ok: false, error: 'The engine is not running, so nothing learned can be shown right now.' };
+    try {
+      const p = await engine.call('GET', '/learn/profile', null, 5000);
+      const items = [];
+      // "Schedule this?" offers: a habit the engine noticed, with a ready prompt and schedule.
+      const suggestions = [];
+      for (const it of Array.isArray(p && p.suggestions) ? p.suggestions : []) {
+        const sg = it && it.suggest_schedule;
+        if (!sg || !sg.prompt) continue;
+        let label = '';
+        try { label = require('./scheduler').describeWhen(require('./scheduler').whenFrom(sg)); } catch (_) { continue; }
+        suggestions.push({ id: it.id != null ? String(it.id) : null, text: String(it.text || sg.prompt).slice(0, 300), prompt: String(sg.prompt).slice(0, 4000), when: sg.when || null, cron: sg.cron || null, label });
+      }
+      for (const [kind, key] of [['preference', 'preferences'], ['habit', 'habits'], ['app skill', 'app_skills']]) {
+        for (const it of Array.isArray(p && p[key]) ? p[key] : []) {
+          const text = typeof it === 'string' ? it : it && (it.text || it.summary || it.name || it.app);
+          if (!text) continue;
+          items.push({ id: it && typeof it === 'object' && it.id != null ? String(it.id) : null, kind, text: String(text).slice(0, 300) });
+        }
+      }
+      return { ok: true, items, suggestions };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('learn:acceptSuggestion', (_e, sg) => {
+    if (!scheduler || !sg || typeof sg !== 'object') return { ok: false, error: 'scheduler unavailable' };
+    let when;
+    try { when = require('./scheduler').whenFrom(sg); } catch (err) { return { ok: false, error: err.message }; }
+    const r = scheduler.handle({ op: 'add', prompt: sg.prompt, title: sg.text, when });
+    if (r.ok) {
+      logApp('note', `Schedule added from a suggestion: ${r.schedule.title} — ${r.schedule.label}`, { schedule: r.schedule, suggestion: sg.id || null });
+      if (sg.id && engineReady()) engine.call('POST', '/learn/feedback', { confirm: String(sg.id) }, 5000).catch(() => {});
+    }
+    broadcastTasks();
+    return r;
+  });
+  ipcMain.handle('learn:forget', async (_e, id) => {
+    if (!engineReady()) return { ok: false, error: 'engine not running' };
+    try {
+      await engine.call('POST', '/learn/feedback', { forget: String(id || '') }, 5000);
+      logApp('settings', 'Forgot a learned preference', { id: String(id || '') });
+      return { ok: true };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
   ipcMain.handle('app:shortcuts', () => shortcuts.createShortcuts(app, shell));
   // ---------- chat history ----------
-  const busyNow = () => !!(agent && agent.busy) || queue.length > 0;
   const chatOut = (c) => (c ? { id: c.id, title: c.title, messages: c.messages, updatedAt: c.updatedAt } : null);
-  const blocked = { ok: false, error: 'O is working on something in this chat. Stop it first (■), then switch.' };
-  const newChat = () => {
-    if (busyNow()) return blocked;
-    const c = chats.create();
-    if (agent) agent.sessionId = null;
-    broadcast({ type: 'chats' });
-    return { ok: true, chat: chatOut(c) };
-  };
+  const activeTask = (id) => { const t = tasks && tasks.get(id); return !!(t && ['queued', 'running'].includes(t.status)); };
+  // A new chat is just an empty view: the first prompt creates the task (and its chat). Running tasks keep going.
+  const newChat = () => ({ ok: true, chat: null });
   ipcMain.handle('agent:newSession', newChat);
   ipcMain.handle('chats:new', newChat);
   ipcMain.handle('chats:list', () => (chats ? chats.list() : []));
   ipcMain.handle('chats:current', () => chatOut(chats && chats.current()));
   ipcMain.handle('chats:open', (_e, id) => {
-    if (chats.current() && chats.current().id === id) return { ok: true, chat: chatOut(chats.current()) };
-    if (busyNow()) return blocked;
     const c = chats.open(id);
     if (!c) return { ok: false, error: 'That chat no longer exists.' };
-    if (agent) agent.sessionId = c.sessionId || null;
     broadcast({ type: 'chats' });
     return { ok: true, chat: chatOut(c) };
   });
@@ -814,11 +969,11 @@ function registerIpc() {
   });
   ipcMain.handle('chats:delete', (_e, ids) => {
     const list = ids === 'all' ? chats.list().map((c) => c.id) : [].concat(ids || []);
-    const cur = chats.current();
-    if (busyNow() && cur && list.includes(cur.id)) return { ok: false, error: 'O is working in that chat. Stop it first (■), then delete it.' };
+    if (list.some(activeTask)) return { ok: false, error: 'O is still working on that task. Stop it first (■), then delete it.' };
     const sessions = chats.remove(list);
     const removedFiles = deleteClaudeTranscripts(sessions);
-    if (agent && !busyNow()) agent.sessionId = (chats.current() || {}).sessionId || null;
+    if (tasks) for (const id of list) tasks.tasks.delete(id);
+    broadcastTasks();
     broadcast({ type: 'chats' });
     return { ok: true, deleted: list.length, removedFiles, chat: chatOut(chats.current()) };
   });
@@ -833,6 +988,8 @@ function registerIpc() {
   ipcMain.handle('genui:action', (_e, action, payload) => genuiAction(action, payload));
   ipcMain.on('notify:resize', (_e, h) => placeNotify(h));
   ipcMain.on('notify:openChat', () => showPanel());
+  ipcMain.on('notify:openTask', (_e, id) => { showPanel(); broadcast({ type: 'view-task', taskId: String(id || '') }); });
+  ipcMain.on('notify:dismissTask', (_e, id) => { taskCards.delete(String(id || '')); syncNotify(); });
 
   ipcMain.handle('settings:get', () => settings.get());
   // Synchronous: the preload reads it before the renderer paints, so there is no theme flash.
@@ -929,11 +1086,12 @@ function registerIpc() {
   ipcMain.handle('update:apply', () => (updater ? updater.apply() : { state: 'error', message: 'Updater unavailable' }));
   ipcMain.handle('update:state', () => (updater ? { ...updater.state, installed: updater.installedSha() } : { state: 'idle' }));
   ipcMain.handle('app:state', () => ({
-    busy: !!(agent && agent.busy),
-    queue: queue.length,
+    busy: !!(tasks && tasks.running().length),
+    queue: tasks ? tasks.queue.length : 0,
     agentLoaded: !!agent,
     logUnread: actionLog ? actionLog.unread : 0,
-    pendingPermissions: [...pendingPerms.values()].map(({ id, toolName, input, summary }) => ({ id, toolName, input, summary })),
+    ...taskList(),
+    pendingPermissions: [...pendingPerms.values()].map(({ id, toolName, input, summary, taskId }) => ({ id, toolName, input, summary, taskId: taskId || null })),
   }));
 }
 
@@ -951,7 +1109,6 @@ app.whenReady().then(() => {
       actionLog.on('entry', (entry) => {
         broadcast({ type: 'log', entry });
         broadcast({ type: 'log-unread', count: actionLog.unread });
-        maybeNotifyUnread();
         // The engine's circuit breaker (ask mode: denied or 60 s without an answer) destroys the whole queue.
         if (entry && entry.source === 'engine' && entry.detail && entry.detail.queue_destroyed) {
           const dropped = stopTask().dropped;
@@ -974,7 +1131,7 @@ app.whenReady().then(() => {
         uiUrl,
       });
       engine.on('log', (e) => { if (actionLog) { try { actionLog.record(e); } catch (_) {} } });
-      engine.on('ready', () => broadcast({ type: 'engine', ...engineStatus() }));
+      engine.on('ready', () => { broadcast({ type: 'engine', ...engineStatus() }); if (tasks) tasks.prewarm().catch(() => {}); });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
       engine.start();
       startProxy();
@@ -1013,7 +1170,7 @@ app.whenReady().then(() => {
     appDir: path.join(__dirname, '..'),
     getSettings: () => settings.get(),
     isPackaged: app.isPackaged,
-    isBusy: () => !!(agent && agent.busy),
+    isBusy: () => !!(tasks && tasks.activeCount()),
     relaunch: () => { quitting = true; app.relaunch(); app.exit(0); },
     onEvent: (ev) => {
       broadcast(ev);
@@ -1032,7 +1189,11 @@ app.whenReady().then(() => {
     createPetWindow();
     createPanelWindow();
     createTray();
+    updateBadge();
   }, process.platform === 'linux' ? 300 : 0);
+  // Speed: the first task should not wait for Claude Code to start. Warm one process once the app is up
+  // (again when the engine is ready, since its URL is part of the config).
+  setTimeout(() => { if (tasks) tasks.prewarm().catch(() => {}); }, 2500).unref();
   try {
     globalShortcut.register('CommandOrControl+Shift+O', togglePanel);
   } catch (_) {}
@@ -1050,6 +1211,8 @@ app.on('before-quit', () => {
   try { if (proxy) proxy.stop(); } catch (_) {}
   for (const p of pendingPerms.values()) p.resolve({ allow: false, message: 'O is quitting' });
   pendingPerms.clear();
+  try { if (scheduler) scheduler.stop(); } catch (_) {}
+  try { if (tasks) tasks.dispose(); } catch (_) {}
   try { if (agent && typeof agent.dispose === 'function') agent.dispose(); else if (agent) agent.cancel(); } catch (_) {}
 });
 

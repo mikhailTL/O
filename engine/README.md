@@ -23,6 +23,19 @@ Hard dependencies (all installed by `pip install -e .`):
 | `openai` | 1.30 | OpenAI-compatible client for vLLM |
 | `playwright` | 1.44 | web runner and verify (`playwright install chromium` after install) |
 | `pillow` | 10 | screenshot cropping for zoom-in grounding (`o_engine.cu.ground.ZoomGrounder`, `MultiCropVote`); `crop_fn`/`size_fn` stay pluggable |
+| `mcp` | 2.0 | `MCPRouter` (stdio/SSE MCP servers, `tools ls`/`tools call`); the router passes float timeouts, which mcp 1.x rejects |
+| `e2b` | 1.0 | `E2BSandbox` for `risk: "high"` steps (needs `E2B_API_KEY`) |
+| `crewai` | 0.100 | `CrewAICrew`, the three-role swarm (`swarm run`) |
+| `browser-use` | 0.1.40 | `BrowserUseRunner`, the headless web agent (`web run`) |
+
+Also required, installed separately: `open-interpreter` (>= 0.4.3, < 0.5) for `OpenInterpreterRunner`. Its release pins `anthropic<0.38` and `psutil<6`; `browser-use` needs `psutil>=7` and a newer `anthropic`, so pip cannot resolve both in one environment. The installers (`install/install.sh`, `install/install.ps1`) add it to the same venv with `pip install --no-deps "open-interpreter>=0.4.3,<0.5"` followed by its runtime dependencies unpinned and `setuptools<81` (it imports `pkg_resources`), then check `from interpreter import interpreter`. By hand:
+
+```
+pip install --no-deps "open-interpreter>=0.4.3,<0.5"
+pip install astor git-python google-generativeai html2image html2text inquirer ipykernel jupyter-client litellm matplotlib nltk platformdirs pyperclip pyyaml selenium send2trash shortuuid six tiktoken tokentrim toml webdriver-manager wget yaspin "setuptools<81"
+```
+
+`pip check` then lists open-interpreter's own pins as unmet; that is expected.
 
 ## CLI
 

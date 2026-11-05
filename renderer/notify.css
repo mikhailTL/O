@@ -45,3 +45,25 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
   .nopen:hover { background: var(--surface-2); color: var(--text); }
   .nrow .allow:hover { background: var(--accent-hover); border-color: transparent; }
 }
+
+/* task cards: "Done: …" / "Needs you: …", one line of result, click to open the task */
+#tasks-stack { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+#tasks-stack:empty { margin-top: 0; }
+.ntask { display: flex; align-items: flex-start; gap: 4px; padding: 10px 8px 10px 12px; }
+.ntask-open {
+  flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; text-align: left;
+  border: 0; background: transparent; padding: 2px; border-radius: 12px; color: inherit;
+}
+.ntask-open:active { transform: none; }
+.ntask-mark {
+  width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  font: 700 12px/1 var(--sans); background: var(--accent); color: var(--on-accent);
+}
+.ntask.is-needs .ntask-mark { background: transparent; color: var(--text); border: 1.5px solid var(--text); }
+.ntask-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.ntask-body b { font: 600 14px/1.3 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ntask-body span { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ntask-close { flex: 0 0 auto; }
+@media (hover: hover) and (pointer: fine) {
+  .ntask-open:hover .ntask-body b { text-decoration: underline; text-underline-offset: 2px; }
+}

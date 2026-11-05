@@ -1,12 +1,36 @@
 # O AI installer — Windows (PowerShell 5.1 or 7).
 # Idempotent: safe to run again at any time. Each step prints "✓ name" or "✗ name — what to do".
-# Exit code = number of failed required steps. vLLM is not supported locally on Windows and
-# counts as failed-but-continue; the alternative is printed. Phase 2 packages and Docker are optional
-# and never count as failures.
-# Set $env:O_INSTALL_DRY = '1' to print the commands instead of running them.
-# Run with:  powershell -ExecutionPolicy Bypass -File install\install.ps1
+# Exit code = number of failed required steps. Every step is required except the Docker presence check.
+# Required engine packages: mcp, e2b, crewai, browser-use (in engine\pyproject.toml) and open-interpreter
+# (its own step: its pins conflict with browser-use, see Step-OpenInterpreter).
+# vLLM does not run locally on Windows: the installer asks for the URL of a remote or Docker vLLM
+# server and writes it to O's settings (vllmUrl).
+#
+# Run with:  powershell -ExecutionPolicy Bypass -File install\install.ps1 [-DryRun] [-VllmUrl URL]
+#   -DryRun / --dry-run       print the commands instead of running them (same as $env:O_INSTALL_DRY = '1')
+#   -VllmUrl / --vllm-url URL OpenAI-compatible vLLM endpoint, e.g. http://gpu-box:8000/v1; no prompt is shown
 
 $ErrorActionPreference = 'Continue'
+
+# Flags are parsed by hand so both PowerShell and install.sh spellings work.
+$DryRun = $false
+$VllmUrl = ''
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $a = [string]$args[$i]
+  switch -Regex ($a) {
+    '^(-DryRun|--dry-run)$' { $DryRun = $true }
+    '^--vllm-url=(.+)$' { $VllmUrl = $Matches[1] }
+    '^(-VllmUrl|--vllm-url)$' {
+      if ($i + 1 -ge $args.Count) { Write-Host "✗ $a needs a URL"; exit 1 }
+      $i++; $VllmUrl = [string]$args[$i]
+    }
+    '^(-h|--help|-Help)$' {
+      Write-Host 'Usage: powershell -ExecutionPolicy Bypass -File install\install.ps1 [-DryRun] [-VllmUrl URL]'
+      exit 0
+    }
+    default { Write-Host "✗ unknown option '$a'"; exit 1 }
+  }
+}
 
 # ---------- locate repo root (works from repo root or from install\) ----------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -20,7 +44,7 @@ if (Test-Path (Join-Path $ScriptDir 'package.json')) {
 }
 Set-Location $Root
 
-$Dry = ($env:O_INSTALL_DRY -eq '1')
+$Dry = ($DryRun -or $env:O_INSTALL_DRY -eq '1')
 $Venv = Join-Path $Root 'engine\.venv'
 $VenvPy = Join-Path $Venv 'Scripts\python.exe'
 $VenvEngine = Join-Path $Venv 'Scripts\o-engine.exe'
@@ -180,9 +204,68 @@ function Step-Playwright {
   }
 }
 
-# vLLM: not supported locally on Windows. Point O at a remote vLLM instead.
+# O's settings file (Electron userData of app "O AI"); the installer only merges keys into it.
+$SettingsFile = Join-Path $env:APPDATA 'O AI\o-settings.json'
+
+function Set-OSetting($key, $value) {
+  if ($Dry) {
+    Write-Host "  [dry] set $key=$value in $SettingsFile"
+    return $true
+  }
+  try {
+    $data = [ordered]@{}
+    if (Test-Path $SettingsFile) {
+      $obj = Get-Content -Raw -Path $SettingsFile | ConvertFrom-Json
+      foreach ($p in $obj.PSObject.Properties) { $data[$p.Name] = $p.Value }
+    }
+    $data[$key] = $value
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SettingsFile) | Out-Null
+    $tmp = "$SettingsFile.tmp"
+    [System.IO.File]::WriteAllText($tmp, ($data | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -Force -Path $tmp -Destination $SettingsFile
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+# vLLM: not supported locally on Windows. A remote or Docker vLLM URL is required.
+$VllmDocker = 'docker run --gpus all -p 8000:8000 vllm/vllm-openai --model meta-llama/Meta-Llama-3-8B-Instruct (on a machine with an NVIDIA GPU)'
 function Step-Vllm {
-  Fail 'vllm' "not supported locally on Windows; run vLLM on a Linux box with CUDA or in Docker 'vllm/vllm-openai' and set Settings → Engine → vLLM URL"
+  $url = $VllmUrl
+  if (-not $url -and -not $Dry -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+    Write-Host "  vLLM cannot run locally on Windows. Start one elsewhere, e.g.: $VllmDocker"
+    $url = Read-Host '  vLLM URL (OpenAI-compatible, e.g. http://gpu-box:8000/v1)'
+  }
+  if (-not $url) {
+    if ($Dry) {
+      Write-Host '  [dry] prompt for vLLM URL (or pass -VllmUrl URL), then save it as vllmUrl'
+      Ok 'vllm (remote URL)'
+      return
+    }
+    Fail 'vllm' "no vLLM URL given; start one with '$VllmDocker' and run this script again with -VllmUrl http://<host>:8000/v1"
+    return
+  }
+  if ($url -notmatch '^https?://') {
+    Fail 'vllm' "'$url' is not an http(s) URL; pass e.g. -VllmUrl http://gpu-box:8000/v1"
+    return
+  }
+  $url = $url.TrimEnd('/')
+  if (-not (Set-OSetting 'vllmUrl' $url)) {
+    Fail 'vllm' "could not write vllmUrl to $SettingsFile; set Settings → Engine → vLLM URL to $url by hand"
+    return
+  }
+  if ($Dry) {
+    Write-Host "  [dry] GET $url/models"
+    Ok "vllm (remote URL $url)"
+    return
+  }
+  try {
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri "$url/models" | Out-Null
+    Ok "vllm (remote URL $url saved as vllmUrl, reachable)"
+  } catch {
+    Fail 'vllm' "saved vllmUrl=$url but $url/models did not answer; start the server ($VllmDocker) and run this script again"
+  }
 }
 
 # screenpipe: published installer one-liner from https://github.com/mediar-ai/screenpipe
@@ -211,33 +294,55 @@ function Step-Xvfb {
   Ok 'xvfb — isolated display: headless-only on this OS'
 }
 
-# Phase 2 packages: MCP routing, Open Interpreter runner, E2B containment, crewAI swarm, browser-use.
-# Each is optional; the engine falls back without it. One pip call per package, none fatal.
-$Phase2Pkgs = @('mcp', 'open-interpreter', 'e2b', 'crewai', 'browser-use')
-function Step-Phase2Packages {
+# Required engine packages: installed by 'pip install -e engine' (engine\pyproject.toml); verified by import.
+# mcp = MCP tool routing, e2b = E2B containment, crewai = three-role swarm, browser_use = headless web agent.
+$RequiredModules = [ordered]@{ 'mcp' = 'mcp'; 'e2b' = 'e2b'; 'crewai' = 'crewai'; 'browser_use' = 'browser-use' }
+function Step-RequiredPackages {
   if (-not (Test-Path $VenvPy) -and -not $Dry) {
-    Fail 'phase 2 packages' 'skipped: engine venv missing'
+    Fail 'engine packages' 'skipped: engine venv missing'
     return
   }
-  $missing = @()
-  foreach ($pkg in $Phase2Pkgs) {
+  foreach ($mod in $RequiredModules.Keys) {
+    $pkg = $RequiredModules[$mod]
     if ($Dry) {
-      Write-Host "  [dry] $VenvPy -m pip install $pkg"
-      Ok "phase 2: $pkg"
+      Write-Host "  [dry] $VenvPy -c 'import $mod'"
+      Ok $pkg
       continue
     }
-    & $VenvPy -m pip install $pkg *> $null
+    & $VenvPy -c "import $mod" *> $null
     if ($LASTEXITCODE -eq 0) {
-      Ok "phase 2: $pkg"
+      Ok $pkg
     } else {
-      Write-Host "  ✗ phase 2: $pkg — optional; run '$VenvPy -m pip install $pkg' later if you want it"
-      $missing += $pkg
+      Fail $pkg "run '$VenvPy -m pip install -e $(Join-Path $Root 'engine')' and read its errors (then '$VenvPy -c `"import $mod`"')"
     }
   }
-  if ($missing.Count -eq 0) {
-    Ok 'phase 2 packages'
+}
+
+# open-interpreter: required, installed on its own. Its release pins anthropic<0.38 and psutil<6, while
+# browser-use needs psutil>=7 and a newer anthropic, so pip cannot resolve both. It is installed with
+# --no-deps plus its runtime dependencies unpinned; setuptools<81 keeps pkg_resources, which it imports.
+$OiSpec = 'open-interpreter>=0.4.3,<0.5'
+$OiDeps = @('astor', 'git-python', 'google-generativeai', 'html2image', 'html2text', 'inquirer', 'ipykernel', 'jupyter-client', 'litellm', 'matplotlib', 'nltk', 'platformdirs', 'pyperclip', 'pyyaml', 'selenium', 'send2trash', 'shortuuid', 'six', 'tiktoken', 'tokentrim', 'toml', 'webdriver-manager', 'wget', 'yaspin', 'pyreadline3', 'setuptools<81')
+function Step-OpenInterpreter {
+  if (-not (Test-Path $VenvPy) -and -not $Dry) {
+    Fail 'open-interpreter' 'skipped: engine venv missing'
+    return
+  }
+  $fix = "run '$VenvPy -m pip install --no-deps `"$OiSpec`"' and '$VenvPy -m pip install $($OiDeps -join ' ')' and read their errors"
+  if ((Invoke-Step $VenvPy @('-m', 'pip', 'install', '--no-deps', $OiSpec)) -and (Invoke-Step $VenvPy (@('-m', 'pip', 'install') + $OiDeps))) {
+    if ($Dry) {
+      Write-Host "  [dry] $VenvPy -c 'from interpreter import interpreter'"
+      Ok 'open-interpreter'
+      return
+    }
+    & $VenvPy -W ignore -c 'from interpreter import interpreter' *> $null
+    if ($LASTEXITCODE -eq 0) {
+      Ok 'open-interpreter'
+    } else {
+      Fail 'open-interpreter' "installed but 'from interpreter import interpreter' fails; $fix"
+    }
   } else {
-    Ok "phase 2 packages ($($missing.Count) optional package(s) not installed: $($missing -join ' '))"
+    Fail 'open-interpreter' $fix
   }
 }
 
@@ -282,13 +387,14 @@ Step-Playwright
 Step-Vllm
 Step-Screenpipe
 Step-Xvfb
-Step-Phase2Packages
+Step-RequiredPackages
+Step-OpenInterpreter
 Step-Docker
 Step-EngineCheck
 
 Write-Host ''
 Write-Host "Set Settings → Engine → Python to: $VenvPy"
-Write-Host "If Claude Code was just installed, run 'claude' once in a terminal to log in."
+Write-Host "If Claude Code was just installed, run 'claude' once in a terminal to log in (your Claude subscription powers O)."
 Write-Host ''
 
 if ($script:Failed.Count -eq 0) {

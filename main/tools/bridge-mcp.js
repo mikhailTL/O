@@ -25,6 +25,11 @@
 //   swarm_run          objective → swarm job; blocks until done (POST /swarm/run + /jobs poll).
 //   web_run            headless browser task on the isolated display; blocks until done (POST /web/run + /jobs poll).
 //   ui_emit            push A2UI GenUI frames to O's panel (POST /ui on the app, same token as the log).
+//   schedule_task      save a prompt that starts a task at a time or on repeat (POST /schedule on the app).
+//   list_schedules     the saved schedules.
+//   cancel_schedule    remove one schedule by id.
+//   recall_preferences what O has learned about the user (engine GET /learn/profile; cached 60 s).
+//   remember_preference one preference the user stated (engine POST /learn/observe, source "correction").
 //
 // Env:
 //   O_PERM_URL, O_SCREEN_URL, O_PERM_TOKEN      app HTTP endpoints for approve / see_screen
@@ -32,6 +37,8 @@
 //   O_LOG_URL, O_LOG_TOKEN                      app action-log endpoint (POST /log)
 //   O_UI_URL, O_SESSION_SURFACE                 app GenUI endpoint (POST /ui, token O_LOG_TOKEN) and this chat's surface id (chat:<id>)
 //   O_ENGINE_URL, O_ENGINE_TOKEN                engine base URL (http://127.0.0.1:<port>) and token
+//   O_SCHEDULE_URL                              app schedule endpoint (POST /schedule, token O_PERM_TOKEN)
+//   O_TASK_ID                                   the task this bridge serves (tags schedules and observations)
 //
 // Protocol: JSON-RPC 2.0, one message per line on stdin/stdout. Logs go to stderr only.
 
@@ -47,6 +54,9 @@ const UI_URL = process.env.O_UI_URL;
 const SESSION_SURFACE = process.env.O_SESSION_SURFACE || 'chat:default';
 const ENGINE_URL = (process.env.O_ENGINE_URL || '').replace(/\/+$/, '');
 const ENGINE_TOKEN = process.env.O_ENGINE_TOKEN || '';
+const SCHEDULE_URL = process.env.O_SCHEDULE_URL;
+const TASK_ID = process.env.O_TASK_ID || '';
+const PROFILE_CACHE_MS = 60 * 1000;
 
 const HTTP_TIMEOUT_MS = 30000;
 const PROVISION_POLL_MS = 1000;
@@ -170,6 +180,34 @@ const UI_EMIT_SCHEMA = {
     surface: { type: 'string', minLength: 1, maxLength: 200, description: 'Surface id for frames that have none (default: this chat\'s surface).' },
   },
   required: ['frames'],
+  additionalProperties: false,
+};
+
+const WHEN_TYPES = ['once', 'daily', 'weekly', 'every'];
+const DAY_RE = /^(sun|mon|tue|wed|thu|fri|sat)/i;
+const WHEN_SCHEMA = {
+  type: 'object',
+  description: 'When to run, in the user\'s local time. once {at:"2026-11-06T08:00"} · daily {time:"08:00"} · ' +
+    'weekly {days:["mon","fri"], time:"08:00"} (weekdays = mon..fri) · every {hours:3}.',
+  properties: {
+    type: { type: 'string', enum: WHEN_TYPES },
+    at: { type: 'string', maxLength: 40, description: 'once: local date and time, ISO 8601.' },
+    time: { type: 'string', pattern: '^\\d{1,2}:\\d{2}$', description: 'daily / weekly: "HH:MM", 24-hour.' },
+    days: { type: 'array', minItems: 1, maxItems: 7, items: { type: 'string', enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] } },
+    hours: { type: 'number', minimum: 1, maximum: 168, description: 'every: interval in hours.' },
+  },
+  required: ['type'],
+  additionalProperties: false,
+};
+
+const SCHEDULE_SCHEMA = {
+  type: 'object',
+  properties: {
+    prompt: { type: 'string', minLength: 1, maxLength: 4000, description: 'The task to run each time, written as the user would ask it ("Summarize what\'s new in my inbox").' },
+    when: WHEN_SCHEMA,
+    title: { type: 'string', maxLength: 80, description: 'Short label shown in O\'s task list (optional).' },
+  },
+  required: ['prompt', 'when'],
   additionalProperties: false,
 };
 
@@ -329,6 +367,33 @@ const TOOLS = [
     description: 'Render a plan, progress or result in O\'s panel as declarative A2UI frames (preferred over prose for anything structured). ' +
       'Frames without a surface go to this chat\'s surface. Returns "accepted N, rejected M"; rejected frames are noted in the action log.',
     inputSchema: UI_EMIT_SCHEMA,
+  },
+  {
+    name: 'schedule_task',
+    description: 'Save a task that O starts on its own at a time or on repeat ("every Monday at 8, summarize my inbox"). ' +
+      'Returns the saved schedule with its id and next run. The user sees it in O\'s task list and Settings.',
+    inputSchema: SCHEDULE_SCHEMA,
+  },
+  {
+    name: 'list_schedules',
+    description: 'List the saved schedules: [{id, title, prompt, label, nextRun}].',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'cancel_schedule',
+    description: 'Cancel one saved schedule by id (see list_schedules).',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', minLength: 1, maxLength: 64 } }, required: ['id'], additionalProperties: false },
+  },
+  {
+    name: 'recall_preferences',
+    description: 'What O has learned about how the user likes things done: {preferences, habits, app_skills, suggestions}. ' +
+      'Call once at the start of a task (cheap, cached) and apply what fits without mentioning it.',
+    inputSchema: { type: 'object', properties: { topic: { type: 'string', maxLength: 200, description: 'Optional topic to focus on (e.g. "travel", "file names").' } }, additionalProperties: false },
+  },
+  {
+    name: 'remember_preference',
+    description: 'Remember one thing the user said about how they like something done ("I prefer aisle seats", "name files YYYY-MM-DD"). One short sentence.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 500 } }, required: ['text'], additionalProperties: false },
   },
 ];
 
@@ -503,6 +568,68 @@ async function uiEmit(args) {
   }
 }
 
+/** Check a schedule_task call before it leaves the bridge; returns '' or what to fix. */
+function scheduleProblem(args) {
+  if (!args || typeof args !== 'object') return 'arguments must be an object';
+  const extra = Object.keys(args).filter((k) => !['prompt', 'when', 'title'].includes(k));
+  if (extra.length) return `unknown argument ${extra[0]}`;
+  if (typeof args.prompt !== 'string' || !args.prompt.trim()) return 'prompt must be a non-empty string';
+  if (args.prompt.length > 4000) return 'prompt is longer than 4000 characters';
+  if (args.title != null && (typeof args.title !== 'string' || args.title.length > 80)) return 'title must be a string of at most 80 characters';
+  const w = args.when;
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return 'when must be an object like {"type":"daily","time":"08:00"}';
+  const wextra = Object.keys(w).filter((k) => !['type', 'at', 'time', 'days', 'hours'].includes(k));
+  if (wextra.length) return `unknown when field ${wextra[0]}`;
+  if (!WHEN_TYPES.includes(w.type)) return `when.type must be one of ${WHEN_TYPES.join(', ')}`;
+  const timeOk = (t) => typeof t === 'string' && /^\d{1,2}:\d{2}$/.test(t) && +t.split(':')[0] < 24 && +t.split(':')[1] < 60;
+  if (w.type === 'once' && (typeof w.at !== 'string' || !Number.isFinite(Date.parse(w.at)))) return 'once needs at: a local date and time like "2026-11-06T08:00"';
+  if ((w.type === 'daily' || w.type === 'weekly') && !timeOk(w.time)) return 'time must be "HH:MM" (24-hour)';
+  if (w.type === 'weekly' && (!Array.isArray(w.days) || !w.days.length || !w.days.every((d) => typeof d === 'string' && DAY_RE.test(d)))) return 'weekly needs days, e.g. ["mon","fri"]';
+  if (w.type === 'every' && !(typeof w.hours === 'number' && w.hours >= 1 && w.hours <= 168)) return 'every needs hours between 1 and 168';
+  return '';
+}
+
+async function scheduleCall(op, payload) {
+  if (!SCHEDULE_URL) return textResult('Scheduling is not reachable from this bridge.', true);
+  try {
+    const r = await request('POST', SCHEDULE_URL, { op, ...payload }, PERM_TOKEN, 10000);
+    if (!r || r.ok === false) return textResult((r && r.error) || 'O did not save that.', true);
+    return textResult(pretty(r));
+  } catch (e) {
+    return textResult(`${op} schedule failed: ${e.message}`, true);
+  }
+}
+
+const profileCache = new Map(); // topic -> { at, text }
+async function recallPreferences(args) {
+  if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
+  const topic = args && typeof args.topic === 'string' ? args.topic.trim().slice(0, 200) : '';
+  const hit = profileCache.get(topic);
+  if (hit && Date.now() - hit.at < PROFILE_CACHE_MS) return textResult(hit.text);
+  try {
+    const p = await engine('GET', '/learn/profile' + (topic ? '?topic=' + encodeURIComponent(topic) : ''), undefined, 5000);
+    const text = pretty({ preferences: (p && p.preferences) || [], habits: (p && p.habits) || [], app_skills: (p && p.app_skills) || [], suggestions: (p && p.suggestions) || [] });
+    profileCache.set(topic, { at: Date.now(), text });
+    return textResult(text);
+  } catch (e) {
+    return textResult('recall_preferences failed: ' + e.message, true);
+  }
+}
+
+async function rememberPreference(args) {
+  if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
+  const text = String((args && args.text) || '').trim();
+  if (!text) return textResult('remember_preference needs non-empty text.', true);
+  try {
+    await engine('POST', '/learn/observe', { source: 'correction', ...(TASK_ID ? { task_id: TASK_ID } : {}), text: text.slice(0, 500) }, 5000);
+    profileCache.clear();
+    fireAndForgetLog({ kind: 'note', summary: 'Remembered: ' + text.slice(0, 200), detail: { learn: 'correction' } });
+    return textResult('remembered');
+  } catch (e) {
+    return textResult('remember_preference failed: ' + e.message, true);
+  }
+}
+
 async function runJob(path, args, what) {
   if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
   let jobId;
@@ -649,6 +776,20 @@ async function callTool(name, args) {
       return runJob('/web/run', args.url ? { task: args.task, url: args.url } : { task: args.task }, 'web_run');
     case 'ui_emit':
       return uiEmit(args);
+    case 'schedule_task': {
+      const problem = scheduleProblem(args);
+      if (problem) return textResult('schedule_task: ' + problem, true);
+      return scheduleCall('add', { prompt: args.prompt.trim(), when: args.when, ...(args.title ? { title: args.title } : {}) });
+    }
+    case 'list_schedules':
+      return scheduleCall('list', {});
+    case 'cancel_schedule':
+      if (!args || typeof args.id !== 'string' || !args.id.trim()) return textResult('cancel_schedule needs an id (see list_schedules).', true);
+      return scheduleCall('cancel', { id: args.id.trim() });
+    case 'recall_preferences':
+      return recallPreferences(args);
+    case 'remember_preference':
+      return rememberPreference(args);
     default:
       return null;
   }

@@ -16,6 +16,7 @@ const DEFAULTS = Object.freeze({
   browserMode: 'link', // 'link' = every tab of your own Edge/Chrome via O Link | 'mine' = Playwright Extension (tab group) | 'separate' = O's own invisible browser
   extensionToken: '', // PLAYWRIGHT_MCP_EXTENSION_TOKEN from the Playwright Extension (skips the connect dialog)
   browserProfile: '', // optional Chrome profile dir name for extension mode, e.g. "Profile 1"
+  maxParallelTasks: 3, // 1..8 tasks run at once (each its own Claude Code process); more wait in a queue
   quiet: true, // never take keyboard focus on its own (safe while gaming)
   screenAccess: true, // let O take screenshots of your screen (see_screen tool)
   autoUpdateCheck: true, // check GitHub for a new version at startup and every few hours
@@ -128,6 +129,10 @@ function sanitize(obj) {
   if (typeof obj.extensionToken === 'string') out.extensionToken = obj.extensionToken.trim();
   if (typeof obj.browserProfile === 'string') out.browserProfile = obj.browserProfile.trim();
   if (typeof obj.quiet === 'boolean') out.quiet = obj.quiet;
+  if (obj.maxParallelTasks !== undefined && obj.maxParallelTasks !== null && obj.maxParallelTasks !== '') {
+    const n = parseInt(obj.maxParallelTasks, 10);
+    if (Number.isFinite(n)) out.maxParallelTasks = Math.max(1, Math.min(8, n));
+  }
   if (typeof obj.openAtLogin === 'boolean') out.openAtLogin = obj.openAtLogin;
   if (typeof obj.shortcutsMade === 'boolean') out.shortcutsMade = obj.shortcutsMade;
   if (typeof obj.screenAccess === 'boolean') out.screenAccess = obj.screenAccess;
