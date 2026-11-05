@@ -5,19 +5,22 @@
   "request": {
     "label": "Set up demo-app",
     "steps": [
-      { "target_directory": ".", "command_string": "mkdir -p demo-app && printf '# demo-app\\n' > demo-app/README.md", "timeout_seconds": 30 },
-      { "target_directory": "demo-app", "command_string": "printf '#!/bin/sh\\necho hello from demo-app\\n' > hello.sh && chmod +x hello.sh", "timeout_seconds": 30 },
-      { "target_directory": "demo-app", "command_string": "./hello.sh", "timeout_seconds": 30 }
+      {
+        "target_directory": ".",
+        "command_string": "mkdir -p demo-app && printf '# demo-app\\n' > demo-app/README.md",
+        "timeout_seconds": 30
+      },
+      {
+        "target_directory": "demo-app",
+        "command_string": "printf '#!/bin/sh\\necho hello from demo-app\\n' > hello.sh && chmod +x hello.sh",
+        "timeout_seconds": 30
+      },
+      {
+        "target_directory": "demo-app",
+        "command_string": "./hello.sh",
+        "timeout_seconds": 30
+      }
     ]
-  },
-  "captions": {
-    "meet": ["Meet O", "a little desktop agent that does things on your computer"],
-    "ask": ["Ask it in plain words", "the panel opens next to O; nothing else moves"],
-    "engine": ["A provisioning job runs in O's engine", "strict steps, in a sandbox, every one recorded"],
-    "runs": ["Runs: plan, steps and result as live cards", "built from checked, declarative frames, never raw HTML"],
-    "log": ["Everything it did is in the action log", "hash-chained, append-only, yours to read"],
-    "again": ["The same request again?", "Déjà vu: the saved script replays, no model call"],
-    "files": ["The result, on disk", "demo-app/README.md and hello.sh, made by the job"]
   },
   "reply": "Done! **demo-app** is set up: a README, a `hello.sh` script, and it ran — `hello from demo-app`.",
   "replyCached": "Déjà vu! That exact job is in my script cache, so I replayed it — no thinking needed."

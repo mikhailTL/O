@@ -8,7 +8,7 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
   border: 1px solid var(--line);
   border-radius: 22px;
   padding: 12px 12px 10px 14px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(159, 216, 255, 0.18), 0 14px 40px rgba(0, 0, 0, .45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.12), var(--glow), 0 14px 40px rgba(0, 0, 0, .45);
   color: var(--text);
   animation: nin .28s cubic-bezier(.2, .9, .3, 1.1) both;
   position: relative;

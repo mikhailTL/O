@@ -1,52 +1,30 @@
 {
-  "id": "d1",
+  "name": "d1",
   "title": "Set up a project",
   "file": "docs/videos/d1.mp4",
-  "bytes": 7255259,
-  "durationS": 57.633333,
-  "width": 3200,
-  "height": 2000,
-  "marks": [
+  "bytes": 13916516,
+  "durationS": 29.266667,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
+  "timeline": [
     {
-      "t": 2.794,
-      "caption": "Meet O"
+      "scene": "d1-1",
+      "start": 0,
+      "seconds": 15.6,
+      "bytes": 6407275
     },
     {
-      "t": 7.107,
-      "caption": "Ask it in plain words"
-    },
-    {
-      "t": 16.686,
-      "caption": "A provisioning job runs in O's engine"
-    },
-    {
-      "t": 21.709,
-      "label": "provision 54afa985f2704be2b554bcd0da4b137a"
-    },
-    {
-      "t": 23.078,
-      "caption": "Runs: plan, steps and result as live cards"
-    },
-    {
-      "t": 30.916,
-      "caption": "Everything it did is in the action log"
-    },
-    {
-      "t": 40.414,
-      "caption": "The same request again?"
-    },
-    {
-      "t": 47.29,
-      "label": "provision 7909e51982fe48499d5afbd3aafaccbe"
-    },
-    {
-      "t": 51.487,
-      "caption": "The result, on disk"
-    },
-    {
-      "t": 54.936,
-      "caption": null
+      "scene": "d1-2",
+      "start": 15.6,
+      "seconds": 13.67,
+      "bytes": 7509889
     }
   ],
-  "recordedAt": "2026-11-05T05:55:26.946Z"
+  "facts": {
+    "job": "04b191cda16848c4835069cdfbb1a6c0",
+    "cached": true
+  },
+  "renderedAt": "2026-11-05T12:50:36.224Z"
 }

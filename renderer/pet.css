@@ -1,12 +1,13 @@
-/* O AI — pet window styles. The avatar is a glass orb, so the bubble and the prompt button
-   are glass too: near-black, translucent, a hairline border and the ring's ice-blue as the one accent.
+/* O AI — pet window styles. The avatar is a black glass orb, so the bubble and the prompt button
+   are glass too: near-black, translucent, a hairline border and the ring's white glow as the one accent.
    Typeface: the system sans. Base html/body rules live here only (index.html carries no inline
    style, so its CSP can keep style-src to 'self'). */
 :root {
   --pet-glass: rgba(12, 12, 14, 0.82);
   --pet-line: rgba(255, 255, 255, 0.1);
   --pet-text: #f4f4f6;
-  --pet-ring: #9fd8ff;
+  --pet-ring: #ffffff;
+  --pet-focus: rgba(255, 255, 255, 0.6);
   --pet-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
 }
 html, body {
@@ -105,13 +106,13 @@ body.show-btn #prompt-btn,
   opacity: 1;
   transform: scale(1);
 }
-#prompt-btn:focus-visible { outline: 2px solid var(--pet-ring); outline-offset: 2px; }
+#prompt-btn:focus-visible { outline: 2px solid var(--pet-focus); outline-offset: 2px; }
 #prompt-btn:active { transform: scale(0.94); }
 body.dragging #prompt-btn { opacity: 0; }
 
 @media (hover: hover) and (pointer: fine) {
   body:hover #prompt-btn { opacity: 1; transform: scale(1); }
-  #prompt-btn:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 3px rgba(159, 216, 255, 0.22), 0 6px 18px rgba(0, 0, 0, 0.4); }
+  #prompt-btn:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 3px rgba(255, 255, 255, 0.16), 0 0 18px rgba(255, 255, 255, 0.14), 0 6px 18px rgba(0, 0, 0, 0.4); }
 }
 @media (hover: none) {
   #prompt-btn { opacity: 1; transform: none; }

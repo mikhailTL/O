@@ -1,4 +1,4 @@
-// Stand-in for main/preload.js (window.o) inside the pet and panel frames on the demo stage. Injected with
+// Stand-in for main/preload.js (window.o) inside the panel frame embedded by the scene system (motion/scene.js). Injected with
 // Playwright's addInitScript, so it runs before the renderer's own scripts. Same surface as preload.js;
 // log, GenUI, state and prompt calls go to the demo backend (real engine + real action log) through the hub.
 (function () {

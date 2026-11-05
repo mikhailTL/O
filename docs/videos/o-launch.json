@@ -1,46 +1,84 @@
 {
+  "name": "launch",
+  "title": "O — launch film",
   "file": "docs/videos/o-launch.mp4",
-  "bytes": 30388773,
-  "durationS": 214.666667,
-  "width": 3200,
-  "height": 2000,
+  "bytes": 40693937,
+  "durationS": 90.933333,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
   "timeline": [
     {
-      "name": "title",
+      "scene": "a-open",
       "start": 0,
-      "seconds": 3.5
+      "seconds": 7.6,
+      "bytes": 3566627
     },
     {
-      "name": "d1",
-      "start": 3.5,
-      "seconds": 57.63
+      "scene": "b-ask",
+      "start": 7.6,
+      "seconds": 14.5,
+      "bytes": 6101691
     },
     {
-      "name": "d2",
-      "start": 61.13,
-      "seconds": 47.27
+      "scene": "c-result",
+      "start": 22.1,
+      "seconds": 20.17,
+      "bytes": 10539980
     },
     {
-      "name": "d3",
-      "start": 108.4,
-      "seconds": 44.73
+      "scene": "d-log",
+      "start": 42.27,
+      "seconds": 12.07,
+      "bytes": 5693748
     },
     {
-      "name": "d4",
-      "start": 153.13,
-      "seconds": 48.53
+      "scene": "e-api",
+      "start": 54.33,
+      "seconds": 10.1,
+      "bytes": 4048631
     },
     {
-      "name": "why",
-      "start": 201.67,
-      "seconds": 9
+      "scene": "f-computer",
+      "start": 64.43,
+      "seconds": 11.5,
+      "bytes": 3852064
     },
     {
-      "name": "end",
-      "start": 210.67,
-      "seconds": 4
+      "scene": "g-claims",
+      "start": 75.93,
+      "seconds": 9.2,
+      "bytes": 3929530
+    },
+    {
+      "scene": "h-close",
+      "start": 85.13,
+      "seconds": 5.8,
+      "bytes": 2966906
     }
   ],
-  "audio": false,
-  "builtAt": "2026-11-05T06:04:24.150Z"
+  "facts": {
+    "job": "ba1678c6d1074c8cab60f663c4ed1f4e",
+    "cached": true,
+    "cuProcedure": "notes/4344e08c87bf44daeb178314e0d975f60fd62ceef6012460305a203afcd4df09/v1",
+    "replayPlannerCalls": 0,
+    "chainBefore": {
+      "ok": true,
+      "count": 142
+    },
+    "tampered": {
+      "line": 86,
+      "index": 85,
+      "before": "b99b6bbae24747d79ac42182b5d706eb: cu step 0 wait for role='frame' name='Notes' ≤5s -> ok",
+      "after": "b99b6bbae24747d79ac42182b5d706eb: cu step 0 wait for role='frame' name='Notes' ≤5s -> OK"
+    },
+    "chainAfter": {
+      "ok": false,
+      "count": 143,
+      "brokenAt": 85,
+      "reason": "hash"
+    }
+  },
+  "renderedAt": "2026-11-05T13:49:39.119Z"
 }

@@ -1,44 +1,44 @@
 {
-  "id": "d3",
+  "name": "d3",
   "title": "Use O from any app",
   "file": "docs/videos/d3.mp4",
-  "bytes": 7088383,
-  "durationS": 44.733333,
-  "width": 3200,
-  "height": 2000,
-  "marks": [
+  "bytes": 11598571,
+  "durationS": 28,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
+  "timeline": [
     {
-      "t": 2.647,
-      "caption": "An OpenAI-compatible API on localhost"
+      "scene": "d3-1",
+      "start": 0,
+      "seconds": 7.2,
+      "bytes": 3206290
     },
     {
-      "t": 11.343,
-      "caption": "curl it like any chat API"
+      "scene": "d3-2",
+      "start": 7.2,
+      "seconds": 9.43,
+      "bytes": 3532734
     },
     {
-      "t": 16.485,
-      "caption": "Streaming SSE, chat.completion.chunk frames, data: [DONE]"
+      "scene": "d3-3",
+      "start": 16.63,
+      "seconds": 6.17,
+      "bytes": 2173496
     },
     {
-      "t": 25.263,
-      "label": "curl exit 0"
-    },
-    {
-      "t": 27.864,
-      "caption": "Or the openai Python client"
-    },
-    {
-      "t": 32.534,
-      "label": "python exit 0"
-    },
-    {
-      "t": 35.135,
-      "caption": "Every API request is in the action log too"
-    },
-    {
-      "t": 42.134,
-      "caption": null
+      "scene": "d3-4",
+      "start": 22.8,
+      "seconds": 5.2,
+      "bytes": 2688420
     }
   ],
-  "recordedAt": "2026-11-05T05:58:39.892Z"
+  "facts": {
+    "curlFrames": 5,
+    "python": [
+      "{\"ok\": true, \"source\": \"O API proxy\"}"
+    ]
+  },
+  "renderedAt": "2026-11-05T13:10:48.044Z"
 }

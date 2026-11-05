@@ -353,18 +353,21 @@
     <div id="hero">
       <svg class="hero-pet" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
         <defs>
-          <radialGradient id="hero-orb" cx="36%" cy="30%" r="78%"><stop offset="0" stop-color="#3b3b44"/><stop offset=".5" stop-color="#17171b"/><stop offset="1" stop-color="#050506"/></radialGradient>
-          <radialGradient id="hero-rim" cx="50%" cy="50%" r="50%"><stop offset=".82" stop-color="#fff" stop-opacity="0"/><stop offset=".97" stop-color="#fff" stop-opacity=".16"/><stop offset="1" stop-color="#fff" stop-opacity=".05"/></radialGradient>
-          <linearGradient id="hero-sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
-          <filter id="hero-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="9"/></filter>
+          <linearGradient id="hero-body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1a1d"/><stop offset=".55" stop-color="#0c0c0e"/><stop offset="1" stop-color="#050506"/></linearGradient>
+          <linearGradient id="hero-rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".5" stop-color="#fff" stop-opacity=".12"/><stop offset="1" stop-color="#fff" stop-opacity=".3"/></linearGradient>
+          <linearGradient id="hero-sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+          <radialGradient id="hero-spec" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".6" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+          <filter id="hero-halo" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="8"/></filter>
+          <filter id="hero-soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.5"/></filter>
+          <clipPath id="hero-disc"><circle cx="128" cy="128" r="118"/></clipPath>
         </defs>
-        <circle cx="128" cy="128" r="118" fill="url(#hero-orb)" stroke="none"/>
-        <circle cx="128" cy="128" r="118" fill="url(#hero-rim)" stroke="none"/>
-        <ellipse cx="128" cy="46" rx="74" ry="26" fill="url(#hero-sheen)" stroke="none"/>
-        <circle class="ring-glow" cx="128" cy="128" r="80" fill="none" stroke="#9fd8ff" stroke-width="22" opacity=".42" filter="url(#hero-glow)"/>
-        <circle cx="128" cy="128" r="80" fill="none" stroke="#bfe6ff" stroke-width="9" opacity=".92"/>
-        <circle cx="128" cy="128" r="80" fill="none" stroke="#f2fbff" stroke-width="3.5"/>
-        <ellipse cx="104" cy="100" rx="12" ry="9.5" fill="#fff" stroke="none" opacity=".96"/>
+        <circle cx="128" cy="128" r="118" fill="url(#hero-body)" stroke="none"/>
+        <ellipse cx="128" cy="52" rx="92" ry="34" fill="url(#hero-sheen)" stroke="none" clip-path="url(#hero-disc)"/>
+        <circle cx="128" cy="128" r="117.25" fill="none" stroke="url(#hero-rim)" stroke-width="1.5"/>
+        <circle class="ring-glow" cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" opacity=".28" filter="url(#hero-halo)"/>
+        <circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="10" opacity=".32" filter="url(#hero-soft)"/>
+        <circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="6" opacity=".96"/>
+        <ellipse cx="100" cy="74" rx="18" ry="11" transform="rotate(-32 100 74)" fill="url(#hero-spec)" stroke="none"/>
       </svg>
       <h1 id="hero-greeting">What can I do for you?</h1>
       <p class="hero-sub">I work inside your own tabs and on your computer, without touching your mouse or keyboard. Everything I do is written in the action log.</p>

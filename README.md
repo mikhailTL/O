@@ -300,23 +300,24 @@ Settings live in O's JSON settings file in Electron's userData folder.
 
 ## Demos and launch video
 
-`tools/demo/` records the demos with Playwright on a 1600×1000 mock desktop that embeds the real `renderer/index.html` (pet) and `renderer/panel.html` (panel) and talks to a real backend: the Python engine (`python3 -m o_engine serve`), the real action log (`main/actionlog.js`) and the real API proxy (`main/proxy.js`) with `claude` replaced by `main/tools/fake-claude.js`, so no Claude login is needed. Jobs, cache replays, GenUI frames, log entries, hash-chain verification and proxy requests in the videos are real; the chat turns (which tools Claude Code would call, what it says) are scripted in `tools/demo/demos/<id>.js` from the storyboard `<id>.json`, and the videos say so in a corner badge.
+`tools/demo/` renders the launch film and four short demos as *scenes*, not screen recordings: `tools/demo/motion/` is a small scene system (Playwright, one 1920×1080 composition at 2× → 3840×2160, animations seeked frame by frame at 30 fps, one h264 file per scene joined with ffmpeg's concat demuxer). The real `renderer/panel.html` is embedded where a scene shows the product (the glass composer, the Runs sheet, the action log) and every fact on screen comes from a real run made just before rendering (`motion/films.js`): the Python engine (`python3 -m o_engine serve`), the action log (`main/actionlog.js`, hash chain verified before and after one byte is changed on disk), the API proxy (`main/proxy.js` over `main/tools/fake-claude.js`, so no Claude login is needed) and the computer-use graph on a scripted accessibility tree (`cu-tree.json`). The chat replies are scripted; the launch film says so once, in its second frame. Black glass, white light only; no caption bars, badges or music.
 
 ```sh
-npm run demo:record          # docs/videos/d1.mp4 … d4.mp4 (+ .json with duration/size), 3200×2000 h264 30 fps, no audio
+npm run demo:record          # docs/videos/d1.mp4 … d4.mp4 (+ .json with duration, size, timeline, facts), ≤ 35 s each
 npm run demo:record -- d2    # one demo
-npm run demo:launch          # docs/videos/o-launch.mp4: title card, d1–d4, differentiator card, end card
-node tools/demo/launch.js --voiceover ./vo   # mux ./vo/title.wav, d1.wav … d4.wav, why.wav, end.wav
+npm run demo:launch          # docs/videos/o-launch.mp4 (+ .json), 90–120 s
+node tools/demo/launch.js --audio music.m4a   # mux a track (video copied); --stills <dir> saves PNGs of the busiest moments instead
 ```
 
-| Demo | Shows |
+| Film | Shows |
 |---|---|
-| `d1` Set up a project | a request → real provisioning job (sandboxed steps) → Runs sheet → action log → the same request replays from the script cache (“Déjà vu”) → the files it made |
-| `d2` The log is the product | log sheet, filters, expanded row, **Verify chain ✓**, one byte edited in `o-actions.jsonl` on disk, **Verify chain ✗ broken at #n** |
-| `d3` Use O from any app | `curl` with `stream: true` against the real proxy (SSE chunks, `[DONE]`), the `openai` Python client with `o-ai-code`, both requests in the action log |
-| `d4` Computer use without touching your mouse | `/computer/run` on a scripted accessibility tree (`O_CU_FAKE_TREE`): plan → a step fails → heal → judged → stored as a procedure; `/computer/replay` with zero planner calls |
+| `o-launch` | wordmark → honesty line → the composer, prompt typed live → "Working" → the job's engine steps → the Runs sheet → reply → the same request replays from the cache → files on disk → the action log streaming, Verify chain ✓, one byte changed, ✗ broken at #n → `curl` streaming SSE from the proxy → computer use: tree, plan, failed step, heal, judged, stored, replayed with 0 planner calls → "O logs / verifies / heals / replays." → outro |
+| `d1` Set up a project | composer → engine steps → Runs sheet → cache replay → files on disk |
+| `d2` The log is the product | composer → the log sheet filling → Verify chain ✓ → one byte edited in `o-actions.jsonl` → ✗ broken at #n |
+| `d3` Use O from any app | Settings → API proxy → `curl` with `stream: true` (SSE chunks, `[DONE]`) → the `openai` Python client with `o-ai-code` → both requests in the log |
+| `d4` Computer use without touching your mouse | accessibility tree → OScript steps → a step fails → heal → judged → stored as a procedure → replay with zero planner calls → Runs phases |
 
-Needs Playwright with Chromium (`npx playwright install chromium`) and `ffmpeg` on PATH for mp4; without ffmpeg the Playwright `.webm` is written instead and `demo:launch` is skipped. `O_DEMO_SHOTS=<dir>` saves a PNG at every caption for checking a storyboard without watching the video. The differentiator card in the launch video only states what this README states; it names no other product.
+Needs Playwright with Chromium (`npx playwright install chromium`) and `ffmpeg`/`ffprobe` on PATH. Encoder settings are identical for every scene (`libx264 -preset medium -crf 18 yuv420p`, 30 fps); files are written to a temp name and renamed on success.
 
 ## Troubleshooting
 

@@ -5,14 +5,6 @@
   "goal": "Type a note and save it",
   "app": "notes",
   "prompt": "In Notes, type a note and save it",
-  "captions": {
-    "tree": ["A desktop app, seen through its accessibility tree", "O acts on nodes by API: invoke, set value, type into a node; your mouse never moves"],
-    "plan": ["A goal becomes an OScript: a strict JSON plan", "find → type → click → assert, every step judged"],
-    "fail": ["Step 3 fails: there is no \"Save As…\" button", "a11y, cached locator and vision grounding all come back empty"],
-    "heal": ["Heal: one replacement step, re-run, judged ✓", "saved as a procedure, v1, with its lineage"],
-    "replay": ["Run it again: the saved procedure replays", "no planner call, no heal; an append-only version chain on disk"],
-    "runs": ["Runs shows the phases live", "context · plan · ground · execute · judge · heal · store · report"]
-  },
   "reply": "Done: I typed the note and saved it. The first plan looked for a \"Save As…\" button that isn't there; I healed that one step and kept the fixed procedure.",
   "replyReplay": "Déjà vu: that procedure is saved, so I replayed it step by step. No planning needed."
 }

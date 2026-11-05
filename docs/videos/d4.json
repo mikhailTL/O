@@ -1,48 +1,37 @@
 {
-  "id": "d4",
+  "name": "d4",
   "title": "Computer use without touching your mouse",
   "file": "docs/videos/d4.mp4",
-  "bytes": 7468958,
-  "durationS": 48.533333,
-  "width": 3200,
-  "height": 2000,
-  "marks": [
+  "bytes": 14463565,
+  "durationS": 30.333333,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
+  "timeline": [
     {
-      "t": 2.58,
-      "caption": "A desktop app, seen through its accessibility tree"
+      "scene": "d4-1",
+      "start": 0,
+      "seconds": 8.03,
+      "bytes": 3692937
     },
     {
-      "t": 13.288,
-      "caption": "A goal becomes an OScript: a strict JSON plan"
+      "scene": "d4-2",
+      "start": 8.03,
+      "seconds": 13.1,
+      "bytes": 4711805
     },
     {
-      "t": 14.128,
-      "label": "cu run ok=true attempt=1 proc=notes/4344e08c87bf44daeb178314e0d975f60fd62ceef6012460305a203afcd4df09/v1"
-    },
-    {
-      "t": 17.98,
-      "caption": "Step 3 fails: there is no \"Save As…\" button"
-    },
-    {
-      "t": 19.099,
-      "caption": "Heal: one replacement step, re-run, judged ✓"
-    },
-    {
-      "t": 28.52,
-      "caption": "Runs shows the phases live"
-    },
-    {
-      "t": 34.444,
-      "caption": "Run it again: the saved procedure replays"
-    },
-    {
-      "t": 37.205,
-      "label": "cu replay ok=true cached=true plans 2->2 replans 1->1"
-    },
-    {
-      "t": 46.288,
-      "caption": null
+      "scene": "d4-3",
+      "start": 21.13,
+      "seconds": 9.2,
+      "bytes": 6060246
     }
   ],
-  "recordedAt": "2026-11-05T06:00:23.071Z"
+  "facts": {
+    "procedure": "notes/4344e08c87bf44daeb178314e0d975f60fd62ceef6012460305a203afcd4df09/v1",
+    "attempt": 1,
+    "replayPlannerCalls": 0
+  },
+  "renderedAt": "2026-11-05T13:20:21.888Z"
 }

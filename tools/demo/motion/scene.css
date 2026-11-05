@@ -1,0 +1,91 @@
+/* O launch film: one 1920×1080 composition, black glass, white light only.
+   Rules (docs/research/2026-11-05-launch-video-reference.md): black canvas, white at 96/70/8 %, one radial
+   white glow, serif for claim lines only, sentence case, transform/opacity motion. Motion itself is driven
+   from scene.js (WAAPI, paused, seeked per frame), so no CSS transitions or keyframes live here. */
+:root {
+  --w96: rgba(255, 255, 255, .96);
+  --w70: rgba(255, 255, 255, .70);
+  --w40: rgba(255, 255, 255, .40);
+  --w14: rgba(255, 255, 255, .14);
+  --w08: rgba(255, 255, 255, .08);
+  --glass: rgba(11, 11, 13, .86);
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --display: "Inter Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", "Bitstream Charter", Charter, Lora, Georgia, serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { color-scheme: dark; }
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #050506; color: var(--w96); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+#canvas { position: absolute; inset: 0; background: #050506; }
+#glow { position: absolute; inset: -200px; background: radial-gradient(1100px 820px at 68% 30%, rgba(255, 255, 255, .085), rgba(255, 255, 255, 0) 62%); }
+/* a whisper of grain so the glow does not band in 8-bit video */
+#grain { position: absolute; inset: 0; opacity: .028; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/></filter><rect width='300' height='300' filter='url(%23n)'/></svg>"); background-size: 300px 300px; pointer-events: none; }
+#shots { position: absolute; inset: 0; }
+.shot { position: absolute; inset: 0; opacity: 0; }
+.shot > * { position: absolute; }
+
+/* text */
+.t96 { color: var(--w96); } .t70 { color: var(--w70); } .t40 { color: var(--w40); }
+.line { font: 400 40px/1.3 var(--sans); letter-spacing: -.01em; color: var(--w70); }
+.display { font: 500 76px/1.1 var(--display); letter-spacing: -.025em; color: var(--w96); }
+.claim { font: 400 136px/1 var(--serif); letter-spacing: -.02em; color: var(--w96); white-space: nowrap; }
+.claim .verb { display: inline-block; position: relative; }
+.claim .verb span { position: absolute; left: 0; top: 0; white-space: nowrap; }
+.claim .verb span:first-child { position: static; }
+.mono { font-family: var(--mono); }
+.caret { display: inline-block; width: 2px; height: .95em; background: var(--w96); vertical-align: -.12em; margin-left: 3px; }
+
+/* glass sheet: the only "card". No shadow unless it floats over something (the real panel, below). */
+.glass { background: var(--glass); border: 1px solid var(--w08); border-radius: 24px; -webkit-backdrop-filter: blur(28px) saturate(140%); backdrop-filter: blur(28px) saturate(140%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06); }
+
+/* the real renderer frame (renderer/panel.html), scaled up as an isolated fragment */
+.pwrap { position: absolute; width: 440px; height: 660px; transform-origin: 0 0; }
+.pwrap iframe { position: absolute; left: 0; top: 0; width: 440px; height: 660px; border: 0; background: transparent; }
+.pwrap.window { border-radius: 24px; box-shadow: 0 40px 120px rgba(0, 0, 0, .6); }
+
+/* brand */
+.mark { width: 160px; height: 160px; }
+.wordmark { font: 500 148px/1 var(--display); letter-spacing: -.04em; color: var(--w96); }
+.halo { width: 520px; height: 520px; border-radius: 50%; background: radial-gradient(circle, rgba(255, 255, 255, .22), rgba(255, 255, 255, 0) 62%); }
+
+/* kinetic one-liner: each letter is a span so the luminance wave can sweep */
+.kinetic { font: 500 120px/1 var(--display); letter-spacing: -.03em; white-space: nowrap; }
+.kinetic span { display: inline-block; color: var(--w40); }
+
+/* staggered step list (real engine entries) */
+.steps { width: 1440px; }
+.steps .row { position: relative; display: flex; align-items: baseline; gap: 22px; height: 64px; }
+.steps .row .n { font: 400 20px/1 var(--mono); color: var(--w40); width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+.steps .row .txt { font: 400 36px/1 var(--sans); letter-spacing: -.012em; color: var(--w96); white-space: nowrap; }
+.steps .row .tag { font: 400 18px/1 var(--mono); color: var(--w70); border: 1px solid var(--w14); border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+.steps .row .ok { font: 400 22px/1 var(--mono); color: var(--w70); margin-left: 6px; white-space: nowrap; }
+.steps .row.failed .txt { color: var(--w70); text-decoration: line-through; text-decoration-color: var(--w40); }
+
+/* terminal card (real proxy output) */
+.term { width: 1240px; padding: 36px 44px; font: 400 22px/1.55 var(--mono); color: var(--w70); white-space: pre-wrap; overflow-wrap: anywhere; }
+.term .head { display: flex; align-items: center; gap: 10px; margin-bottom: 26px; font: 400 16px/1 var(--mono); color: var(--w40); }
+.term .head i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--w14); }
+.term .cmd { color: var(--w96); }
+.term .out { display: block; margin-top: 1.2em; }
+.term .hi { color: var(--w96); }
+
+/* accessibility tree + step cards (real cu run) */
+.tree { width: 640px; padding: 30px 36px; font: 400 19px/1.75 var(--mono); color: var(--w70); white-space: pre; }
+.tree .role { color: var(--w40); } .tree .nm { color: var(--w96); }
+.tree .hl { background: var(--w08); border-radius: 6px; margin: 0 -8px; padding: 0 8px; }
+.card { padding: 22px 30px; font: 400 26px/1.35 var(--sans); color: var(--w96); white-space: nowrap; display: flex; align-items: center; gap: 18px; }
+.card .k { font: 400 16px/1 var(--mono); color: var(--w40); min-width: 70px; }
+.card .m { font-family: var(--mono); font-size: 22px; color: var(--w70); }
+.card.failed { border-color: var(--w14); }
+.card.failed .m { text-decoration: line-through; text-decoration-color: var(--w40); }
+.card .x { font: 400 26px/1 var(--mono); color: var(--w96); }
+
+/* files on disk (real listing) */
+.files { font: 400 30px/1.9 var(--mono); color: var(--w96); }
+.files .d { color: var(--w70); }
+.files .out { color: var(--w70); }
+
+/* log side column */
+.chain { font: 400 44px/1.2 var(--sans); letter-spacing: -.015em; color: var(--w96); white-space: nowrap; }
+.chain small { display: block; font: 400 20px/1.5 var(--mono); color: var(--w70); margin-top: 10px; }

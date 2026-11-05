@@ -2,8 +2,9 @@
  *
  * window.OSprite.create(canvas, { scale }) -> { draw(pose), resize(), hitTest(cssX, cssY), toCss(lx, ly), LW, LH, CX, FEET_Y, scale, colors }
  *
- * O is a black glass orb with a luminous ring (the letter O) and one highlight that
- * doubles as its eye. Pure drawing: given a pose it paints one frame; all timing and
+ * O is a black glass orb with a luminous white ring (the letter O) and one specular
+ * highlight that doubles as its eye. Monochrome: every state is an alpha change of white,
+ * never a hue. Pure drawing: given a pose it paints one frame; all timing and
  * personality live in behavior.js, whose pose vocabulary (written for the old
  * pixel critter) is kept and translated:
  *
@@ -20,13 +21,14 @@
  *   dangle          0..1 carried: the orb stretches a little
  *   hatTilt         radians -> the ring tips (perspective squeeze); hatLift lifts the ring glow
  *   monocleGlint    0..1 a glint sweeps around the ring
- *   blush           0..1 warm tint low on the orb
+ *   blush           0..1 a faint white wash low on the orb
  *   shadow          bool (default true)
  *   mood            idle | listening | thinking | working | browsing | success | error | sleeping
  *   particles       [{ kind, x, y, a, size }] in logical canvas coords
  *
  * Ring by mood: thinking pulses slowly, browsing sweeps a glint, working spins a bright
- * arc, listening brightens, success flashes once, error turns red, sleeping dims.
+ * arc, listening brightens, success flashes white once, error dims the ring and opens a
+ * short dark notch in it, sleeping dims.
  */
 (function () {
   'use strict';
@@ -39,22 +41,23 @@
   var RING = 0.72; // ring radius as a fraction of R
   var TAU = Math.PI * 2;
 
+  // Monochrome palette: the orb is black glass, everything luminous is white at some alpha.
   var C = {
-    orbHi: '#3b3b44',
-    orbMid: '#17171b',
+    orbHi: '#1a1a1d',
+    orbMid: '#0c0c0e',
     orbLo: '#050506',
-    ring: '#9fd8ff',
-    ringCore: '#f2fbff',
-    ringSoft: '#bfe6ff',
-    ringBad: '#ff6f66',
-    ringBadCore: '#ffd9d6',
+    ring: '#ffffff',
+    ringCore: '#ffffff',
+    ringSoft: '#ffffff',
+    ringBad: '#ffffff',     // kept for API compatibility; error is an alpha + notch, not a hue
+    ringBadCore: '#ffffff',
     eye: '#ffffff',
-    blush: '#ff9a8a',
+    blush: '#ffffff',
     shadow: 'rgba(0,0,0,0.38)',
-    particle: '#bfe6ff',
-    particleWarm: '#ffd27a',
-    heart: '#ff7d9a',
-    drop: '#8ed0f5'
+    particle: '#ffffff',
+    particleWarm: '#ffffff',
+    heart: '#ffffff',
+    drop: '#ffffff'
   };
 
   var MOOD_RING = {
@@ -64,17 +67,12 @@
     working: { a: 0.6, glow: 0.45, w: 1.4 },
     browsing: { a: 0.8, glow: 0.6, w: 1.5 },
     success: { a: 0.95, glow: 0.9, w: 1.6 },
-    error: { a: 0.9, glow: 0.7, w: 1.6 },
+    error: { a: 0.5, glow: 0.2, w: 1.5 },
     sleeping: { a: 0.22, glow: 0.12, w: 1.3 }
   };
 
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
   function lerp(a, b, k) { return a + (b - a) * k; }
-  function mix(hexA, hexB, k) {
-    var a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
-    var r = Math.round(lerp(a >> 16, b >> 16, k)), g = Math.round(lerp((a >> 8) & 255, (b >> 8) & 255, k)), bl = Math.round(lerp(a & 255, b & 255, k));
-    return 'rgb(' + r + ',' + g + ',' + bl + ')';
-  }
   function reducedMotion() {
     try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
   }
@@ -104,20 +102,22 @@
 
     // ---- the orb (drawn in logical units; the caller has set the transform) ----
     function drawOrb(p, ring, T) {
-      var g = ctx.createRadialGradient(-R * 0.3, -R * 0.42, R * 0.1, 0, 0, R * 1.05);
-      g.addColorStop(0, C.orbHi); g.addColorStop(0.5, C.orbMid); g.addColorStop(1, C.orbLo);
+      // vertical glass gradient: a touch lighter at the top, near-black at the base
+      var g = ctx.createLinearGradient(0, -R, 0, R);
+      g.addColorStop(0, C.orbHi); g.addColorStop(0.55, C.orbMid); g.addColorStop(1, C.orbLo);
       ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU);
       ctx.fillStyle = g; ctx.fill();
-      // rim light
-      var rim = ctx.createRadialGradient(0, 0, R * 0.8, 0, 0, R);
-      rim.addColorStop(0, 'rgba(255,255,255,0)'); rim.addColorStop(0.92, 'rgba(255,255,255,0.16)'); rim.addColorStop(1, 'rgba(255,255,255,0.04)');
-      ctx.fillStyle = rim; ctx.fill();
-      // blush: warm wash low on the sphere
+      // hairline rim light: brightest at the top edge, a hint at the bottom
+      var rim = ctx.createLinearGradient(0, -R, 0, R);
+      rim.addColorStop(0, 'rgba(255,255,255,0.5)'); rim.addColorStop(0.5, 'rgba(255,255,255,0.1)'); rim.addColorStop(1, 'rgba(255,255,255,0.28)');
+      ctx.strokeStyle = rim; ctx.lineWidth = 0.35; ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(0, 0, R - 0.18, 0, TAU); ctx.stroke();
+      // blush: a faint white wash low on the sphere (no hue)
       if ((p.blush || 0) > 0.05) {
-        ctx.save(); ctx.clip();
-        ctx.globalAlpha = clamp(p.blush, 0, 1) * 0.45;
+        ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.clip();
+        ctx.globalAlpha = clamp(p.blush, 0, 1) * 0.18;
         var bg = ctx.createRadialGradient(0, R * 0.55, 0, 0, R * 0.55, R * 0.8);
-        bg.addColorStop(0, C.blush); bg.addColorStop(1, 'rgba(255,154,138,0)');
+        bg.addColorStop(0, C.blush); bg.addColorStop(1, 'rgba(255,255,255,0)');
         ctx.fillStyle = bg; ctx.fillRect(-R, -R, R * 2, R * 2);
         ctx.restore();
       }
@@ -125,7 +125,7 @@
       ctx.save();
       ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.clip();
       var sh = ctx.createLinearGradient(0, -R, 0, -R * 0.35);
-      sh.addColorStop(0, 'rgba(255,255,255,0.15)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
+      sh.addColorStop(0, 'rgba(255,255,255,0.12)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = sh;
       ctx.beginPath(); ctx.ellipse(0, -R * 0.64, R * 0.62, R * 0.24, 0, 0, TAU); ctx.fill();
       ctx.restore();
@@ -133,8 +133,10 @@
       // ---- ring ----
       var rr = R * RING;
       var ry = rr * (1 - 0.22 * clamp(Math.abs(p.hatTilt || 0), 0, 1)) - (p.hatLift || 0) * 0.08;
-      var col = ring.red > 0 ? mix(C.ring, C.ringBad, ring.red) : C.ring;
-      var core = ring.red > 0 ? mix(C.ringCore, C.ringBadCore, ring.red) : C.ringCore;
+      var col = C.ring, core = C.ringCore;
+      // error: the ring is broken by a short dark notch; everything else is a full ellipse
+      var a0 = 0, a1 = TAU;
+      if (ring.gap > 0) { a0 = ring.gapAt + ring.gap * 0.5; a1 = ring.gapAt + TAU - ring.gap * 0.5; }
       ctx.save();
       ctx.rotate(ring.spin);
       // glow
@@ -142,15 +144,15 @@
         ctx.save();
         ctx.shadowColor = col; ctx.shadowBlur = scale * 4.5 * ring.glow;
         ctx.strokeStyle = col; ctx.globalAlpha = clamp(ring.a * 0.5 * ring.glow, 0, 1); ctx.lineWidth = ring.w * 1.9;
-        ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, 0, TAU); ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, a0, a1); ctx.stroke();
         ctx.restore();
       }
-      // body of the ring
-      ctx.strokeStyle = C.ringSoft; ctx.globalAlpha = clamp(ring.a * 0.9, 0, 1); ctx.lineWidth = ring.w;
-      if (ring.red > 0) ctx.strokeStyle = mix(C.ringSoft, C.ringBad, ring.red);
-      ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, 0, TAU); ctx.stroke();
-      ctx.strokeStyle = core; ctx.globalAlpha = clamp(ring.a, 0, 1); ctx.lineWidth = ring.w * 0.45;
-      ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, 0, TAU); ctx.stroke();
+      // body of the ring: a soft wide pass under a crisp core, both white
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = C.ringSoft; ctx.globalAlpha = clamp(ring.a * 0.35, 0, 1); ctx.lineWidth = ring.w * 1.6;
+      ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, a0, a1); ctx.stroke();
+      ctx.strokeStyle = core; ctx.globalAlpha = clamp(ring.a, 0, 1); ctx.lineWidth = ring.w * 0.55;
+      ctx.beginPath(); ctx.ellipse(0, 0, rr, ry, 0, a0, a1); ctx.stroke();
       // working: a brighter arc chases around the ring
       if (ring.arc) {
         ctx.save();
@@ -227,7 +229,7 @@
         case 'z': case 'zs': case 'q': case 'bang': case 'note': {
           var txt = { z: 'z', zs: 'z', q: '?', bang: '!', note: '♪' }[q.kind];
           var px = s * (q.kind === 'zs' ? 3.4 : q.kind === 'z' ? 4.8 : 5);
-          ctx.fillStyle = q.kind === 'bang' ? C.particleWarm : C.particle;
+          ctx.fillStyle = C.particle;
           ctx.font = '600 ' + px + 'px ' + font; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
           ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = s * 1.5;
           ctx.fillText(txt, 0, 0);
@@ -243,7 +245,7 @@
           break;
         case 'spark': case 'star': {
           var r1 = (q.kind === 'star' ? 1.4 : 2) * s, r2 = r1 * 0.32;
-          ctx.fillStyle = q.kind === 'star' ? '#ffffff' : C.ringSoft; ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = s * 1.5;
+          ctx.fillStyle = C.particle; ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = s * 1.5;
           ctx.beginPath();
           for (var i = 0; i < 8; i++) { var rr = i % 2 ? r2 : r1, an = i * Math.PI / 4 - Math.PI / 2; ctx.lineTo(Math.cos(an) * rr, Math.sin(an) * rr); }
           ctx.closePath(); ctx.fill();
@@ -271,7 +273,7 @@
       var since = (now - moodSince) / 1000;
       var base = MOOD_RING[mood] || MOOD_RING.idle;
       var still = reducedMotion();
-      var ring = { a: base.a, glow: base.glow, w: base.w, spin: 0, arc: 0, glint: -1, red: 0 };
+      var ring = { a: base.a, glow: base.glow, w: base.w, spin: 0, arc: 0, glint: -1, red: 0, gap: 0, gapAt: -Math.PI * 0.25 };
       // idle breathing on the ring (quiet)
       if (!still) ring.a += 0.05 * Math.sin(T * TAU / 3.4);
       var arms = Math.max(p.armL || 0, p.armR || 0);
@@ -280,7 +282,12 @@
         case 'thinking': { var u = still ? 0.5 : 0.5 + 0.5 * Math.sin(T * TAU / 2.2); ring.a = lerp(0.5, 0.95, u); ring.glow = lerp(0.3, 1.0, u); break; }
         case 'working': ring.arc = still ? Math.PI * 1.5 : (T * TAU / 1.1) % TAU; break;
         case 'success': { var f = Math.exp(-since * 2.6); ring.a = Math.min(1, 0.85 + f); ring.glow = 0.8 + 1.4 * f; ring.w += 0.5 * f; break; }
-        case 'error': ring.red = Math.min(1, since * 4); break;
+        case 'error': {
+          // ring dims and a dark notch opens near the top right; no hue change
+          var e = Math.min(1, since * 4);
+          ring.a = lerp(base.a + 0.3, base.a, e); ring.gap = 0.55 * e; ring.red = 0;
+          break;
+        }
         case 'listening': if (!still) ring.glow += 0.15 * Math.sin(T * TAU / 1.6); break;
       }
       if ((p.monocleGlint || 0) > 0 && (p.monocleGlint || 0) < 1) ring.glint = p.monocleGlint;

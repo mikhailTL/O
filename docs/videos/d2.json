@@ -1,56 +1,47 @@
 {
-  "id": "d2",
+  "name": "d2",
   "title": "The log is the product",
   "file": "docs/videos/d2.mp4",
-  "bytes": 7338223,
-  "durationS": 47.266667,
-  "width": 3200,
-  "height": 2000,
-  "marks": [
+  "bytes": 13084716,
+  "durationS": 27,
+  "width": 3840,
+  "height": 2160,
+  "fps": 30,
+  "audio": false,
+  "timeline": [
     {
-      "t": 2.655,
-      "caption": "Security by recording, not by asking"
+      "scene": "d2-1",
+      "start": 0,
+      "seconds": 10.7,
+      "bytes": 5422550
     },
     {
-      "t": 14.076,
-      "caption": "The action log, inside the panel"
+      "scene": "d2-2",
+      "start": 10.7,
+      "seconds": 11.7,
+      "bytes": 5512050
     },
     {
-      "t": 17.45,
-      "caption": "Filter: Tools · Engine · Policy · Errors"
-    },
-    {
-      "t": 26.538,
-      "caption": "Expand a row for the full detail"
-    },
-    {
-      "t": 30.167,
-      "caption": "Verify chain"
-    },
-    {
-      "t": 33.605,
-      "label": "verify {\"ok\":true,\"count\":27}"
-    },
-    {
-      "t": 33.605,
-      "caption": "Now edit one line of the log file on disk…"
-    },
-    {
-      "t": 36.287,
-      "label": "tampered line 17"
-    },
-    {
-      "t": 39.131,
-      "caption": "Verify chain again: ✗ broken at the edited entry"
-    },
-    {
-      "t": 43.107,
-      "label": "verify {\"ok\":false,\"count\":27,\"brokenAt\":16,\"reason\":\"hash\"}"
-    },
-    {
-      "t": 44.907,
-      "caption": null
+      "scene": "d2-3",
+      "start": 22.4,
+      "seconds": 4.6,
+      "bytes": 2151555
     }
   ],
-  "recordedAt": "2026-11-05T05:57:09.782Z"
+  "facts": {
+    "job": "91f27578fcea48abbd922b9f25a609c8",
+    "tampered": {
+      "line": 17,
+      "index": 16,
+      "before": "91f27578fcea48abbd922b9f25a609c8: step 0 exit=0 mkdir -p notes && printf -- '- [ ] write the launch post\\n- [ ] record the demo\\",
+      "after": "91f27578fcea48abbd922b9f25a609c8: step 0 exit=0 mkdir -p notes && printf -- '- [ ] write the launch post\\n- [ ] record the demo\\ "
+    },
+    "chainAfter": {
+      "ok": false,
+      "count": 27,
+      "brokenAt": 16,
+      "reason": "hash"
+    }
+  },
+  "renderedAt": "2026-11-05T12:59:27.800Z"
 }
