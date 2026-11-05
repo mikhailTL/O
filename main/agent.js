@@ -37,10 +37,15 @@ const ENGINE_TOOLS = ['mcp__o__log_note', 'mcp__o__provision', 'mcp__o__cache_lo
 // mcp__o__provision runs commands, so in 'ask' mode it prompts like Bash; the other engine tools are read-only.
 // mcp__o__ui_emit only pushes declarative UI frames to O's own panel (POST /ui), so it is safe too.
 // Schedules and preferences only touch O's own state (every change is logged), so they never prompt.
-const APP_TOOLS = ['mcp__o__schedule_task', 'mcp__o__list_schedules', 'mcp__o__cancel_schedule', 'mcp__o__recall_preferences', 'mcp__o__remember_preference'];
+// Goal tools only touch O's own goals; goal_checkpoint files a card the person approves (it never performs the action).
+const APP_TOOLS = ['mcp__o__schedule_task', 'mcp__o__list_schedules', 'mcp__o__cancel_schedule', 'mcp__o__recall_preferences', 'mcp__o__remember_preference',
+  'mcp__o__goal_create', 'mcp__o__goal_status', 'mcp__o__goal_record_cycle', 'mcp__o__goal_propose', 'mcp__o__goal_checkpoint'];
 const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS];
 const SAFE_PREFIXES = ['mcp__playwright__'];
 const ALLOWED_TOOLS_FLAG = [...SAFE_TOOLS, 'mcp__o__provision', 'mcp__playwright'];
+// A goal cycle's browser calls are not pre-allowed: each one reaches the bridge's approve tool, where checkpoint
+// actions (publish, send, delete, ...) are held until the person approves them in O.
+const GOAL_ALLOWED_TOOLS_FLAG = ALLOWED_TOOLS_FLAG.filter((t) => t !== 'mcp__playwright');
 
 // GenUI (Phase 3): frames POSTed to /ui by the engine and the bridge's ui_emit tool. Only the
 // envelope is checked here; the renderer validates the component schema before drawing anything.
@@ -73,6 +78,8 @@ Style: composed, direct and concise; no theatrics. Short replies (1-4 sentences)
 Act first: do not ask clarifying questions when a reasonable default exists. Pick the default, do the task, and state the assumption in one line at the end ("Assumed: ..."). Ask only before irreversible or money actions, before sending messages as the user, and before deleting the user's files. Plan internally and don't narrate the plan. When tool calls are independent of each other, make them in parallel in one turn.
 Preferences: at the start of a task, call mcp__o__recall_preferences once and silently apply whatever fits (formats, places, brands, budgets, naming, tone). When the user tells you how they like something ("always", "I prefer", "next time", or a correction of your result), call mcp__o__remember_preference with one short sentence.
 Schedules: when the user asks for something at a time or on repeat ("every Monday at 8", "tomorrow at 9", "every 3 hours"), call mcp__o__schedule_task with the prompt to run and a structured when; mcp__o__list_schedules and mcp__o__cancel_schedule manage them. Confirm the schedule in one line.
+Goals: you can own long-running goals across days and weeks ("grow my channel to monetization", "get me to 10k subscribers"). When the user hands you one, call mcp__o__goal_create with their words; mcp__o__goal_status shows progress and mcp__o__goal_propose suggests goals from what you have learned. Each cycle you measure progress against the goal's metrics from the platform itself, adapt the plan, and end with the cycle record (or mcp__o__goal_record_cycle). You work in sync with the person: show the plan, share real wins, and ask only at checkpoints.
+Checkpoints: publishing or posting publicly, sending messages as the user, spending money or starting paid services, creating accounts, accepting terms and deleting the user's data always wait for the person. Prepare everything (for a video: the finished file, title, description, thumbnail and schedule) and call mcp__o__goal_checkpoint; O shows one Approve / Edit / Skip card. You never create accounts or spend money yourself, never buy views, followers or engagement, never use bots or fake comments, and never work around a platform's rules. Work through the user's own accounts and connectors, and report metrics honestly: no claims of virality or monetization the numbers do not show.
 {{BROWSER_RULES}}
 Screen: you can see the user's screen with the mcp__o__see_screen tool (a screenshot of the display under their cursor). Use it whenever they mention what's on their screen ("this", "this page", "this question", "can you see my screen?") instead of saying you can't see it, and take a fresh one when you need to see changes. To act on a web page they're looking at, use your browser tools in that tab.
 Desktop apps: you can operate desktop applications yourself through O's computer-use engine on an isolated display: mcp__o__computer_run {goal, app} plans and runs it and stores the result as a procedure, mcp__o__computer_replay replays a stored procedure with no model calls, mcp__o__computer_tree and mcp__o__computer_find read the app's accessibility tree. The user's own mouse and keyboard are never touched.
@@ -321,13 +328,15 @@ class OAgent extends EventEmitter {
    * @param {() => ({url:string, token:string}|null)} [o.getEngine]  running engine endpoint, if any
    * @param {() => (string|null)} [o.getChatId]  id of the open chat: the bridge's GenUI surface is `chat:<id>` (else `chat:default`)
    */
-  constructor({ userDataDir, getSettings, onPermissionRequest, captureScreen, getLinkEndpoint, actionLog, getEngine, getChatId, taskId, onSchedule } = {}) {
+  constructor({ userDataDir, getSettings, onPermissionRequest, captureScreen, getLinkEndpoint, actionLog, getEngine, getChatId, taskId, onSchedule, onGoal, goalId } = {}) {
     super();
     // A task agent (one per task in main/tasks.js) tags every event and log entry with its task id and
     // writes its own MCP config / persona files, so several Claude Code processes never share a file.
     this.taskId = taskId ? String(taskId) : null;
     this.fileTag = this.taskId ? this.taskId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) : '';
     this.onSchedule = onSchedule || null; // POST /schedule from the bridge's schedule tools
+    this.onGoal = onGoal || null;         // POST /goal from the bridge's goal tools and its checkpoint gate
+    this.goalId = goalId ? String(goalId) : null; // a goal cycle: the bridge gates checkpoint actions
     this._warm = null; // a pre-spawned idle Claude Code process (prewarm)
     this.userDataDir = userDataDir || path.join(os.homedir(), '.o');
     this.getSettings = getSettings || (() => ({}));
@@ -399,7 +408,7 @@ class OAgent extends EventEmitter {
   async writeMcpConfig() {
     await this._ensureServer();
     const s = this.settings();
-    return { ...this._writeMcpConfig(s), settings: s, allowedTools: ALLOWED_TOOLS_FLAG.slice() };
+    return { ...this._writeMcpConfig(s), settings: s, allowedTools: (this.goalId ? GOAL_ALLOWED_TOOLS_FLAG : ALLOWED_TOOLS_FLAG).slice() };
   }
 
   async ensureServer() {
@@ -417,7 +426,7 @@ class OAgent extends EventEmitter {
 
   _onHttp(req, res) {
     const reply = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
-    if (req.method !== 'POST' || !['/approve', '/screen', '/log', '/ui', '/schedule'].includes(req.url)) return reply(404, { behavior: 'deny', message: 'not found' });
+    if (req.method !== 'POST' || !['/approve', '/screen', '/log', '/ui', '/schedule', '/goal'].includes(req.url)) return reply(404, { behavior: 'deny', message: 'not found' });
     const tok = req.headers['x-o-token'] || '';
     const a = Buffer.from(String(tok)), b = Buffer.from(this._token);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return reply(403, { behavior: 'deny', message: 'bad token' });
@@ -431,6 +440,7 @@ class OAgent extends EventEmitter {
       if (req.url === '/log') return reply(200, this._ingest(p));
       if (req.url === '/ui') return reply(200, this._ui(p));
       if (req.url === '/schedule') return reply(200, await this._schedule(p));
+      if (req.url === '/goal') return reply(200, await this._goal(p));
       const decision = await this.decide(p.tool_name, p.input || {});
       reply(200, decision);
     });
@@ -490,6 +500,23 @@ class OAgent extends EventEmitter {
       const r = await this.onSchedule({ ...(body && typeof body === 'object' ? body : {}), taskId: this.taskId });
       return r && typeof r === 'object' ? r : { ok: false, error: 'no answer' };
     } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  }
+
+  /** POST /goal from the bridge: {op: 'gate'|'checkpoint'|'cycle'|'create'|'propose'|'status', ...}. main/goals.js does the work. */
+  async _goal(body) {
+    const b = body && typeof body === 'object' ? body : {};
+    if (!this.onGoal) {
+      // No goal runner: a checkpoint action is held rather than let through unchecked.
+      if (b.op === 'gate') return { ok: true, allow: false, message: 'Goals are not available in this build of O, so checkpoint actions are held.' };
+      return { ok: false, error: 'Goals are not available in this build of O.' };
+    }
+    try {
+      const r = await this.onGoal(this.taskId, { ...b, goalId: this.goalId || b.goalId || null });
+      if (r && typeof r === 'object') return r;
+      return b.op === 'gate' ? { ok: true, allow: false, message: 'no answer from O' } : { ok: false, error: 'no answer' };
+    } catch (e) {
+      return b.op === 'gate' ? { ok: true, allow: false, message: 'O could not check this action, so it is held.' } : { ok: false, error: String(e && e.message || e) };
+    }
   }
 
   /** Screenshot for the see_screen tool. */
@@ -623,8 +650,10 @@ class OAgent extends EventEmitter {
       O_SESSION_SURFACE: this._sessionSurface(),
       O_PERMISSION_MODE: s.permissionMode,
       O_SCHEDULE_URL: `${base}/schedule`,
+      O_GOAL_URL: `${base}/goal`,
     };
     if (this.taskId) bridgeEnv.O_TASK_ID = this.taskId;
+    if (this.goalId) bridgeEnv.O_GOAL_ID = this.goalId;
     let engine = null;
     try { engine = this.getEngine(); } catch { engine = null; }
     if (engine && engine.url) {
@@ -727,7 +756,7 @@ class OAgent extends EventEmitter {
       '--permission-prompt-tool', 'mcp__o__approve',
       '--strict-mcp-config',
       '--mcp-config', files.mcpFile,
-      '--allowedTools', ALLOWED_TOOLS_FLAG.join(','),
+      '--allowedTools', (this.goalId ? GOAL_ALLOWED_TOOLS_FLAG : ALLOWED_TOOLS_FLAG).join(','),
     ];
     if (s.model) args.push('--model', s.model);
     if (resume) args.push('--resume', resume);
@@ -974,4 +1003,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };

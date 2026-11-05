@@ -159,7 +159,7 @@ class Scheduler extends EventEmitter {
   get(id) { const s = this.items.find((x) => x.id === id); return s ? this._out(s) : null; }
 
   /** Add a schedule. Throws on a bad prompt / when (message says why). */
-  add({ prompt, title, when, taskId } = {}) {
+  add({ prompt, title, when, taskId, goalId } = {}) {
     const p = String(prompt || '').trim();
     if (!p) throw new Error('prompt must be a non-empty string');
     if (p.length > MAX_PROMPT) throw new Error(`prompt is longer than ${MAX_PROMPT} characters`);
@@ -173,6 +173,7 @@ class Scheduler extends EventEmitter {
       when: w,
       createdAt: now,
       createdBy: taskId || null,
+      goalId: goalId ? String(goalId) : null, // a goal's cycle schedule: main builds the prompt when it fires
       lastRun: null,
       runs: 0,
       enabled: true,
@@ -184,6 +185,9 @@ class Scheduler extends EventEmitter {
     this.emit('changed');
     return this._out(s);
   }
+
+  /** The schedule that drives one goal's cycles, or null. */
+  forGoal(goalId) { const s = this.items.find((x) => x.goalId && x.goalId === goalId && x.enabled !== false); return s ? this._out(s) : null; }
 
   cancel(id) {
     const i = this.items.findIndex((s) => s.id === id);
@@ -229,11 +233,13 @@ class Scheduler extends EventEmitter {
   handle(body) {
     const op = String((body && body.op) || '');
     try {
-      if (op === 'add') return { ok: true, schedule: this.add(body) };
+      // goalId is main's own field: a schedule added from a task is always a plain one.
+      if (op === 'add') return { ok: true, schedule: this.add({ prompt: body.prompt, title: body.title, when: body.when, taskId: body.taskId }) };
       if (op === 'list') return { ok: true, schedules: this.list() };
       if (op === 'cancel') {
         const id = String(body.id || '');
         const s = this.get(id);
+        if (s && s.goalId) return { ok: false, error: 'that schedule drives a goal; the person pauses or archives the goal in O instead' };
         return this.cancel(id) ? { ok: true, cancelled: s } : { ok: false, error: `no schedule with id ${JSON.stringify(id)}` };
       }
       return { ok: false, error: 'op must be add, list or cancel' };

@@ -59,7 +59,7 @@ class TaskManager extends EventEmitter {
   snapshot(t) {
     return {
       id: t.id, title: t.title, prompt: t.prompt, status: t.status, statusLine: t.statusLine, mood: t.mood,
-      createdAt: t.createdAt, startedAt: t.startedAt, endedAt: t.endedAt, source: t.source, scheduleId: t.scheduleId || null,
+      createdAt: t.createdAt, startedAt: t.startedAt, endedAt: t.endedAt, source: t.source, scheduleId: t.scheduleId || null, goalId: t.goalId || null,
       position: t.status === 'queued' ? this.queue.indexOf(t.id) + 1 : 0, result: clip(t.result, 300), error: clip(t.error, 300),
       runs: t.runs, tools: [...t.tools].slice(0, 20),
     };
@@ -72,7 +72,7 @@ class TaskManager extends EventEmitter {
    * session; with a task that is still active, a new task is started instead.
    * @returns {{ok:boolean, taskId?:string, queued?:boolean, position?:number, followUp?:boolean, error?:string}}
    */
-  start({ prompt, taskId, title, source = 'user', scheduleId = null } = {}) {
+  start({ prompt, taskId, title, source = 'user', scheduleId = null, goalId = null } = {}) {
     prompt = String(prompt || '').trim();
     if (!prompt) return { ok: false, error: 'empty prompt' };
     if (this._disposed) return { ok: false, error: 'O is shutting down' };
@@ -87,7 +87,8 @@ class TaskManager extends EventEmitter {
       t.result = ''; t.error = '';
     } else {
       let id = null;
-      if (this._spare && !taskId) { // the pre-warmed agent already carries this id: claim it for this task
+      // A goal cycle gets its own agent (its bridge gates checkpoint actions), never the generic pre-warmed one.
+      if (this._spare && !taskId && !goalId) { // the pre-warmed agent already carries this id: claim it for this task
         id = this._spare.id;
         this._claimed.set(id, this._spare.agent);
         this._spare = null;
@@ -96,7 +97,7 @@ class TaskManager extends EventEmitter {
       id = id || newTaskId();
       t = {
         id, title: clip(title, 60) || titleOf(prompt), prompt, status: 'queued', statusLine: 'Waiting for a free slot', mood: 'listening',
-        createdAt: this.now(), startedAt: null, endedAt: null, source, scheduleId, sessionId: null, agent: null,
+        createdAt: this.now(), startedAt: null, endedAt: null, source, scheduleId, goalId: goalId ? String(goalId) : null, sessionId: null, agent: null,
         result: '', error: '', runs: 0, tools: new Set(),
       };
       this.tasks.set(id, t);
@@ -134,7 +135,7 @@ class TaskManager extends EventEmitter {
       this._claimed.delete(t.id);
       return a;
     }
-    const a = this.createAgent(t.id);
+    const a = this.createAgent(t.id, { goalId: t.goalId || null });
     a.sessionId = t.sessionId || null;
     return a;
   }
@@ -165,7 +166,8 @@ class TaskManager extends EventEmitter {
     if (t.status === 'done') { t.result = r.result || t.result; t.statusLine = 'Done'; }
     else if (t.status === 'stopped') t.statusLine = 'Stopped';
     else t.statusLine = clip(t.error || 'Hit a snag', 80);
-    this.emit('end', { task: this.snapshot(t), ok: t.status === 'done', sessionId: t.sessionId, durationMs: t.endedAt - (t.startedAt || t.endedAt) });
+    // `result` is the whole final message (the snapshot clips it): a goal cycle's JSON record is read from it.
+    this.emit('end', { task: this.snapshot(t), ok: t.status === 'done', sessionId: t.sessionId, durationMs: t.endedAt - (t.startedAt || t.endedAt), result: t.result || '' });
     this._changed();
     if (!this._disposed) { this._pump(); this.prewarm(); }
   }

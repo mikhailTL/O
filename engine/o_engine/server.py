@@ -457,6 +457,15 @@ def build_learning(settings: EngineSettings, interfaces: Any = None, procedures:
                          interfaces=interfaces, procedures=procedures, model=model)
 
 
+def build_goals(settings: EngineSettings) -> Any:
+    """``GoalStore`` under ``<data_dir>/goals``; its drafting / proposal call is local-only (as learning's)."""
+    from .cu.planner import LocalModelClient, ModelClient
+    from .goals import GoalStore
+
+    model = ModelClient(LocalModelClient(settings.vllm_url, settings.vllm_model), None) if settings.learning_model else None
+    return GoalStore(settings.data_dir_path / "goals", model=model)
+
+
 class LearnObserveRequest(BaseModel):
     """Body of ``POST /learn/observe``."""
 
@@ -1483,6 +1492,122 @@ def create_app(
                    verb=verb, item_kind=item["kind"])
         return {"ok": True, "id": obs.id, "item": after}
     # ------------------------------------------------------------ end learning
+
+    # ------------------------------------------------------------ goals (long-term agenda)
+    fallback_goals: dict[str, Any] = {}
+
+    def goal_store() -> Any:
+        store = getattr(deps(), "goals", None)
+        if store is not None:
+            return store
+        with deps_lock:
+            if "store" not in fallback_goals:
+                fallback_goals["store"] = build_goals(settings)
+            return fallback_goals["store"]
+
+    def _profile() -> dict[str, Any]:
+        if not settings.learning:
+            return {}
+        try:
+            return learning_store().profile()
+        except Exception:
+            return {}
+
+    def _goal_or_404(gid: str) -> dict[str, Any]:
+        g = goal_store().get(gid)
+        if g is None:
+            raise HTTPException(status_code=404, detail="unknown goal")
+        return g
+
+    @app.get("/goals", dependencies=guarded)
+    def goals_list(archived: bool = True) -> dict[str, Any]:
+        return {"goals": goal_store().list(include_archived=bool(archived))}
+
+    @app.post("/goals", dependencies=guarded)
+    def goals_create(body: dict[str, Any]) -> dict[str, Any]:
+        body = body if isinstance(body, dict) else {}
+        store = goal_store()
+        try:
+            if isinstance(body.get("proposal"), dict):
+                g = store.create_from_proposal(body["proposal"])
+            else:
+                text = body.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                    raise SchemaViolation("text must be a non-empty string of at most 2000 characters (or pass a proposal)")
+                g = store.create_from_text(text)
+        except ValueError as exc:
+            raise SchemaViolation(str(exc)) from None
+        log.record("note", f"goals: created {g['id']}: {_short(g['title'])}", goal_id=g["id"], origin=g["origin"],
+                   autonomy=g["autonomy"], cadence=g["cadence"], horizon_days=g["horizon_days"])
+        return {"ok": True, "goal": g}
+
+    @app.post("/goals/propose", dependencies=guarded)
+    def goals_propose(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        props = goal_store().propose(_profile())
+        log.record("note", f"goals: proposed {len(props)}", count=len(props))
+        return {"proposals": props}
+
+    @app.get("/goals/{gid}", dependencies=guarded)
+    def goals_detail(gid: str) -> dict[str, Any]:
+        from .goals import next_cycle_prompt, profile_lines
+
+        det = goal_store().detail(gid)
+        if det is None:
+            raise HTTPException(status_code=404, detail="unknown goal")
+        det["next_cycle_prompt"] = next_cycle_prompt(det["goal"], det["cycles"], profile_text=profile_lines(_profile()))
+        return det
+
+    @app.post("/goals/{gid}/cycle", dependencies=guarded)
+    def goals_cycle(gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        _goal_or_404(gid)
+        try:
+            cyc = goal_store().record_cycle(gid, body)
+        except ValueError as exc:
+            msg = str(exc)
+            if msg.startswith("goal is "):
+                raise HTTPException(status_code=409, detail=msg) from None
+            raise SchemaViolation(msg) from None
+        except Exception as exc:  # pydantic ValidationError and friends
+            raise SchemaViolation(str(exc)) from None
+        log.record("note", f"goals: cycle {gid}: {_short(cyc.get('reflection') or '(no reflection)')}", goal_id=gid,
+                   metrics={k: v.get("value") for k, v in (cyc.get("metrics") or {}).items()}, flags=list(cyc.get("flags") or []))
+        return {"ok": True, "cycle": cyc}
+
+    def _goal_status(gid: str, status: str) -> dict[str, Any]:
+        _goal_or_404(gid)
+        try:
+            g = goal_store().set_status(gid, status)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        log.record("note", f"goals: {status} {gid}", goal_id=gid, status=status)
+        return {"ok": True, "goal": g}
+
+    @app.post("/goals/{gid}/pause", dependencies=guarded)
+    def goals_pause(gid: str) -> dict[str, Any]:
+        return _goal_status(gid, "paused")
+
+    @app.post("/goals/{gid}/resume", dependencies=guarded)
+    def goals_resume(gid: str) -> dict[str, Any]:
+        return _goal_status(gid, "active")
+
+    @app.post("/goals/{gid}/archive", dependencies=guarded)
+    def goals_archive(gid: str) -> dict[str, Any]:
+        return _goal_status(gid, "archived")
+
+    @app.post("/goals/{gid}/autonomy", dependencies=guarded)
+    def goals_autonomy(gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        _goal_or_404(gid)
+        body = body if isinstance(body, dict) else {}
+        allowed = body.get("allowed") or []
+        if not isinstance(allowed, list):
+            raise SchemaViolation("allowed must be a list of action kinds")
+        try:
+            g = goal_store().set_autonomy(gid, str(body.get("autonomy") or ""), allowed)
+        except ValueError as exc:
+            raise SchemaViolation(str(exc)) from None
+        log.record("policy", f"goals: autonomy {gid} -> {g['autonomy']}", goal_id=gid, autonomy=g["autonomy"], allowed=g["allowed"])
+        return {"ok": True, "goal": g}
+    # ------------------------------------------------------------ end goals
 
     app.state.settings = settings
     app.state.log = log

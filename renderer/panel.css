@@ -180,8 +180,8 @@ button.icon {
   button.icon:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
   #btn-quit:hover { color: var(--bad); background: var(--bad-soft); }
 }
-#btn-runs { position: relative; }
-#btn-runs .badge {
+#btn-runs, #btn-goals { position: relative; }
+#btn-runs .badge, #btn-goals .badge {
   position: absolute; top: -3px; right: -4px; min-width: 14px; height: 14px; padding: 0 4px;
   border-radius: 999px; background: var(--accent); color: var(--on-accent); box-shadow: 0 0 0 2px var(--bg-solid), var(--glow);
   font: 600 9px/14px var(--sans); font-variant-numeric: tabular-nums; text-align: center; pointer-events: none;
@@ -198,8 +198,8 @@ button.icon {
   gap: 14px;
   scroll-behavior: smooth;
 }
-#log::-webkit-scrollbar, #actionlog::-webkit-scrollbar, #runs::-webkit-scrollbar, #settings::-webkit-scrollbar { width: 8px; }
-#log::-webkit-scrollbar-thumb, #actionlog::-webkit-scrollbar-thumb, #runs::-webkit-scrollbar-thumb, #settings::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+#log::-webkit-scrollbar, #actionlog::-webkit-scrollbar, #runs::-webkit-scrollbar, #settings::-webkit-scrollbar, #goals::-webkit-scrollbar { width: 8px; }
+#log::-webkit-scrollbar-thumb, #actionlog::-webkit-scrollbar-thumb, #runs::-webkit-scrollbar-thumb, #settings::-webkit-scrollbar-thumb, #goals::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 
 /* empty state, before the first message */
 #hero {
@@ -211,18 +211,9 @@ button.icon {
 body.chatting #hero { display: none; }
 .hero-pet { width: 80px; height: 80px; margin-bottom: 14px; }
 .hero-pet .ring-glow { animation: ringbreathe 3.4s ease-in-out infinite; }
-#hero h1 { font: 400 25px/1.25 var(--serif); margin: 4px 0 6px; letter-spacing: -.2px; color: var(--text); }
-.hero-sub { margin: 0 0 18px; color: var(--muted); font-size: 13px; max-width: 330px; }
-.examples { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-.example {
-  text-align: left; padding: 10px 14px; border-radius: 14px;
-  background: var(--surface); border: 1px solid transparent; color: var(--text-2);
-  font-size: 13px;
-}
-:root[data-theme="light"] .example { border-color: var(--line); }
-@media (hover: hover) and (pointer: fine) {
-  .example:hover { border-color: var(--line-strong); background: var(--surface-2); color: var(--text); }
-}
+/* the empty state is the orb and one quiet line, nothing else */
+#hero h1 { font: 400 21px/1.3 var(--serif); margin: 6px 0 0; letter-spacing: -.1px; color: var(--text-2); }
+.hero-pet { margin-bottom: 18px; }
 
 .msg { max-width: 100%; overflow-wrap: anywhere; animation: pop .2s ease-out; }
 .msg a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
@@ -362,14 +353,14 @@ body.chatting #hero { display: none; }
 /* Settings opens as a full sheet over the chat. */
 /* Sheets are a deeper layer of the same black: the chat underneath is hidden while one is open
    (a nested backdrop-filter does not blur it, and it is not meant to be seen). */
-#settings, #actionlog, #runs {
+#settings, #actionlog, #runs, #goals {
   position: absolute; inset: 56px 0 0 0; z-index: 5;
   background: var(--sheet-bg); overflow-y: auto; overscroll-behavior: contain;
   border-top: 1px solid var(--line);
   border-radius: 0 0 var(--win-radius) var(--win-radius);
   animation: slide .18s ease-out;
 }
-body:has(#settings:not([hidden]), #actionlog:not([hidden]), #runs:not([hidden])) :is(#log, #composer, #setup, #taskbar) { visibility: hidden; }
+body:has(#settings:not([hidden]), #actionlog:not([hidden]), #runs:not([hidden]), #goals:not([hidden])) :is(#log, #composer, #setup, #taskbar) { visibility: hidden; }
 #settings { padding: 4px 18px 22px; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: var(--sticky-bg); padding: 10px 0 6px; z-index: 1; }
 .sheet-head h2 { margin: 0; font: 400 21px/1.2 var(--serif); }
@@ -578,10 +569,8 @@ body:has(#settings:not([hidden]), #actionlog:not([hidden]), #runs:not([hidden]))
 .task-cancel { padding: 5px 10px; font-size: 12px; }
 .task-empty { color: var(--muted); font-size: 12.5px; padding: 8px 2px; }
 
-/* with tasks in the strip, the empty state drops the orb so the examples stay in view */
-body.has-strip #hero .hero-pet { display: none; }
-body.has-strip #hero { padding-top: 4px; }
-body.has-strip .examples > :nth-child(n+3) { display: none; }
+/* with tasks or goals above the composer, the orb gets smaller so the line stays centred */
+body:is(.has-strip, .has-goals) .hero-pet { width: 56px; height: 56px; margin-bottom: 12px; }
 
 /* the strip above the composer: at most three rows, then "N more · M scheduled" */
 #task-strip { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; max-height: 190px; overflow-y: auto; }
@@ -636,4 +625,124 @@ body.has-strip .examples > :nth-child(n+3) { display: none; }
   #task-menu button:hover { background: var(--surface-2); color: var(--text); }
   .link-btn:hover { color: var(--text); background: transparent; }
   .learn-accept:hover { background: var(--accent-hover); border-color: transparent; }
+}
+
+/* ---------------------------------------------------------------- goals */
+/* A goal row: title over "Day N of M · next …", the primary metric with a monochrome sparkline, and pause.
+   The compact form sits above the composer; the full one lists goals in the Goals sheet. */
+#goals { padding: 0 18px 22px; }
+.goal-list { display: flex; flex-direction: column; gap: 4px; }
+#goals-row { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+.goal-row {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface);
+}
+.goal-row[data-status="paused"] .gttl { color: var(--text-2); }
+.goal-open {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; text-align: left;
+  border: 0; background: transparent; border-radius: 13px; padding: 8px 10px 8px 12px; color: var(--text);
+}
+.goal-open:active { transform: none; }
+.goal-row.compact { border-radius: 12px; }
+.goal-row.compact .goal-open { padding: 5px 8px 5px 12px; }
+.gtext { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; gap: 1px; }
+.gwait { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin: 0 9px 1px 3px; vertical-align: middle; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-solid), 0 0 0 3.5px var(--accent); }
+.gsub { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gsub .gline { flex: 1; min-width: 0; }
+.gttl { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gline { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gline b { color: var(--text); font-weight: 600; }
+.gmetric { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
+.gval { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+.spark { display: block; overflow: visible; width: 56px; height: 16px; flex: 0 0 auto; }
+.spark.lg { width: 120px; height: 28px; }
+.spark polyline, .spark path { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.spark circle { fill: currentColor; stroke: none; }
+.spark.empty path { stroke: var(--line-strong); stroke-dasharray: 2 3; }
+.goal-pause {
+  flex: 0 0 auto; width: 32px; height: 32px; padding: 0; margin-right: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--muted); border-radius: 10px;
+}
+.goal-row.compact .goal-pause { width: 28px; height: 28px; }
+.goal-pause svg { width: 15px; height: 15px; }
+.goal-pause svg path[d^="M7 5.2"] { fill: currentColor; stroke: none; }
+.goals-empty { color: var(--muted); font-size: 12.5px; margin: 8px 2px; }
+.goals-foot { margin: 14px 0 4px; }
+.quiet-btn { border: 1px solid var(--line); background: transparent; color: var(--text-2); font-size: 12.5px; border-radius: 999px; padding: 6px 14px; }
+.proposal { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 9px 6px 9px 12px; }
+.proposal .ptext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.proposal .gline { white-space: normal; }
+
+/* "Make this a goal": one quiet inline offer above the input, only for long-term objectives */
+#goal-offer { display: flex; align-items: center; gap: 10px; margin: 0 4px 8px; animation: pop .2s ease-out; }
+#btn-make-goal { flex: 0 0 auto; white-space: nowrap; border-radius: 999px; padding: 5px 13px; font-size: 12.5px; font-weight: 600; background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.offer-note { font-size: 12px; color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* checkpoint card: everything prepared, one decision */
+.cp-list { display: flex; flex-direction: column; gap: 8px; }
+.cp-card {
+  border: 1px solid var(--accent-line); border-radius: 16px; background: var(--surface);
+  padding: 11px 12px 10px 14px; margin: 0 0 8px; box-shadow: var(--glow);
+}
+:root[data-theme="light"] .cp-card { box-shadow: none; }
+.cp-card.busy { opacity: .6; }
+.cp-kind { font-size: 11.5px; color: var(--muted); }
+.cp-head { font: 600 15px/1.3 var(--serif); color: var(--text); margin: 2px 0 4px; overflow-wrap: anywhere; }
+.cp-sum { margin: 0 0 8px; font-size: 13px; color: var(--text-2); }
+.cp-items { display: flex; flex-direction: column; gap: 3px; margin: 0 0 9px; padding: 8px 10px; border-radius: 12px; background: var(--surface-inset); border: 1px solid var(--line); }
+.cp-kv { display: grid; grid-template-columns: 84px 1fr; gap: 8px; font-size: 12.5px; }
+.cp-kv span:first-child { color: var(--muted); }
+.cp-kv span:last-child { color: var(--text-2); overflow-wrap: anywhere; }
+.cp-note { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.cp-edit { display: flex; gap: 8px; align-items: flex-end; margin: 0 0 8px; }
+.cp-edit textarea { flex: 1; resize: vertical; min-height: 44px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--surface-inset); color: var(--text); font: 13px/1.45 var(--sans); padding: 7px 10px; }
+.cp-acts { display: flex; justify-content: flex-end; gap: 6px; }
+.cp-acts button, .cp-send { border-radius: 999px; padding: 5px 13px; font-size: 12.5px; }
+.cp-skip, .cp-editbtn { background: transparent; }
+.cp-approve { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
+
+/* one goal */
+#goal-view .back { margin: 0 0 6px; }
+.gv-title { margin: 6px 0 4px; font: 400 19px/1.3 var(--serif); color: var(--text); }
+.gv-objective { margin: 0 0 4px; font-size: 13px; color: var(--text-2); }
+.gv-meta { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.gv-acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.gv-acts button { border-radius: 999px; padding: 5px 13px; font-size: 12.5px; }
+.gv-metrics { display: flex; flex-direction: column; gap: 4px; }
+.gv-metric { display: grid; grid-template-columns: 1fr auto 120px; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text-2); }
+.gv-metric .mt { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.gv-metric .mname { font-size: 13px; font-weight: 600; color: var(--text); }
+.gv-metric .msrc { font: 11px/1.4 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gv-metric .mv { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.gv-metric .mv b { font-size: 15px; color: var(--text); font-weight: 600; }
+.gv-metric .mv span { font-size: 12px; color: var(--muted); }
+.timeline { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 1px solid var(--line-strong); display: flex; flex-direction: column; gap: 12px; }
+.cycle { position: relative; padding: 0 0 2px; }
+.cycle::before { content: ''; position: absolute; left: -18.5px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--bg-solid); box-shadow: inset 0 0 0 1.5px var(--text-2); }
+.cycle:first-child::before { background: var(--accent); box-shadow: none; }
+.cy-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 0 0 4px; }
+.cy-day { font-size: 13px; font-weight: 600; color: var(--text); }
+.cy-when { font-size: 12px; color: var(--muted); }
+.cy-step { display: grid; grid-template-columns: 74px 1fr; gap: 8px; font-size: 12.5px; color: var(--text-2); margin: 2px 0; }
+.cy-label { color: var(--muted); }
+.cy-step ul { margin: 0; padding-left: 16px; }
+.cy-step p { margin: 0; }
+.cy-step .none { color: var(--muted); }
+.cy-next { color: var(--muted); margin-top: 2px !important; }
+.cy-metrics { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.cm b { color: var(--text); font-variant-numeric: tabular-nums; }
+.delta { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; font: 500 11px/17px var(--sans); color: var(--pill-text); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 7px; }
+.gv-approvals .row { margin: 6px 0; }
+.gv-approvals .row > span { font-size: 12.5px; }
+.gv-approvals .locked { color: var(--muted); }
+.gv-approvals .locked > span { color: var(--muted); }
+.gv-approvals .lock { width: 16px; text-align: center; }
+
+@media (hover: hover) and (pointer: fine) {
+  .goal-open:hover { background: var(--surface-2); }
+  .goal-pause:hover { background: var(--surface-3); color: var(--text); }
+  .quiet-btn:hover { color: var(--text); background: var(--surface); }
+  #btn-make-goal:hover, .cp-approve:hover { background: var(--accent-hover); border-color: transparent; }
 }

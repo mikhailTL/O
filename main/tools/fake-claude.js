@@ -68,6 +68,7 @@ async function main() {
     return;
   }
   const cfg = JSON.parse(fs.readFileSync(flag('--mcp-config'), 'utf8'));
+  if (process.env.FAKE_GOAL) return goalMode(cfg);
   out({ type: 'system', subtype: 'init', session_id: SID, mcp_servers: [{ name: 'playwright', status: 'connected' }, { name: 'o', status: 'connected' }] });
   out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'text', text: `You said: ${prompt.trim()}` }] } });
   out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__playwright__browser_navigate', input: { url: 'https://www.example.com/x' } }] } });
@@ -89,4 +90,49 @@ async function main() {
   out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls ~', description: 'List home folder' } }] } });
   out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'PERMS ' + JSON.stringify(results) }] } });
   out({ type: 'result', subtype: 'success', is_error: false, result: 'PERMS ' + JSON.stringify(results), session_id: SID, total_cost_usd: 0.01, duration_ms: 42 });
+}
+
+// Goal cycles (selftest-goals.js): asks the bridge's approve tool about checkpoint actions the way Claude Code
+// would, files a checkpoint with goal_checkpoint, and ends with a ```json cycle record.
+async function goalMode(cfg) {
+  out({ type: 'system', subtype: 'init', session_id: SID, mcp_servers: [{ name: 'o', status: 'connected' }] });
+  const o = cfg.mcpServers.o;
+  const child = spawn(o.command, o.args, { env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'inherit'] });
+  const call = rpc(child);
+  await call('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake', version: '0' } });
+  const ask = async (tool_name, input) => {
+    const r = await call('tools/call', { name: 'approve', arguments: { tool_name, input, tool_use_id: 'g' } });
+    return JSON.parse(r.result.content[0].text).behavior;
+  };
+  let text;
+  if (/approved your checkpoint/.test(prompt)) {
+    const first = await ask('mcp__playwright__browser_click', { element: 'Publish button', ref: 'e12' });
+    const again = await ask('mcp__playwright__browser_click', { element: 'Publish button', ref: 'e12' });
+    text = 'FOLLOWUP ' + JSON.stringify({ first, again });
+  } else {
+    const gid = (/\(goal (g-[0-9a-f]+)\)/.exec(prompt) || [])[1] || '';
+    const gates = {
+      upload: await ask('mcp__youtube__videos_insert', { snippet: { title: 'My $400 desk setup' }, status: { privacyStatus: 'public' } }),
+      analytics: await ask('mcp__o__mcp_call', { server: 'youtube', tool: 'analytics_query', args: { metrics: 'views' } }),
+      buyViews: await ask('mcp__o__web_run', { task: 'buy 1000 youtube views' }),
+      ads: await ask('mcp__o__mcp_call', { server: 'youtube', tool: 'ads_campaign_create', args: {} }),
+    };
+    const action = process.env.FAKE_GOAL_NOACTION ? undefined : { server: 'youtube', tool: 'videos_insert', args: { title: 'My $400 desk setup', privacyStatus: 'public' } };
+    const cp = await call('tools/call', { name: 'goal_checkpoint', arguments: {
+      kind: 'publish', title: "Approve video 'My $400 desk setup'", summary: 'Uploads the finished video to your channel as public on Friday 17:00.',
+      items: { type: 'video', title: 'My $400 desk setup', description: 'A full desk setup under $400: desk, chair, light, cable tray.', thumbnail: 'thumb-a.png', file: 'desk-setup-v3.mp4', schedule: 'Fri 17:00' },
+      ...(action ? { action } : {}),
+    } });
+    const record = {
+      goal_id: gid, plan: ['Script a 60-second desk tour', 'Cut the video and two thumbnails', 'File the upload checkpoint'],
+      did: ['Scripted and cut the video', 'Made thumbnails A and B', 'Filed the upload for approval'],
+      metrics: { views: { value: 37, source: 'connector:youtube' } },
+      reflection: 'GATES ' + JSON.stringify(gates) + ' CHECKPOINT ' + (cp.result && cp.result.isError ? 'error' : 'filed'),
+      next: 'Test thumbnail B if the click-through stays under 4%.',
+    };
+    text = 'Prepared the desk-setup video and filed it for your approval.\n```json\n' + JSON.stringify(record) + '\n```';
+  }
+  child.stdin.end();
+  out({ type: 'assistant', session_id: SID, parent_tool_use_id: null, message: { content: [{ type: 'text', text }] } });
+  out({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: SID, total_cost_usd: 0.003, duration_ms: 12 });
 }

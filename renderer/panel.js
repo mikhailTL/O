@@ -27,6 +27,7 @@
   const setupEl = $('setup');
   const actionlogEl = $('actionlog');
   const runsEl = $('runs');
+  const goalsEl = $('goals');
   const has = (name) => !!o && typeof o[name] === 'function';
 
   let currentAssistant = null; // { el, text } for the bubble being streamed
@@ -274,6 +275,12 @@
       case 'genui':
         onGenuiFrame(ev.frame);
         break;
+      case 'goals':
+        setGoals(ev.goals, ev.checkpoints);
+        break;
+      case 'view-goal':
+        if (ev.goalId) openGoal(ev.goalId, { checkpointId: ev.checkpointId, edit: !!ev.edit });
+        break;
       default:
         break;
     }
@@ -334,10 +341,10 @@
     syncButtons();
   }
 
-  promptEl.addEventListener('input', autosize);
+  promptEl.addEventListener('input', () => { autosize(); syncGoalOffer(); });
   promptEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
-    if (e.key === 'Escape') { if (!taskMenu.hidden) closeTaskMenu(); else if (!settingsEl.hidden) closeSettings(); else if (!actionlogEl.hidden) actionlogEl.hidden = true; else if (!runsEl.hidden) runsEl.hidden = true; else o.hidePanel(); }
+    if (e.key === 'Escape') { if (!taskMenu.hidden) closeTaskMenu(); else if (!settingsEl.hidden) closeSettings(); else if (!actionlogEl.hidden) actionlogEl.hidden = true; else if (!runsEl.hidden) runsEl.hidden = true; else if (!goalsEl.hidden) closeGoals(); else o.hidePanel(); }
   });
   sendBtn.addEventListener('click', () => send());
   /** The composer's stop button stops the task being shown; other tasks keep running. */
@@ -352,10 +359,6 @@
   // Ctrl+. or Ctrl+Shift+X in the panel also stops.
   document.addEventListener('keydown', (e) => {
     if (isActive(viewed()) && (e.ctrlKey || e.metaKey) && (e.key === '.' || (e.shiftKey && e.key.toLowerCase() === 'x'))) { e.preventDefault(); stopNow(); }
-  });
-  log.addEventListener('click', (e) => {
-    const ex = e.target.closest('.example');
-    if (ex) send(ex.textContent);
   });
 
   $('btn-close').addEventListener('click', () => o.hidePanel());
@@ -403,7 +406,7 @@
   $('btn-new').addEventListener('click', newTaskView);
   $('btn-drawer-new').addEventListener('click', newTaskView);
 
-  function openDrawer() { drawer.hidden = false; scrim.hidden = false; closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; refreshChatList(); }
+  function openDrawer() { drawer.hidden = false; scrim.hidden = false; closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true; refreshChatList(); }
   function closeDrawer() { drawer.hidden = true; scrim.hidden = true; }
   $('btn-all-tasks').addEventListener('click', () => { closeRuns(); openDrawer(); });
   $('btn-drawer-close').addEventListener('click', closeDrawer);
@@ -763,7 +766,7 @@
   // An unsaved Appearance pick is only a preview: every way of leaving Settings puts the saved theme back.
   function revertThemePreview() { applyTheme(savedTheme); }
   function openSettings() {
-    settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true;
+    settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true;
     loadSettings(); refreshExtension(); refreshProxy(); renderSettingsSchedules(); refreshLearned();
   }
 
@@ -827,11 +830,8 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !settingsEl.hidden && document.activeElement !== promptEl) closeSettings(); });
 
   // Greeting by time of day, and the composer chip showing where O browses.
-  function setGreeting() {
-    const h = new Date().getHours();
-    const part = h < 5 ? 'tonight' : h < 12 ? 'this morning' : h < 18 ? 'this afternoon' : 'this evening';
-    $('hero-greeting').textContent = `What can I do for you ${part}?`;
-  }
+  // The empty state is one quiet line; it does not change with the time of day.
+  function setGreeting() { $('hero-greeting').textContent = 'What should we get done?'; }
   const MODE_LABEL = { link: 'All my tabs', mine: 'Picked tabs', separate: 'Own browser' };
   async function refreshModeChip() {
     let st, ln;
@@ -1012,6 +1012,7 @@
   async function openActionLog({ taskId = null, title = '' } = {}) {
     closeSettings();
     runsEl.hidden = true;
+    goalsEl.hidden = true;
     closeDrawer();
     actionlogEl.hidden = false;
     alChain.textContent = ''; alChain.className = '';
@@ -1385,6 +1386,7 @@
   async function openRuns() {
     closeSettings();
     actionlogEl.hidden = true;
+    goalsEl.hidden = true;
     closeDrawer();
     runsEl.hidden = false;
     renderTaskSheet();
@@ -1427,6 +1429,384 @@
   log.addEventListener('o-genui-action', onGenuiAction);
   runsList.addEventListener('o-genui-action', onGenuiAction);
 
+  // ------------------------------------------------------------ goals (long-term agenda)
+  // A goal is long-running work O does every cycle (main/goals.js, engine /goals). The row above the composer
+  // shows each one compactly; the Goals sheet lists them, and a goal's own view shows its objective, metrics,
+  // cycle timeline and any checkpoint card waiting for the person (Approve / Edit / Skip).
+  let goalsList = [];
+  let checkpointCards = [];
+  let openGoalId = null;
+  let goalDetail = null;
+  const goalsRow = $('goals-row');
+  const goalOffer = $('goal-offer');
+  const GOALS_ROW_MAX = 2;
+  const PAUSE_ICON = '<svg viewBox="0 0 20 20"><path d="M7.5 5.5v9M12.5 5.5v9"/></svg>';
+  const PLAY_ICON = '<svg viewBox="0 0 20 20"><path d="M7 5.2v9.6l7.5-4.8z"/></svg>';
+  const CHECK_KINDS = [['publish', 'Publish or post publicly'], ['send_message', 'Send messages as you'], ['accept_terms', 'Accept terms'], ['delete_data', 'Delete your data']];
+  const ALWAYS_YOU = [['spend', 'Spend money or start paid services'], ['create_account', 'Create accounts']];
+
+  function fmtNum(v) {
+    if (v == null || !Number.isFinite(Number(v))) return '—';
+    const n = Number(v), a = Math.abs(n);
+    if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    if (a >= 1e4) return (n / 1e3).toFixed(a >= 1e5 ? 0 : 1).replace(/\.0$/, '') + 'k';
+    return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(1);
+  }
+  const metricWord = (name) => String(name || '').replace(/_/g, ' ');
+
+  /** A tiny monochrome line of the last readings (currentColor), with the latest point marked. */
+  function sparkline(values, w = 56, h = 16) {
+    const v = (values || []).map(Number).filter(Number.isFinite);
+    const size = w > 60 ? ' lg' : '';
+    if (v.length < 2) return `<svg class="spark empty${size}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true" focusable="false"><path d="M1 ${h - 2}H${w - 1}"/></svg>`;
+    const min = Math.min(...v), max = Math.max(...v), span = max - min || 1;
+    const pts = v.map((x, i) => [1 + (i * (w - 4)) / (v.length - 1), h - 2 - ((x - min) / span) * (h - 4)]);
+    const last = pts[pts.length - 1];
+    return `<svg class="spark${size}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true" focusable="false"><polyline points="${pts.map((p) => p.map((n) => n.toFixed(1)).join(',')).join(' ')}"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="1.7"/></svg>`;
+  }
+
+  /** "9:00 AM" today, "Thu 9:00 AM" later: the next cycle in as few characters as reads clearly. */
+  function shortNext(ms) {
+    const d = new Date(ms), now = new Date();
+    const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
+  }
+  function goalLine(g, { short } = {}) {
+    const bits = [`Day ${Math.min(g.day || 1, g.horizon_days || 1)} of ${g.horizon_days}`];
+    if (g.status === 'paused') bits.push('Paused');
+    else if (g.runningTaskId) bits.push('Working now');
+    else if (g.nextRun) bits.push(`next ${short ? shortNext(g.nextRun) : relTime(g.nextRun)}`);
+    return bits.join(' · ');
+  }
+
+  function primaryHtml(g) {
+    const p = g.primary;
+    if (!p) return '';
+    const val = p.latest == null ? 'no reading yet' : `${fmtNum(p.latest)} ${escapeHtml(metricWord(p.name))}`;
+    return `<span class="gmetric">${sparkline(p.series)}<span class="gval">${val}</span></span>`;
+  }
+
+  /** One goal in the row above the composer or in the Goals sheet. */
+  function goalRowEl(g, { compact } = {}) {
+    const row = document.createElement('div');
+    row.className = 'goal-row' + (compact ? ' compact' : '');
+    row.setAttribute('role', 'listitem');
+    row.dataset.id = g.id;
+    row.dataset.status = g.status;
+    const waiting = g.pendingCheckpoints || 0;
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'goal-open';
+    // Compact rows mark a waiting approval with a bright dot (the count is in the label and the header badge).
+    open.innerHTML = `<span class="gtext"><span class="gttl">${waiting && compact ? '<span class="gwait" aria-hidden="true"></span>' : ''}${escapeHtml(g.title)}</span><span class="gsub"><span class="gline">${escapeHtml(goalLine(g, { short: true }))}${waiting && !compact ? ` · <b>${waiting} to approve</b>` : ''}</span>${primaryHtml(g)}</span></span>`;
+    const p = g.primary;
+    open.setAttribute('aria-label', `${g.title}. ${goalLine(g)}.${p ? ` ${metricWord(p.name)} ${p.latest == null ? 'not measured yet' : fmtNum(p.latest)}.` : ''}${waiting ? ` ${waiting} waiting for your approval.` : ''}`);
+    open.addEventListener('click', () => openGoal(g.id));
+    row.appendChild(open);
+    const pause = document.createElement('button');
+    pause.type = 'button';
+    pause.className = 'goal-pause';
+    const paused = g.status === 'paused';
+    pause.title = paused ? 'Resume' : 'Pause';
+    pause.setAttribute('aria-label', `${paused ? 'Resume' : 'Pause'} ${g.title}`);
+    pause.innerHTML = paused ? PLAY_ICON : PAUSE_ICON;
+    pause.addEventListener('click', (e) => { e.stopPropagation(); setGoalStatus(g.id, paused ? 'resume' : 'pause'); });
+    row.appendChild(pause);
+    return row;
+  }
+
+  function renderGoalsRow() {
+    const live = goalsList.filter((g) => g.status !== 'archived');
+    goalsRow.innerHTML = '';
+    live.slice(0, GOALS_ROW_MAX).forEach((g) => goalsRow.appendChild(goalRowEl(g, { compact: true })));
+    if (live.length > GOALS_ROW_MAX) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'strip-more';
+      b.textContent = `${live.length - GOALS_ROW_MAX} more goal${live.length - GOALS_ROW_MAX === 1 ? '' : 's'}`;
+      b.addEventListener('click', () => openGoals());
+      goalsRow.appendChild(b);
+    }
+    goalsRow.hidden = !live.length;
+    document.body.classList.toggle('has-goals', !goalsRow.hidden);
+    const badge = $('goals-badge');
+    badge.hidden = !checkpointCards.length;
+    badge.textContent = String(checkpointCards.length);
+    $('btn-goals').setAttribute('aria-label', checkpointCards.length ? `Goals, ${checkpointCards.length} waiting for your approval` : 'Goals');
+  }
+
+  function setGoals(list, cps) {
+    if (Array.isArray(list)) goalsList = list;
+    if (Array.isArray(cps)) checkpointCards = cps;
+    renderGoalsRow();
+    if (!goalsEl.hidden) {
+      if (openGoalId) loadGoal(openGoalId);
+      else renderGoalsIndex();
+    }
+  }
+
+  async function refreshGoals() {
+    if (!has('listGoals')) return;
+    try { const r = await o.listGoals(); if (r && r.ok !== false) setGoals(r.goals, r.checkpoints); } catch (_) {}
+  }
+
+  async function setGoalStatus(id, op) {
+    if (!has('setGoalStatus')) return;
+    const r = await o.setGoalStatus(id, op);
+    if (r && r.ok === false) { addMsg('error', `⚠ ${escapeHtml(r.error || 'Could not change the goal')}`); return; }
+    refreshGoals();
+  }
+
+  // ---------- checkpoint card (goal view and the Goals sheet)
+  function checkpointEl(c, { focusEdit } = {}) {
+    const el = document.createElement('div');
+    el.className = 'cp-card';
+    el.dataset.id = c.id;
+    const items = c.items || {};
+    const rows = [['Title', items.title], ['Description', items.description], ['Thumbnail', items.thumbnail], ['File', items.file], ['Schedule', items.schedule]]
+      .filter(([, v]) => v).map(([k, v]) => `<div class="cp-kv"><span>${k}</span><span>${escapeHtml(v)}</span></div>`).join('');
+    el.innerHTML = `<div class="cp-kind">${escapeHtml(c.kindLabel || c.kind)}${c.goalTitle && !openGoalId ? ` · ${escapeHtml(c.goalTitle)}` : ''}</div>
+      <div class="cp-head">${escapeHtml(c.headline)}</div>
+      ${c.summary ? `<p class="cp-sum">${escapeHtml(c.summary)}</p>` : ''}
+      ${rows ? `<div class="cp-items">${rows}</div>` : ''}
+      ${c.personDoesIt ? '<p class="cp-note">O never does this part itself. Approve when you have done it, or skip it.</p>' : ''}
+      <div class="cp-edit" hidden><textarea rows="2" aria-label="What should change?" placeholder="What should change?"></textarea><button type="button" class="cp-send">Send changes</button></div>
+      <div class="cp-acts"><button type="button" class="cp-skip">Skip</button><button type="button" class="cp-editbtn">Edit</button><button type="button" class="cp-approve">${c.personDoesIt ? 'Done it' : 'Approve'}</button></div>`;
+    const edit = el.querySelector('.cp-edit');
+    const ta = edit.querySelector('textarea');
+    const decide = async (decision, text) => {
+      if (!has('resolveCheckpoint')) return;
+      el.classList.add('busy');
+      const r = await o.resolveCheckpoint(c.id, decision, text);
+      el.classList.remove('busy');
+      if (r && r.ok === false) { el.querySelector('.cp-acts').insertAdjacentHTML('beforebegin', `<p class="cp-note">${escapeHtml(r.error || 'That did not work')}</p>`); return; }
+      refreshGoals();
+    };
+    el.querySelector('.cp-approve').addEventListener('click', () => decide('approve'));
+    el.querySelector('.cp-skip').addEventListener('click', () => decide('skip'));
+    el.querySelector('.cp-editbtn').addEventListener('click', () => { edit.hidden = !edit.hidden; if (!edit.hidden) ta.focus(); });
+    el.querySelector('.cp-send').addEventListener('click', () => { if (ta.value.trim()) decide('edit', ta.value.trim()); else ta.focus(); });
+    if (focusEdit) { edit.hidden = false; setTimeout(() => ta.focus(), 30); }
+    return el;
+  }
+
+  // ---------- the Goals sheet
+  function renderGoalsIndex() {
+    $('goals-index').hidden = false;
+    $('goal-view').hidden = true;
+    $('goals-h').textContent = 'Goals';
+    const waiting = $('goals-waiting');
+    waiting.innerHTML = '';
+    if (checkpointCards.length) {
+      const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'Waiting for you'; waiting.appendChild(h);
+      checkpointCards.forEach((c) => waiting.appendChild(checkpointEl(c)));
+    }
+    const list = $('goals-list');
+    list.innerHTML = '';
+    const live = goalsList.filter((g) => g.status !== 'archived');
+    if (!live.length) {
+      const d = document.createElement('p');
+      d.className = 'goals-empty';
+      d.textContent = 'Give O an objective that takes weeks, like growing a channel or a newsletter. It plans each day, measures, and adapts.';
+      list.appendChild(d);
+    } else live.forEach((g) => list.appendChild(goalRowEl(g)));
+    const active = live.filter((g) => g.status === 'active').length;
+    $('goals-sub').textContent = live.length ? `${active} active${checkpointCards.length ? ` · ${checkpointCards.length} waiting for you` : ''}` : 'Long-running work O does every day, checking in only at checkpoints';
+  }
+
+  function openGoals() {
+    closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; closeDrawer();
+    goalsEl.hidden = false;
+    openGoalId = null;
+    renderGoalsIndex();
+    refreshGoals();
+  }
+  function closeGoals() { goalsEl.hidden = true; openGoalId = null; }
+  $('btn-goals').addEventListener('click', () => (goalsEl.hidden ? openGoals() : closeGoals()));
+  $('btn-goals-close').addEventListener('click', closeGoals);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !goalsEl.hidden && document.activeElement !== promptEl && !(e.target && e.target.closest && e.target.closest('textarea'))) { if (openGoalId) openGoals(); else closeGoals(); } });
+
+  $('btn-propose').addEventListener('click', async () => {
+    const btn = $('btn-propose');
+    const box = $('goals-proposals');
+    if (!has('proposeGoals')) return;
+    btn.disabled = true;
+    btn.textContent = 'Thinking about what you do…';
+    let r;
+    try { r = await o.proposeGoals(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    btn.disabled = false;
+    btn.textContent = 'Let O propose goals';
+    box.innerHTML = '';
+    if (!r || r.ok === false) { box.innerHTML = `<p class="goals-empty">${escapeHtml((r && r.error) || 'O could not propose goals right now.')}</p>`; return; }
+    if (!r.proposals.length) { box.innerHTML = '<p class="goals-empty">O needs a few more days of working with you before it can propose goals worth owning.</p>'; return; }
+    const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'O could own'; box.appendChild(h);
+    for (const p of r.proposals) {
+      const row = document.createElement('div');
+      row.className = 'proposal';
+      row.innerHTML = `<div class="ptext"><span class="gttl">${escapeHtml(p.title)}</span><span class="gline">${escapeHtml(p.objective)}</span></div>`;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'learn-accept';
+      b.textContent = 'Accept';
+      b.setAttribute('aria-label', `Accept goal: ${p.title}`);
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        const a = await o.acceptGoal(p);
+        if (a && a.ok === false) { b.disabled = false; row.insertAdjacentHTML('beforeend', `<p class="cp-note">${escapeHtml(a.error || 'Could not accept')}</p>`); return; }
+        row.remove();
+        await refreshGoals();
+        if (a && a.goal) openGoal(a.goal.id);
+      });
+      row.appendChild(b);
+      box.appendChild(row);
+    }
+  });
+
+  // ---------- one goal
+  async function openGoal(id, opts = {}) {
+    if (goalsEl.hidden) { closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; closeDrawer(); goalsEl.hidden = false; }
+    openGoalId = id;
+    await loadGoal(id, opts);
+  }
+
+  async function loadGoal(id, opts = {}) {
+    if (!has('goalDetail')) return;
+    let d;
+    try { d = await o.goalDetail(id); } catch (err) { d = { ok: false, error: err && err.message }; }
+    if (openGoalId !== id) return;
+    if (!d || d.ok === false) { renderGoalsIndex(); return; }
+    goalDetail = d;
+    renderGoal(d, opts);
+  }
+
+  function cycleEl(c, prev, goal) {
+    const el = document.createElement('li');
+    el.className = 'cycle';
+    const day = Math.max(1, Math.floor(((c.ts * 1000) - (goal.created * 1000)) / 86400000) + 1);
+    const when = new Date(c.ts * 1000).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const list = (arr) => (arr && arr.length ? `<ul>${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : '<p class="none">Nothing recorded</p>');
+    const metrics = Object.entries(c.metrics || {}).map(([k, v]) => {
+      const before = prev && prev.metrics && prev.metrics[k] ? Number(prev.metrics[k].value) : null;
+      const delta = before != null && Number.isFinite(before) ? Number(v.value) - before : null;
+      const unverified = v.source === 'unverified' || v.source === 'self_report';
+      return `<span class="cm">${escapeHtml(metricWord(k))} <b>${fmtNum(v.value)}</b>${delta ? ` <span class="delta">${delta > 0 ? '+' : '−'}${fmtNum(Math.abs(delta))}</span>` : ''}${unverified ? ' <span class="pill">unverified</span>' : ''}</span>`;
+    }).join('');
+    const flags = (c.flags || []).filter((f) => f !== 'unverified_metrics').map((f) => `<span class="pill">${f === 'unsupported_claim' ? 'claim not backed by metrics' : f === 'incomplete' ? 'no work recorded' : escapeHtml(f)}</span>`).join('');
+    el.innerHTML = `<div class="cy-head"><span class="cy-day">Day ${day}</span><span class="cy-when">${escapeHtml(when)}</span>${flags}</div>
+      <div class="cy-step"><span class="cy-label">Plan</span>${list(c.plan)}</div>
+      <div class="cy-step"><span class="cy-label">Did</span>${list(c.did)}</div>
+      <div class="cy-step"><span class="cy-label">Result</span>${metrics ? `<div class="cy-metrics">${metrics}</div>` : '<p class="none">Not measured</p>'}</div>
+      <div class="cy-step"><span class="cy-label">Reflection</span><div><p>${escapeHtml(c.reflection || '—')}</p>${c.next ? `<p class="cy-next">Next: ${escapeHtml(c.next)}</p>` : ''}</div></div>`;
+    return el;
+  }
+
+  function renderGoal(d, { checkpointId, edit } = {}) {
+    const g = d.goal;
+    $('goals-index').hidden = true;
+    const view = $('goal-view');
+    view.hidden = false;
+    $('goals-h').textContent = 'Goal';
+    $('goals-sub').textContent = goalLine({ ...g, day: d.day });
+    view.innerHTML = '';
+    const back = document.createElement('button');
+    back.type = 'button'; back.className = 'link-btn back'; back.textContent = 'All goals';
+    back.addEventListener('click', openGoals);
+    view.appendChild(back);
+
+    const head = document.createElement('div');
+    head.className = 'gv-head';
+    const sameText = String(g.objective || '').trim().replace(/[.\s]+$/, '').toLowerCase() === String(g.title || '').trim().replace(/[.\s]+$/, '').toLowerCase();
+    head.innerHTML = `<h3 class="gv-title">${escapeHtml(g.title)}</h3>${sameText ? '' : `<p class="gv-objective">${escapeHtml(g.objective)}</p>`}
+      <p class="gv-meta">${escapeHtml(g.scheduleLabel || (g.status === 'paused' ? 'Paused' : ''))}${g.origin === 'agent' ? ' · proposed by O' : ''}</p>`;
+    view.appendChild(head);
+
+    const acts = document.createElement('div');
+    acts.className = 'gv-acts';
+    const mk = (label, fn, cls) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; if (cls) b.className = cls; b.addEventListener('click', fn); acts.appendChild(b); return b; };
+    if (g.status === 'active') mk(g.runningTaskId ? 'Working now…' : 'Run a cycle now', async () => { if (has('runGoalNow')) { const r = await o.runGoalNow(g.id); if (r && r.ok === false) $('goals-sub').textContent = r.error || 'Could not start'; loadGoal(g.id); } }).disabled = !!g.runningTaskId;
+    mk(g.status === 'paused' ? 'Resume' : 'Pause', () => setGoalStatus(g.id, g.status === 'paused' ? 'resume' : 'pause'));
+    const arch = mk('Archive', async () => {
+      if (arch.dataset.armed !== '1') { arch.dataset.armed = '1'; arch.textContent = 'Archive for good?'; setTimeout(() => { arch.dataset.armed = ''; arch.textContent = 'Archive'; }, 3000); return; }
+      await setGoalStatus(g.id, 'archive'); openGoals();
+    }, 'quiet-btn');
+    view.appendChild(acts);
+
+    const pending = (d.checkpoints || []).filter((c) => c.status === 'pending');
+    if (pending.length) {
+      const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'Waiting for you'; view.appendChild(h);
+      pending.forEach((c) => view.appendChild(checkpointEl(c, { focusEdit: edit && c.id === checkpointId })));
+    }
+
+    const mh = document.createElement('h3'); mh.className = 'sheet-h'; mh.textContent = 'Metrics'; view.appendChild(mh);
+    const mbox = document.createElement('div');
+    mbox.className = 'gv-metrics';
+    for (const m of g.success_metrics || []) {
+      const pts = (d.series[m.name] || []).map((p) => p.value);
+      const latest = pts.length ? pts[pts.length - 1] : null;
+      const row = document.createElement('div');
+      row.className = 'gv-metric';
+      row.innerHTML = `<div class="mt"><span class="mname">${escapeHtml(metricWord(m.name))}</span><span class="msrc">${escapeHtml(m.source)}</span></div>
+        <div class="mv"><b>${latest == null ? '—' : fmtNum(latest)}</b><span>${m.target != null ? ` of ${fmtNum(m.target)}` : ''}${m.unit && m.unit !== m.name ? ' ' + escapeHtml(m.unit) : ''}</span></div>${sparkline(pts, 120, 28)}`;
+      mbox.appendChild(row);
+    }
+    view.appendChild(mbox);
+
+    const th = document.createElement('h3'); th.className = 'sheet-h'; th.textContent = 'Timeline'; view.appendChild(th);
+    const tl = document.createElement('ol');
+    tl.className = 'timeline';
+    const cycles = d.cycles || [];
+    if (!cycles.length) { const p = document.createElement('p'); p.className = 'goals-empty'; p.textContent = g.runningTaskId ? 'The first cycle is running. Its plan shows up here when it finishes.' : 'No cycles yet.'; view.appendChild(p); }
+    for (let i = cycles.length - 1; i >= 0; i--) tl.appendChild(cycleEl(cycles[i], cycles[i - 1], g));
+    view.appendChild(tl);
+
+    const ah = document.createElement('h3'); ah.className = 'sheet-h'; ah.textContent = 'Approvals'; view.appendChild(ah);
+    const ap = document.createElement('div');
+    ap.className = 'gv-approvals';
+    const allowed = g.autonomy === 'act' ? (g.allowed || []) : [];
+    ap.innerHTML = `<p class="hint">O always asks before these. Untick one only if you want O to do it on its own for this goal.</p>` +
+      CHECK_KINDS.map(([k, label]) => `<label class="row check"><input type="checkbox" data-kind="${k}" ${allowed.includes(k) ? '' : 'checked'}><span>Ask before: ${escapeHtml(label.toLowerCase())}</span></label>`).join('') +
+      ALWAYS_YOU.map(([, label]) => `<div class="row check locked"><span class="lock" aria-hidden="true">—</span><span>${escapeHtml(label)}: always you, never O</span></div>`).join('');
+    ap.addEventListener('change', async () => {
+      const off = [...ap.querySelectorAll('input[data-kind]')].filter((x) => !x.checked).map((x) => x.dataset.kind);
+      if (has('setGoalAutonomy')) await o.setGoalAutonomy(g.id, off.length ? 'act' : 'act_with_checkpoints', off);
+      loadGoal(g.id);
+    });
+    view.appendChild(ap);
+    if (checkpointId) { const el = view.querySelector(`.cp-card[data-id="${CSS.escape(checkpointId)}"]`); if (el) el.scrollIntoView({ block: 'center' }); }
+  }
+
+  // ---------- "Make this a goal" from the composer
+  // A long-term, measurable objective ("Grow a YouTube channel about desk setups to monetization",
+  // "Get me to 10k newsletter subscribers") gets one quiet inline offer; everything else stays a task.
+  function looksLikeGoal(text) {
+    const t = String(text || '').toLowerCase().trim();
+    if (t.split(/\s+/).length < 4) return false;
+    const longTerm = /\b(grow|reach|get (me |us |it )?to|build( up)?|hit|double|triple|increase|launch|monetiz\w*|scale|go viral|until)\b/.test(t);
+    const measurable = /\d|\b(subscribers?|followers?|views|audience|channel|newsletter|revenue|sales|users|customers|listeners|downloads|monetiz\w*|traffic|sign-?ups?|members|readers|mrr)\b/.test(t);
+    return longTerm && measurable;
+  }
+  function syncGoalOffer() {
+    const show = has('createGoal') && looksLikeGoal(promptEl.value);
+    goalOffer.hidden = !show;
+  }
+  $('btn-make-goal').addEventListener('click', async () => {
+    const text = promptEl.value.trim();
+    if (!text) return;
+    const btn = $('btn-make-goal');
+    btn.disabled = true;
+    btn.textContent = 'Setting the goal…';
+    let r;
+    try { r = await o.createGoal(text); } catch (err) { r = { ok: false, error: err && err.message }; }
+    btn.disabled = false;
+    btn.textContent = 'Make this a goal';
+    if (!r || r.ok === false) { addMsg('error', `⚠ ${escapeHtml((r && r.error) || 'Could not set the goal')}`); startChat(); return; }
+    promptEl.value = '';
+    autosize();
+    syncGoalOffer();
+    await refreshGoals();
+    if (r.goal) openGoal(r.goal.id);
+  });
+
   // ------------------------------------------------------------ init
 
   window.addEventListener('focus', () => promptEl.focus());
@@ -1438,5 +1818,6 @@
   window.addEventListener('focus', () => { if (extCard) refreshExtension(); });
   refreshState();
   refreshTasks();
+  refreshGoals();
   autosize();
 })();

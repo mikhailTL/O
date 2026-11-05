@@ -41,6 +41,16 @@ contextBridge.exposeInMainWorld('o', {
   learnProfile: () => ipcRenderer.invoke('learn:profile'),
   learnForget: (id) => ipcRenderer.invoke('learn:forget', String(id || '')),
   acceptSuggestion: (sg) => ipcRenderer.invoke('learn:acceptSuggestion', sg && typeof sg === 'object' ? { id: sg.id || null, text: String(sg.text || ''), prompt: String(sg.prompt || ''), when: sg.when || null, cron: sg.cron || null } : null),
+  // long-term goals
+  listGoals: () => ipcRenderer.invoke('goals:list'),
+  goalDetail: (id) => ipcRenderer.invoke('goals:detail', String(id || '')),
+  createGoal: (text) => ipcRenderer.invoke('goals:create', String(text || '')),
+  proposeGoals: () => ipcRenderer.invoke('goals:propose'),
+  acceptGoal: (proposal) => ipcRenderer.invoke('goals:accept', proposal && typeof proposal === 'object' ? proposal : {}),
+  setGoalStatus: (id, op) => ipcRenderer.invoke('goals:status', String(id || ''), String(op || '')),
+  setGoalAutonomy: (id, autonomy, allowed) => ipcRenderer.invoke('goals:autonomy', String(id || ''), String(autonomy || ''), Array.isArray(allowed) ? allowed.map(String) : []),
+  runGoalNow: (id) => ipcRenderer.invoke('goals:runNow', String(id || '')),
+  resolveCheckpoint: (id, decision, text) => ipcRenderer.invoke('goals:checkpoint', String(id || ''), String(decision || ''), text == null ? '' : String(text)),
   newSession: () => ipcRenderer.invoke('agent:newSession'),
   // chat history
   listChats: () => ipcRenderer.invoke('chats:list'),
@@ -74,6 +84,12 @@ contextBridge.exposeInMainWorld('o', {
     ipcRenderer.on('notify:tasks', handler);
     return () => ipcRenderer.removeListener('notify:tasks', handler);
   },
+  onNotifyCheckpoints: (cb) => {
+    const handler = (_e, list) => cb(list);
+    ipcRenderer.on('notify:checkpoints', handler);
+    return () => ipcRenderer.removeListener('notify:checkpoints', handler);
+  },
+  checkpointFromNotify: (id, decision) => ipcRenderer.send('notify:checkpoint', String(id || ''), ['approve', 'edit', 'skip'].includes(decision) ? decision : 'skip'),
   openTaskFromNotify: (id) => ipcRenderer.send('notify:openTask', String(id || '')),
   dismissTaskCard: (id) => ipcRenderer.send('notify:dismissTask', String(id || '')),
   notifyResize: (h) => ipcRenderer.send('notify:resize', Number(h) || 0),

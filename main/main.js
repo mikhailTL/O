@@ -62,6 +62,7 @@ let proxy = null;     // the localhost OpenAI-compatible API proxy (main/proxy.j
 
 let tasks = null;               // the task pool (main/tasks.js): one Claude Code process per task
 let scheduler = null;           // saved schedules (main/scheduler.js)
+let goals = null;               // long-term goals: schedules, cycles, checkpoints (main/goals.js)
 let unseenDone = 0;             // tasks that ended while the panel was closed (tray / dock badge)
 const taskCards = new Map();    // task id -> notify-sidebar card {id, kind: 'done'|'needs', title, text, at}
 const pendingPerms = new Map(); // id -> { resolve, toolName, input, summary, expiresAt }
@@ -489,13 +490,15 @@ function pendingList() {
 function syncNotify() {
   const list = pendingList();
   const cards = [...taskCards.values()];
-  const want = (list.length > 0 || cards.length > 0) && !panelVisible();
+  const checkpoints = goals ? goals.pendingCards() : [];
+  const want = (list.length > 0 || cards.length > 0 || checkpoints.length > 0) && !panelVisible();
   if (!want) {
     if (notifyWin && !notifyWin.isDestroyed()) {
       notifyWin.webContents.send('notify:perms', []);
       notifyWin.webContents.send('notify:tasks', []);
+      notifyWin.webContents.send('notify:checkpoints', []);
       clearTimeout(notifyHideTimer);
-      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !((pendingPerms.size || taskCards.size) && !panelVisible())) notifyWin.hide(); }, 260);
+      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !((pendingPerms.size || taskCards.size || (goals && goals.pendingCards().length)) && !panelVisible())) notifyWin.hide(); }, 260);
     }
     return;
   }
@@ -503,6 +506,7 @@ function syncNotify() {
   if (!notifyWin || notifyWin.isDestroyed()) { createNotifyWindow(); return; } // did-finish-load syncs again
   notifyWin.webContents.send('notify:perms', list);
   notifyWin.webContents.send('notify:tasks', cards);
+  notifyWin.webContents.send('notify:checkpoints', checkpoints);
   if (!notifyWin.isVisible()) { placeNotify(notifyWin.getBounds().height); notifyWin.showInactive(); }
 }
 
@@ -670,8 +674,31 @@ function handleSchedule(body) {
 }
 
 function fireSchedule(s) {
+  if (s.goalId) { // a goal's cycle: today's prompt comes from the engine (objective, trend, last reflection)
+    if (goals) goals.fireCycle(s.goalId).catch((err) => logApp('note', `Goal cycle could not start: ${err.message}`, { goalId: s.goalId }));
+    return;
+  }
   logApp('task', `Scheduled task started: ${s.title} (${s.label})`, { scheduleId: s.id });
   startTask({ prompt: s.prompt, title: s.title, source: 'schedule', scheduleId: s.id });
+}
+
+/** POST /goal from a task's bridge (goal tools + the checkpoint gate). */
+function handleGoal(taskId, body) {
+  if (!goals) return body && body.op === 'gate' ? { ok: true, allow: false, message: 'Goals are not loaded, so checkpoint actions are held.' } : { ok: false, error: 'goals unavailable' };
+  return goals.handle(taskId, body);
+}
+
+function engineCall(method, p, body, timeoutMs) {
+  let ready = false;
+  try { ready = !!(engine && engine.status().ready); } catch (_) { ready = false; }
+  if (!ready) return Promise.reject(new Error('The engine is not running, so goals are unavailable right now.'));
+  return engine.call(method, p, body, timeoutMs);
+}
+
+let goalsTimer = null;
+function broadcastGoals() {
+  if (goalsTimer) return;
+  goalsTimer = setTimeout(() => { goalsTimer = null; if (goals) broadcast({ type: 'goals', ...goals.list() }); syncNotify(); }, 120);
 }
 
 function loadAgent() {
@@ -694,13 +721,14 @@ function loadAgent() {
     getLinkEndpoint: () => (link ? link.cdpEndpoint() : null),
   };
   // The host agent runs no tasks: its HTTP server is the engine's log/GenUI endpoint and the proxy's config writer.
-  agent = new mod.OAgent({ ...common, getChatId: () => null, onPermissionRequest: askUser, onSchedule: handleSchedule });
+  agent = new mod.OAgent({ ...common, getChatId: () => null, onPermissionRequest: askUser, onSchedule: handleSchedule, onGoal: handleGoal });
   agent.on('event', (ev) => { if (ev.type === 'genui') onGenuiFrame(ev.frame); });
 
   tasks = new TaskManager({
     getSettings: () => settings.get(),
-    createAgent: (taskId) => new mod.OAgent({
-      ...common, taskId, getChatId: () => taskId, onSchedule: handleSchedule,
+    createAgent: (taskId, opts) => new mod.OAgent({
+      ...common, taskId, getChatId: () => taskId, onSchedule: handleSchedule, onGoal: handleGoal,
+      goalId: (opts && opts.goalId) || (goals && goals.goalForTask(taskId)) || null,
       onPermissionRequest: (req) => askUser({ ...req, taskId }),
     }),
   });
@@ -711,6 +739,17 @@ function loadAgent() {
   scheduler = new Scheduler({ file: path.join(app.getPath('userData'), 'o-schedules.json'), onFire: fireSchedule });
   scheduler.on('changed', broadcastTasks);
   scheduler.on('error', (err) => console.error('[o] scheduler:', err.message));
+
+  try {
+    const { GoalRunner } = require('./goals');
+    goals = new GoalRunner({
+      engineCall, scheduler, startTask, getTasks: () => (tasks ? tasks.list() : []),
+      file: path.join(app.getPath('userData'), 'o-goals.json'), log: logApp,
+    });
+    goals.on('changed', broadcastGoals);
+    goals.on('checkpoint', () => { if (!panelVisible()) notify('O has something for you to approve', 'Open the card to approve, edit or skip it.'); });
+    goals.on('error', (err) => console.error('[o] goals:', err.message));
+  } catch (err) { console.error('[o] goals not loaded:', err.message); }
   scheduler.start();
 }
 
@@ -737,8 +776,9 @@ function onTaskEvent(ev) {
   }
 }
 
-function onTaskEnd({ task, ok, sessionId, durationMs }) {
+function onTaskEnd({ task, ok, sessionId, durationMs, result }) {
   if (chats) { chats.setSessionFor(task.id, sessionId); broadcast({ type: 'chats' }); }
+  if (goals) goals.onTaskEnd({ task, ok, result }).catch((err) => logApp('note', `Goal cycle not recorded: ${err.message}`, { taskId: task.id }));
   // The engine records finished /provision and /computer/run jobs itself: observe only the other tasks.
   const viaEngine = (task.tools || []).some((n) => n === 'mcp__o__provision' || n === 'mcp__o__computer_run' || n === 'mcp__o__computer_replay');
   if (task.status !== 'stopped' && !viaEngine) {
@@ -796,15 +836,16 @@ function stopTask(taskId) {
 }
 
 /** Start a task (or a follow-up in an ended one); its chat is created with the task's id. */
-function startTask({ prompt, taskId, title, source, scheduleId } = {}) {
+function startTask({ prompt, taskId, title, source, scheduleId, goalId } = {}) {
   if (!tasks) return { ok: false, error: 'O\'s task runner did not load. Check the terminal for errors.' };
   const prior = taskId ? tasks.get(taskId) : null;
   if (taskId && !prior && chats && chats.get(taskId)) {
     // A task from an earlier session of O: resume its saved Claude Code session.
     const c = chats.get(taskId);
-    tasks.tasks.set(taskId, { id: taskId, title: c.title, prompt: '', status: 'done', statusLine: 'Done', mood: 'idle', createdAt: c.createdAt, startedAt: null, endedAt: c.updatedAt, source: 'user', scheduleId: null, sessionId: c.sessionId || null, agent: null, result: '', error: '', runs: 0, tools: new Set() });
+    const gid = goalId || (goals && goals.goalForTask(taskId)) || null;
+    tasks.tasks.set(taskId, { id: taskId, title: c.title, prompt: '', status: 'done', statusLine: 'Done', mood: 'idle', createdAt: c.createdAt, startedAt: null, endedAt: c.updatedAt, source: gid ? 'goal' : 'user', scheduleId: null, goalId: gid, sessionId: c.sessionId || null, agent: null, result: '', error: '', runs: 0, tools: new Set() });
   }
-  const r = tasks.start({ prompt, taskId, title, source, scheduleId });
+  const r = tasks.start({ prompt, taskId, title, source, scheduleId, goalId });
   if (!r.ok) return r;
   if (chats) { chats.ensureTask(r.taskId, title || null); chats.addUserTo(r.taskId, prompt); broadcast({ type: 'chats' }); }
   if (r.followUp && CORRECTION_RE.test(prompt)) observe({ source: 'correction', task_id: r.taskId, text: prompt.slice(0, 2000), ...(prior ? { outcome: prior.status === 'done' ? 'ok' : 'failed' } : {}) });
@@ -946,6 +987,31 @@ function registerIpc() {
       return { ok: true };
     } catch (err) { return { ok: false, error: err.message }; }
   });
+  // ---------- long-term goals (engine /goals, main/goals.js) ----------
+  const goalsOr = (fn) => async (...a) => {
+    if (!goals) return { ok: false, error: 'Goals did not load.' };
+    try { return await fn(...a); } catch (err) { return { ok: false, error: err.message }; }
+  };
+  ipcMain.handle('goals:list', goalsOr(async () => { if (engineReady()) await goals.refresh().catch(() => {}); return { ok: true, ...goals.list() }; }));
+  ipcMain.handle('goals:detail', goalsOr((_e, id) => goals.detail(String(id || ''))));
+  ipcMain.handle('goals:create', goalsOr((_e, text) => goals.create(String(text || '').slice(0, 2000))));
+  ipcMain.handle('goals:propose', goalsOr(() => goals.propose()));
+  ipcMain.handle('goals:accept', goalsOr((_e, proposal) => goals.createFromProposal(proposal && typeof proposal === 'object' ? proposal : {})));
+  ipcMain.handle('goals:status', goalsOr((_e, id, op) => goals.setStatus(String(id || ''), String(op || ''))));
+  ipcMain.handle('goals:autonomy', goalsOr((_e, id, autonomy, allowed) => goals.setAutonomy(String(id || ''), String(autonomy || ''), Array.isArray(allowed) ? allowed.map(String) : [])));
+  ipcMain.handle('goals:runNow', goalsOr((_e, id) => goals.fireCycle(String(id || ''), { reason: 'run now' })));
+  ipcMain.handle('goals:checkpoint', goalsOr((_e, id, decision, text) => goals.resolveCheckpoint(String(id || ''), String(decision || ''), text == null ? '' : String(text))));
+  ipcMain.on('notify:checkpoint', (_e, id, decision) => {
+    if (!goals) return;
+    if (decision === 'edit') { // editing needs words: open the goal view with that card's edit box
+      const cp = goals.checkpoints.find((c) => c.id === String(id || ''));
+      showPanel();
+      broadcast({ type: 'view-goal', goalId: cp ? cp.goalId : '', checkpointId: String(id || ''), edit: true });
+      return;
+    }
+    goals.resolveCheckpoint(String(id || ''), decision === 'approve' ? 'approve' : 'skip').catch(() => {});
+  });
+
   ipcMain.handle('app:shortcuts', () => shortcuts.createShortcuts(app, shell));
   // ---------- chat history ----------
   const chatOut = (c) => (c ? { id: c.id, title: c.title, messages: c.messages, updatedAt: c.updatedAt } : null);
@@ -1131,7 +1197,11 @@ app.whenReady().then(() => {
         uiUrl,
       });
       engine.on('log', (e) => { if (actionLog) { try { actionLog.record(e); } catch (_) {} } });
-      engine.on('ready', () => { broadcast({ type: 'engine', ...engineStatus() }); if (tasks) tasks.prewarm().catch(() => {}); });
+      engine.on('ready', () => {
+        broadcast({ type: 'engine', ...engineStatus() });
+        if (tasks) tasks.prewarm().catch(() => {});
+        if (goals) goals.refresh().catch((err) => console.error('[o] goals refresh:', err.message));
+      });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
       engine.start();
       startProxy();

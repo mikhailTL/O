@@ -30,6 +30,15 @@
 //   cancel_schedule    remove one schedule by id.
 //   recall_preferences what O has learned about the user (engine GET /learn/profile; cached 60 s).
 //   remember_preference one preference the user stated (engine POST /learn/observe, source "correction").
+//   goal_create        turn the user's long-term objective into a goal O works on every cycle (POST /goal on the app).
+//   goal_status        one goal's progress (metrics, cycles, checkpoints) or every goal.
+//   goal_record_cycle  record this cycle's plan, work, platform metrics, reflection and next step.
+//   goal_propose       up to 3 goals O could own, from what it has learned (the user accepts them in O).
+//   goal_checkpoint    file a prepared checkpoint action (publish, send, ...) as an Approve / Edit / Skip card.
+//
+// Checkpoint gate: in a goal task (O_GOAL_ID), every call that reaches `approve` and classifies as a checkpoint
+// action (tools/checkpoints.js) is checked with the app first (POST /goal {op:'gate'}), in every permission
+// mode; without the person's approval it is denied. Fake engagement (bought views, bots) is denied in every task.
 //
 // Env:
 //   O_PERM_URL, O_SCREEN_URL, O_PERM_TOKEN      app HTTP endpoints for approve / see_screen
@@ -39,10 +48,12 @@
 //   O_ENGINE_URL, O_ENGINE_TOKEN                engine base URL (http://127.0.0.1:<port>) and token
 //   O_SCHEDULE_URL                              app schedule endpoint (POST /schedule, token O_PERM_TOKEN)
 //   O_TASK_ID                                   the task this bridge serves (tags schedules and observations)
+//   O_GOAL_URL, O_GOAL_ID                       app goal endpoint (POST /goal, token O_PERM_TOKEN); the goal a cycle task works on
 //
 // Protocol: JSON-RPC 2.0, one message per line on stdin/stdout. Logs go to stderr only.
 
 const http = require('http');
+const { classifyAction, CHECKPOINT_KINDS } = require('./checkpoints');
 
 const PERM_URL = process.env.O_PERM_URL;
 const SCREEN_URL = process.env.O_SCREEN_URL;
@@ -56,6 +67,8 @@ const ENGINE_URL = (process.env.O_ENGINE_URL || '').replace(/\/+$/, '');
 const ENGINE_TOKEN = process.env.O_ENGINE_TOKEN || '';
 const SCHEDULE_URL = process.env.O_SCHEDULE_URL;
 const TASK_ID = process.env.O_TASK_ID || '';
+const GOAL_URL = process.env.O_GOAL_URL;
+const GOAL_ID = process.env.O_GOAL_ID || '';
 const PROFILE_CACHE_MS = 60 * 1000;
 
 const HTTP_TIMEOUT_MS = 30000;
@@ -208,6 +221,53 @@ const SCHEDULE_SCHEMA = {
     title: { type: 'string', maxLength: 80, description: 'Short label shown in O\'s task list (optional).' },
   },
   required: ['prompt', 'when'],
+  additionalProperties: false,
+};
+
+const METRIC_READING = {
+  type: 'object',
+  properties: {
+    value: { type: 'number', description: 'The number the platform reported.' },
+    source: { type: 'string', maxLength: 80, description: 'Where it came from, e.g. "connector:youtube" (the MCP tool you read it with). Never a guess.' },
+  },
+  required: ['value', 'source'],
+  additionalProperties: false,
+};
+
+const CYCLE_SCHEMA = {
+  type: 'object',
+  properties: {
+    plan: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 400 }, description: 'Today\'s planned steps.' },
+    did: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 400 }, description: 'What was actually done.' },
+    metrics: { type: 'object', additionalProperties: METRIC_READING, description: 'Metric name -> platform reading. Leave a metric out when it could not be measured.' },
+    reflection: { type: 'string', maxLength: 2000, description: 'Honest: what moved, what did not, why. No claims the numbers do not show.' },
+    next: { type: 'string', maxLength: 2000, description: 'What to change tomorrow.' },
+    checkpoints: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 400 }, description: 'Checkpoints filed this cycle (titles).' },
+  },
+  required: ['plan', 'did', 'reflection', 'next'],
+  additionalProperties: false,
+};
+
+const CHECKPOINT_SCHEMA = {
+  type: 'object',
+  properties: {
+    kind: { type: 'string', enum: CHECKPOINT_KINDS, description: 'What the action does.' },
+    title: { type: 'string', maxLength: 100, description: 'Card headline, e.g. "Approve video \'My $400 desk setup\'".' },
+    summary: { type: 'string', maxLength: 400, description: 'One or two sentences: what will happen when the person approves.' },
+    items: {
+      type: 'object',
+      description: 'What you prepared, shown on the card: e.g. {type:"video", title, description, thumbnail (file path), file (file path), schedule}.',
+      additionalProperties: { type: 'string', maxLength: 600 },
+    },
+    action: {
+      type: 'object',
+      description: 'The exact MCP connector call to run on approval (runs as-is, once). Leave out when the step is in the browser: then approval lets you do that one action.',
+      properties: { server: { type: 'string', maxLength: 200 }, tool: { type: 'string', maxLength: 200 }, args: { type: 'object' } },
+      required: ['server', 'tool', 'args'],
+      additionalProperties: false,
+    },
+  },
+  required: ['kind', 'title', 'summary'],
   additionalProperties: false,
 };
 
@@ -395,6 +455,34 @@ const TOOLS = [
     description: 'Remember one thing the user said about how they like something done ("I prefer aisle seats", "name files YYYY-MM-DD"). One short sentence.',
     inputSchema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 500 } }, required: ['text'], additionalProperties: false },
   },
+  {
+    name: 'goal_create',
+    description: 'Turn the user\'s long-term objective ("Grow my YouTube channel about desk setups to monetization") into a goal O works on every day for days or weeks: ' +
+      'measurable metrics from the platform, a horizon, a cadence, and checkpoints that always wait for the user. Starts the first cycle. Returns the goal.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 2000, description: 'The objective in the user\'s words.' } }, required: ['text'], additionalProperties: false },
+  },
+  {
+    name: 'goal_status',
+    description: 'With id: one goal (objective, metrics with their series, recent cycles, checkpoints). Without: every goal with day N of M and its primary metric.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', maxLength: 64 } }, additionalProperties: false },
+  },
+  {
+    name: 'goal_record_cycle',
+    description: 'Record this goal cycle: plan, what was done, metrics read from the platform (with their source), an honest reflection and what to change tomorrow. ' +
+      'Only in a goal cycle task. Use this or end the final message with the cycle record as a ```json block (not both).',
+    inputSchema: CYCLE_SCHEMA,
+  },
+  {
+    name: 'goal_propose',
+    description: 'Up to three goals O could own for the user, proposed from what it has learned (habits, preferences, recurring tasks). The user accepts them in O.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'goal_checkpoint',
+    description: 'File a checkpoint: an action that always waits for the user (publish / post publicly, send a message as them, spend, create an account, accept terms, delete their data). ' +
+      'Prepare everything first. O shows one Approve / Edit / Skip card; on Approve it runs `action` exactly as given (or lets you do that one browser step). Never perform the action yourself.',
+    inputSchema: CHECKPOINT_SCHEMA,
+  },
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -505,8 +593,31 @@ async function seeScreen(args) {
   }
 }
 
+/** '' when the call may go on, else why it is held (checkpoint or a forbidden action). Runs in every permission mode. */
+async function checkpointHold(toolName, input) {
+  let c = null;
+  try { c = classifyAction(toolName, input); } catch (e) { log('classify failed:', e.message); }
+  if (!c) return '';
+  if (c.kind === 'forbidden') {
+    fireAndForgetLog({ kind: 'policy', summary: `refused ${toolName}: fake engagement / platform-rule workaround`, detail: { toolName, input: shortInput(input, 400) } });
+    return 'Refused by O: no fake engagement, bought views or followers, bots or platform-rule workarounds, ever.';
+  }
+  if (!GOAL_ID) return ''; // outside a goal cycle, the normal permission mode decides
+  if (!GOAL_URL) return `Checkpoint (${c.kind}): O cannot check this right now, so it is held.`;
+  try {
+    const r = await request('POST', GOAL_URL, { op: 'gate', tool_name: toolName, input }, PERM_TOKEN, 10000);
+    if (r && r.allow === true) return '';
+    return (r && r.message) || `Checkpoint (${c.kind}): held until the person approves it.`;
+  } catch (e) {
+    log('goal gate failed:', e.message);
+    return `Checkpoint (${c.kind}): O could not check this action, so it is held.`;
+  }
+}
+
 async function approve(args) {
   const input = args.input || {};
+  const held = await checkpointHold(args.tool_name, input);
+  if (held) return { behavior: 'deny', message: held };
   if (PERMISSION_MODE === 'log' || PERMISSION_MODE === 'auto') {
     if (PERMISSION_MODE === 'log') {
       const toolName = args.tool_name || 'tool';
@@ -627,6 +738,17 @@ async function rememberPreference(args) {
     return textResult('remembered');
   } catch (e) {
     return textResult('remember_preference failed: ' + e.message, true);
+  }
+}
+
+async function goalCall(op, payload, timeoutMs) {
+  if (!GOAL_URL) return textResult('Goals are not reachable from this bridge.', true);
+  try {
+    const r = await request('POST', GOAL_URL, { op, ...payload }, PERM_TOKEN, timeoutMs || 30000);
+    if (!r || r.ok === false) return textResult((r && r.error) || 'O did not do that.', true);
+    return textResult(pretty(r));
+  } catch (e) {
+    return textResult(`goal ${op} failed: ${e.message}`, true);
   }
 }
 
@@ -790,6 +912,22 @@ async function callTool(name, args) {
       return recallPreferences(args);
     case 'remember_preference':
       return rememberPreference(args);
+    case 'goal_create':
+      if (!args || typeof args.text !== 'string' || !args.text.trim()) return textResult('goal_create needs the objective as text.', true);
+      return goalCall('create', { text: args.text.trim().slice(0, 2000) }, 60000);
+    case 'goal_status':
+      return goalCall('status', args && typeof args.id === 'string' && args.id.trim() ? { id: args.id.trim() } : {});
+    case 'goal_propose':
+      return goalCall('propose', {}, 60000);
+    case 'goal_record_cycle':
+      if (!GOAL_ID) return textResult('goal_record_cycle only works inside a goal cycle task.', true);
+      if (!args || !Array.isArray(args.plan) || !Array.isArray(args.did) || typeof args.reflection !== 'string') return textResult('goal_record_cycle needs plan, did, reflection and next.', true);
+      return goalCall('cycle', { record: args });
+    case 'goal_checkpoint': {
+      if (!args || !CHECKPOINT_KINDS.includes(args.kind)) return textResult(`goal_checkpoint needs kind: one of ${CHECKPOINT_KINDS.join(', ')}.`, true);
+      if (typeof args.title !== 'string' || !args.title.trim() || typeof args.summary !== 'string') return textResult('goal_checkpoint needs a title and a summary.', true);
+      return goalCall('checkpoint', { kind: args.kind, title: args.title, summary: args.summary, items: args.items || {}, ...(args.action ? { action: args.action } : {}) });
+    }
     default:
       return null;
   }

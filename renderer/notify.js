@@ -1,6 +1,7 @@
 'use strict';
-// O's sidebar: one card per pending approval (Allow / Deny right here), and a short card when a background
-// task finishes ("Done: <title>") or needs the user ("Needs you: <title>"). Clicking a task card opens it.
+// O's sidebar: one card per pending approval (Allow / Deny right here), a goal's checkpoint card (Approve / Edit /
+// Skip on a prepared action), and a short card when a background task finishes ("Done: <title>") or needs the
+// user ("Needs you: <title>"). Clicking a task card opens it.
 (function () {
   const o = window.o;
   const stack = document.getElementById('stack');
@@ -131,6 +132,59 @@
     fit();
   }
 
+  // ---------- checkpoint cards (long-term goals): one prepared action, Approve / Edit / Skip ----------
+  const cpStack = document.createElement('div');
+  cpStack.id = 'cp-stack';
+  stack.parentNode.insertBefore(cpStack, stack);
+  const cpCards = new Map();
+
+  function makeCheckpointCard(c) {
+    const el = document.createElement('div');
+    el.className = 'ncard ncp';
+    el.dataset.id = c.id;
+    const items = c.items || {};
+    const meta = [items.file, items.thumbnail && `thumbnail ${items.thumbnail}`, items.schedule].filter(Boolean).join(' · ');
+    el.innerHTML = `
+      <div class="nhead">
+        <img src="../assets/o-icon.png" alt="">
+        <div class="ntitle"><b>${esc(c.headline)}</b><span>${esc(c.goalTitle || 'Goal')} · ${esc(c.kindLabel || c.kind)}</span></div>
+      </div>
+      ${c.summary ? `<div class="nwhat">${esc(c.summary)}</div>` : ''}
+      ${meta ? `<div class="ncp-meta">${esc(meta)}</div>` : ''}
+      ${c.personDoesIt ? '<div class="ncp-meta">O never does this part itself.</div>' : ''}
+      <div class="nrow">
+        <span class="spacer"></span>
+        <button type="button" class="deny ncp-skip">Skip</button>
+        <button type="button" class="deny ncp-edit">Edit</button>
+        <button type="button" class="allow ncp-approve">${c.personDoesIt ? 'Done it' : 'Approve'}</button>
+      </div>`;
+    const decide = (d) => { if (o.checkpointFromNotify) o.checkpointFromNotify(c.id, d); if (d !== 'edit') removeCp(c.id); };
+    el.querySelector('.ncp-approve').addEventListener('click', () => decide('approve'));
+    el.querySelector('.ncp-skip').addEventListener('click', () => decide('skip'));
+    el.querySelector('.ncp-edit').addEventListener('click', () => decide('edit'));
+    return el;
+  }
+
+  function removeCp(id) {
+    const el = cpCards.get(id);
+    if (!el) return;
+    cpCards.delete(id);
+    el.classList.add('out');
+    setTimeout(() => { el.remove(); fit(); }, 230);
+  }
+
+  function renderCheckpoints(list) {
+    const ids = new Set(list.map((c) => c.id));
+    for (const id of [...cpCards.keys()]) if (!ids.has(id)) removeCp(id);
+    list.slice(0, 2).forEach((c) => {
+      if (cpCards.has(c.id)) return;
+      const el = makeCheckpointCard(c);
+      cpCards.set(c.id, el);
+      cpStack.appendChild(el);
+    });
+    fit();
+  }
+
   // Tell the main process how tall the sidebar should be.
   function fit() {
     requestAnimationFrame(() => o.notifyResize(Math.ceil(document.body.scrollHeight)));
@@ -154,4 +208,5 @@
   if (typeof o.onTheme === 'function') o.onTheme(applyTheme);
   o.onNotify((list) => render(Array.isArray(list) ? list : []));
   if (typeof o.onNotifyTasks === 'function') o.onNotifyTasks((list) => renderTasks(Array.isArray(list) ? list : []));
+  if (typeof o.onNotifyCheckpoints === 'function') o.onNotifyCheckpoints((list) => renderCheckpoints(Array.isArray(list) ? list : []));
 })();
