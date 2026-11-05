@@ -22,6 +22,10 @@ let createProxy = null;
 try { ({ createProxy } = require('./proxy')); } catch (err) { console.error('[o] could not load the API proxy:', err.message); }
 try { ({ ActionLog } = require('./actionlog')); } catch (err) { console.error('[o] could not load actionlog:', err.message); }
 try { ({ EngineProcess } = require('./engine')); } catch (err) { console.error('[o] could not load engine:', err.message); }
+let ambientMod = null; // presence, sensors, milestones (main/ambient.js)
+let briefMod = null;   // the welcome-back overlay window (main/brief.js)
+try { ambientMod = require('./ambient'); } catch (err) { console.error('[o] could not load ambient:', err.message); }
+try { briefMod = require('./brief'); } catch (err) { console.error('[o] could not load the brief overlay:', err.message); }
 
 const PET_SIZE = 200;
 const PANEL_W = 440;
@@ -59,6 +63,8 @@ let updater = null;
 let actionLog = null; // append-only, hash-chained record of everything O did
 let engine = null;    // the Python engine (provisioning, cache, remediation)
 let proxy = null;     // the localhost OpenAI-compatible API proxy (main/proxy.js)
+let ambient = null;   // presence -> task pool, milestones, the brief (main/ambient.js)
+let briefOverlay = null;
 
 let tasks = null;               // the task pool (main/tasks.js): one Claude Code process per task
 let scheduler = null;           // saved schedules (main/scheduler.js)
@@ -75,6 +81,8 @@ const GENUI_ACTIONS = ['open-log', 'open-file', 'retry', 'approve', 'deny'];
 // Electron 26 added 'will-frame-navigate' (per-frame navigation hook); on an older build an unknown event name
 // would silently register nothing, so the panel falls back to 'did-start-navigation' (see createPanelWindow).
 const HAS_WILL_FRAME_NAVIGATE = (parseInt(process.versions.electron, 10) || 0) >= 26;
+// Settings exported to the engine as O_AMBIENT / O_SENSOR_* / O_ABSENT_AFTER_S / O_BRIEF_TTS (main/engine.js).
+const AMBIENT_KEYS = ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'absentAfterMin', 'briefSpeak'];
 const PERMISSION_TIMEOUT_MS = 60 * 1000; // ask mode: matches the agent's auto-deny; a timeout destroys the queue
 const UNREAD_NOTIFY_DEBOUNCE_MS = 30 * 1000;
 let unreadNotifyTimer = null;
@@ -93,7 +101,11 @@ function panelVisible() {
   return !!(panelWin && !panelWin.isDestroyed() && panelWin.isVisible());
 }
 
+/** Ambient away mode: the person is not at the computer, so nothing but the tray changes. */
+function isAway() { return !!(ambient && ambient.isAway()); }
+
 function notify(title, body) {
+  if (isAway()) return; // away: the brief tells them when they are back
   try {
     if (!Notification.isSupported()) return;
     const n = new Notification({ title, body: String(body || '').slice(0, 200), silent: false });
@@ -489,8 +501,9 @@ function pendingList() {
 /** Show, update or hide the sidebar to match the pending approvals and the task cards. */
 function syncNotify() {
   const list = pendingList();
-  const cards = [...taskCards.values()];
-  const checkpoints = goals ? goals.pendingCards() : [];
+  const away = isAway(); // away: no cards slide in (approvals still do, so ask mode keeps working)
+  const cards = away ? [] : [...taskCards.values()];
+  const checkpoints = goals && !away ? goals.pendingCards() : [];
   const want = (list.length > 0 || cards.length > 0 || checkpoints.length > 0) && !panelVisible();
   if (!want) {
     if (notifyWin && !notifyWin.isDestroyed()) {
@@ -498,7 +511,7 @@ function syncNotify() {
       notifyWin.webContents.send('notify:tasks', []);
       notifyWin.webContents.send('notify:checkpoints', []);
       clearTimeout(notifyHideTimer);
-      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !((pendingPerms.size || taskCards.size || (goals && goals.pendingCards().length)) && !panelVisible())) notifyWin.hide(); }, 260);
+      notifyHideTimer = setTimeout(() => { if (notifyWin && !notifyWin.isDestroyed() && !((pendingPerms.size || (!isAway() && (taskCards.size || (goals && goals.pendingCards().length)))) && !panelVisible())) notifyWin.hide(); }, 260);
     }
     return;
   }
@@ -550,12 +563,39 @@ function togglePet() {
 
 // ---------------------------------------------------------------- tray
 
-function trayIcon() {
+function trayIcon(sensing = false) {
   let img = nativeImage.createFromPath(path.join(ASSETS, 'tray.png'));
   if (img.isEmpty()) img = nativeImage.createFromPath(path.join(ASSETS, 'o-base.png'));
   if (img.isEmpty()) return nativeImage.createEmpty();
   const size = process.platform === 'darwin' ? 18 : 22;
-  return img.resize({ width: size, height: Math.round(size * img.getSize().height / img.getSize().width) || size, quality: 'best' });
+  img = img.resize({ width: size, height: Math.round(size * img.getSize().height / img.getSize().width) || size, quality: 'best' });
+  if (!sensing || !ambientMod) return img;
+  // A sensor is live: a small white dot in the corner, visible whenever anything is sensing.
+  try {
+    const { width, height } = img.getSize();
+    return nativeImage.createFromBitmap(ambientMod.dotBitmap(img.toBitmap(), width, height), { width, height });
+  } catch (_) { return img; }
+}
+
+let traySensing = false;
+function updateTrayIcon() {
+  const sensing = !!(ambient && ambient.live.length);
+  if (!tray || sensing === traySensing) return;
+  traySensing = sensing;
+  try { tray.setImage(trayIcon(sensing)); } catch (_) {}
+}
+
+/** Show the panel on Settings → Ambient (the header glyph, the tray's sensing item). */
+function openAmbientSettings() {
+  showPanel();
+  broadcast({ type: 'open-ambient' });
+}
+
+function broadcastAmbient() {
+  if (!ambient) return;
+  broadcast({ type: 'ambient', ...ambient.status() });
+  updateTrayIcon();
+  updateBadge();
 }
 
 function createTray() {
@@ -578,6 +618,7 @@ function rebuildTrayMenu() {
     { label: petShown ? 'Hide O' : 'Show O', click: togglePet },
     { label: 'Open prompt  (Ctrl/Cmd+Shift+O)', click: showPanel },
     { label: 'Open action log', click: openActionLog },
+    ...(ambient && ambient.live.length ? [{ label: `Sensing: ${ambient.live.map((x) => x.label).join(', ')}…`, click: openAmbientSettings }] : []),
     {
       label: 'Snooze wandering', type: 'checkbox', checked: wanderSnoozed,
       click: (item) => { wanderSnoozed = item.checked; broadcast({ type: 'wander', paused: wanderSnoozed }); },
@@ -638,7 +679,9 @@ function updateBadge() {
   try { app.setBadgeCount(unseenDone); } catch (_) {}
   if (!tray) return;
   try {
-    tray.setToolTip(`O AI${running ? ` — ${running} running` : ''}${unseenDone ? ` — ${unseenDone} new` : ''}`);
+    const away = isAway() ? ` — Away · ${running} task${running === 1 ? '' : 's'} running` : (running ? ` — ${running} running` : '');
+    const sensing = ambient && ambient.live.length ? ` — sensing: ${ambient.live.map((x) => x.label).join(', ')}` : '';
+    tray.setToolTip(`O AI${away}${unseenDone ? ` — ${unseenDone} new` : ''}${sensing}`);
     if (process.platform === 'darwin') tray.setTitle(unseenDone ? String(unseenDone) : running ? '•' : '');
   } catch (_) {}
 }
@@ -657,7 +700,7 @@ function askUser(req) {
     }, PERMISSION_TIMEOUT_MS + 500).unref();
     // The sidebar slides in at the screen edge (no focus stolen, safe while gaming).
     // With quiet mode off, the chat panel opens too (also without taking focus).
-    if (!panelVisible() && !settings.get().quiet) showPanel({ focus: false });
+    if (!panelVisible() && !settings.get().quiet && !isAway()) showPanel({ focus: false });
     syncNotify();
   });
 }
@@ -747,7 +790,10 @@ function loadAgent() {
       file: path.join(app.getPath('userData'), 'o-goals.json'), log: logApp,
     });
     goals.on('changed', broadcastGoals);
-    goals.on('checkpoint', () => { if (!panelVisible()) notify('O has something for you to approve', 'Open the card to approve, edit or skip it.'); });
+    goals.on('checkpoint', (card) => {
+      if (ambient) ambient.onCheckpoint(card).catch(() => {});
+      if (!panelVisible()) notify('O has something for you to approve', 'Open the card to approve, edit or skip it.');
+    });
     goals.on('error', (err) => console.error('[o] goals:', err.message));
   } catch (err) { console.error('[o] goals not loaded:', err.message); }
   scheduler.start();
@@ -788,7 +834,7 @@ function onTaskEnd({ task, ok, sessionId, durationMs, result }) {
   }
   if (!panelVisible() && task.status !== 'stopped') {
     unseenDone += 1;
-    addTaskCard(task, ok);
+    if (!isAway()) addTaskCard(task, ok); // away: tray badge only; the brief covers it
   }
   updateBadge();
   rebuildTrayMenu();
@@ -912,6 +958,17 @@ function registerIpc() {
   const taskList = () => ({ tasks: tasks ? tasks.list() : [], schedules: scheduler ? scheduler.list() : [], max: tasks ? tasks.maxParallel() : 3 });
   ipcMain.handle('tasks:list', () => taskList());
   ipcMain.handle('tasks:stop', (_e, id) => stopTask(String(id || '')));
+  ipcMain.handle('tasks:resume', (_e, id) => (tasks ? tasks.resume(String(id || '')) : { ok: false, error: 'tasks unavailable' }));
+  // ---------- ambient sensing ----------
+  ipcMain.handle('ambient:status', () => (ambient ? ambient.status() : { enabled: false, state: 'UNKNOWN', away: false, sensors: [], live: [], catalog: [], error: 'ambient module missing' }));
+  ipcMain.handle('ambient:enableSensor', (_e, key, confirmed) => {
+    key = String(key || '');
+    if (!ambientMod || !ambientMod.SENSOR_KEYS.includes(key)) return { ok: false, error: 'unknown sensor' };
+    if (confirmed !== true) return { ok: false, error: 'a sensor turns on only after its confirmation' };
+    return applySettings({ [key]: true }, key);
+  });
+  ipcMain.on('brief:done', () => { if (briefOverlay) briefOverlay.hide(); });
+  ipcMain.on('brief:resize', (_e, h) => { if (briefOverlay) briefOverlay.resize(h); });
   ipcMain.handle('tasks:view', (_e, id) => {
     id = String(id || '');
     const t = tasks && tasks.get(id);
@@ -1062,11 +1119,17 @@ function registerIpc() {
   ipcMain.on('settings:theme', (e) => { e.returnValue = currentTheme(); });
   const ENGINE_KEYS = ['permissionMode', 'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'dockerNetwork', 'swarmEnabled', 'genuiEnabled',
-    'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder'];
+    'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder',
+    ...AMBIENT_KEYS];
   const PROXY_KEYS = ['proxyEnabled', 'proxyPort', 'proxyToken', 'proxyConcurrency', 'proxyMode'];
-  ipcMain.handle('settings:set', (_e, partial) => {
+  ipcMain.handle('settings:set', (_e, partial) => applySettings(partial, null).settings);
+  // `consented`: the one sensor key the confirmation sheet approved (ambient:enableSensor); a plain settings
+  // write can turn sensors off but never on.
+  function applySettings(partial, consented) {
     const before = settings.get();
+    if (ambientMod) partial = ambientMod.consentFilter(before, partial, consented);
     const r = settings.set(partial);
+    if (consented && r[consented] === true && before[consented] !== true) logApp('policy', `Sensor turned on after confirmation: ${consented}`, { key: consented });
     if (partial && typeof partial.openAtLogin === 'boolean') { shortcuts.setOpenAtLogin(app, partial.openAtLogin); rebuildTrayMenu(); }
     const keys = Object.keys(r).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(r[k]));
     if (keys.length && actionLog) {
@@ -1078,8 +1141,9 @@ function registerIpc() {
     }
     if (proxy && keys.some((k) => PROXY_KEYS.includes(k))) restartProxy();
     if (keys.includes('theme')) sendTheme(currentTheme());
-    return r;
-  });
+    if (ambient && keys.some((k) => AMBIENT_KEYS.includes(k))) { ambient.onSettings(); broadcastAmbient(); }
+    return { ok: true, settings: r };
+  }
   // ---------- API proxy ----------
   const proxyStatusSafe = () => {
     if (!proxy) return { enabled: false, running: false, error: createProxy ? 'proxy not started' : 'proxy module missing' };
@@ -1161,6 +1225,28 @@ function registerIpc() {
   }));
 }
 
+// ---------------------------------------------------------------- ambient sensing
+
+function startAmbient() {
+  if (!ambientMod) return;
+  ambient = new ambientMod.AmbientController({
+    engineCall: (method, p, body, ms) => engineCall(method, p, body, ms),
+    tasks,
+    getSettings: () => settings.get(),
+    log: logApp,
+    showBrief: (b) => {
+      if (!briefMod) return;
+      if (!briefOverlay) {
+        briefOverlay = briefMod.createBriefOverlay({ BrowserWindow, screen, preload: path.join(__dirname, 'preload.js'), file: path.join(RENDERER, 'brief.html') });
+      }
+      briefOverlay.show(b);
+    },
+  });
+  ambient.on('presence', () => { broadcastAmbient(); rebuildTrayMenu(); syncNotify(); });
+  ambient.on('sensors', () => { broadcastAmbient(); rebuildTrayMenu(); });
+  ambient.start();
+}
+
 // ---------------------------------------------------------------- lifecycle
 
 app.on('second-instance', () => showPanel());
@@ -1185,6 +1271,7 @@ app.whenReady().then(() => {
   }
   registerIpc();
   loadAgent();
+  startAmbient();
   // The engine POSTs its log entries to the agent's HTTP server; it needs that URL before it starts.
   if (agent && EngineProcess && typeof agent.ensureServer === 'function') {
     agent.ensureServer().then(({ url, uiUrl, token }) => {
@@ -1201,6 +1288,7 @@ app.whenReady().then(() => {
         broadcast({ type: 'engine', ...engineStatus() });
         if (tasks) tasks.prewarm().catch(() => {});
         if (goals) goals.refresh().catch((err) => console.error('[o] goals refresh:', err.message));
+        if (ambient) ambient.refreshSensors().then(broadcastAmbient).catch(() => {});
       });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
       engine.start();
@@ -1277,6 +1365,8 @@ app.on('before-quit', () => {
   if (physics) physics.stop('quit');
   try { if (chats) chats.flush(); } catch (_) {}
   try { if (link) link.stop(); } catch (_) {}
+  try { if (ambient) ambient.stop(); } catch (_) {}
+  try { if (briefOverlay) briefOverlay.destroy(); } catch (_) {}
   try { if (engine) engine.dispose(); } catch (_) {}
   try { if (proxy) proxy.stop(); } catch (_) {}
   for (const p of pendingPerms.values()) p.resolve({ allow: false, message: 'O is quitting' });

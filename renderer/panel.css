@@ -746,3 +746,51 @@ body:is(.has-strip, .has-goals) .hero-pet { width: 56px; height: 56px; margin-bo
   .quiet-btn:hover { color: var(--text); background: var(--surface); }
   #btn-make-goal:hover, .cp-approve:hover { background: var(--accent-hover); border-color: transparent; }
 }
+
+/* ---------------------------------------------------------------- ambient sensing (plan J) */
+/* The header glyph: shown whenever a sensor is live; one click opens Settings → Ambient. */
+.sensing-glyph {
+  -webkit-app-region: no-drag;
+  width: 22px; height: 22px; padding: 0; margin-left: 2px; flex: 0 0 auto;
+  border: 0; border-radius: 50%; background: transparent; color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center; align-self: flex-end; margin-bottom: 1px;
+}
+.sensing-glyph svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.sensing-glyph svg circle { fill: currentColor; stroke: none; }
+.sensing-glyph:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+@media (hover: hover) and (pointer: fine) { .sensing-glyph:hover { background: var(--surface-2); } }
+#state-line[data-away="1"] { color: var(--text-2); }
+
+.sensor-list { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 6px; border: 1px solid var(--line); border-radius: 14px; padding: 4px 12px; background: var(--surface); }
+.sensor-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; }
+.sensor-row + .sensor-row { border-top: 1px solid var(--line); }
+.sensor-row input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 2px 0 0; flex: 0 0 auto; }
+.s-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.s-name { font-size: 13px; color: var(--text); font-weight: 600; }
+.s-line { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.s-avail { font-size: 11.5px; color: var(--muted); }
+.s-avail:empty { display: none; }
+.s-avail[data-state="ok"] { color: var(--text-2); }
+.s-avail[data-state="ok"]::before { content: "● "; }
+.s-avail[data-state="no"]::before { content: "○ "; }
+.sensor-list.off .sensor-row { opacity: .5; }
+
+/* The confirmation sheet: one card over the settings, nothing turns on without it. */
+.confirm-sheet { position: fixed; inset: 0; z-index: 30; display: flex; align-items: flex-end; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .45); border-radius: var(--win-radius); }
+.confirm-sheet[hidden] { display: none; }
+.confirm-card {
+  width: 100%; box-sizing: border-box; padding: 16px 18px 14px; border-radius: 20px;
+  background: var(--sticky-bg); border: 1px solid var(--line-strong); box-shadow: var(--shadow);
+  animation: sc-in .22s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes sc-in { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+.confirm-card h4 { margin: 0 0 6px; font: 400 19px/1.25 var(--serif); color: var(--text); }
+.sc-line { margin: 0 0 10px; font-size: 13px; color: var(--text-2); line-height: 1.45; }
+.sc-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 14px; font-size: 12.5px; line-height: 1.45; }
+.sc-facts dt { color: var(--muted); font-weight: 600; }
+.sc-facts dd { margin: 0; color: var(--text-2); }
+.sc-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.sc-buttons .primary { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; padding: 7px 18px; border-radius: 999px; }
+@media (prefers-reduced-motion: reduce) { .confirm-card { animation: none; } }
+
+.task-row[data-status="paused"] .tdot { background: transparent; box-shadow: inset 3px 0 0 0 var(--muted), inset -3px 0 0 0 var(--muted); border-radius: 1px; }

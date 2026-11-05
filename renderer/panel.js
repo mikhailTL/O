@@ -29,6 +29,7 @@
   const runsEl = $('runs');
   const goalsEl = $('goals');
   const has = (name) => !!o && typeof o[name] === 'function';
+  let amb = { enabled: false, away: false, state: 'UNKNOWN', live: [], sensors: [], catalog: [] }; // ambient status from main
 
   let currentAssistant = null; // { el, text } for the bubble being streamed
   let currentSteps = null;     // container for this turn's tool steps
@@ -215,6 +216,7 @@
   function handleViewedEvent(ev) {
     switch (ev.type) {
       case 'status':
+        if (amb.away) break; // away: the header keeps saying so
         // The text already says what O is doing; the mood only colours it (data-mood in panel.css).
         stateLine.textContent = String(ev.text || MOOD_LABEL[ev.mood] || ev.mood || '').slice(0, 80);
         stateLine.dataset.mood = ev.mood || '';
@@ -281,6 +283,12 @@
       case 'view-goal':
         if (ev.goalId) openGoal(ev.goalId, { checkpointId: ev.checkpointId, edit: !!ev.edit });
         break;
+      case 'ambient':
+        setAmbient(ev);
+        break;
+      case 'open-ambient':
+        openAmbient();
+        break;
       default:
         break;
     }
@@ -307,7 +315,7 @@
     promptEl.value = '';
     autosize();
     const t = viewed();
-    const followUp = !!(viewId && !isActive(t));
+    const followUp = !!(viewId && (!isActive(t) || t.status === 'paused')); // typing into a paused task resumes it
     if (!followUp) { viewId = null; viewTitle = ''; clearLog(); }
     endAssistantBubble();
     finishSteps();
@@ -511,10 +519,10 @@
   let viewId = null;
   const seen = new Set();      // ended tasks the user has looked at (they leave the strip)
   const early = new Map();     // task id -> events that arrived before we knew to show that task
-  const ACTIVE = ['queued', 'running'];
+  const ACTIVE = ['queued', 'running', 'paused'];
   const isActive = (t) => !!t && ACTIVE.includes(t.status);
   const viewed = () => (viewId ? tasksById.get(viewId) || null : null);
-  const STATUS_WORD = { queued: 'Waiting', running: 'Working', done: 'Done', failed: 'Needs you', stopped: 'Stopped' };
+  const STATUS_WORD = { queued: 'Waiting', running: 'Working', paused: 'Paused', done: 'Done', failed: 'Needs you', stopped: 'Stopped' };
   const STOP_ICON = '<svg viewBox="0 0 20 20"><rect x="5" y="5" width="10" height="10" rx="2"/></svg>';
 
   function relTime(ms) {
@@ -656,14 +664,26 @@
     renderTaskSheet();
     renderTaskbar();
     syncButtons();
+    renderStateLine();
+  }
+
+  function renderStateLine() {
     const t = viewed();
-    stateLine.textContent = t ? (t.status === 'running' ? 'working on it' : STATUS_WORD[t.status].toLowerCase()) : summaryLine();
+    if (amb.away) { stateLine.textContent = awayLine(); stateLine.dataset.mood = ''; stateLine.dataset.away = '1'; return; }
+    delete stateLine.dataset.away;
+    stateLine.textContent = t ? (t.status === 'running' ? 'working on it' : (STATUS_WORD[t.status] || t.status).toLowerCase()) : summaryLine();
     stateLine.dataset.mood = t && t.status === 'running' ? (t.mood || 'working') : '';
   }
 
+  function runningCount() { return [...tasksById.values()].filter((t) => t.status === 'running').length; }
   function summaryLine() {
-    const running = [...tasksById.values()].filter((t) => t.status === 'running').length;
+    const running = runningCount();
     return running ? `${running} task${running === 1 ? '' : 's'} running` : 'ready';
+  }
+  /** The header while the person is away (ambient sensing): "Away · 3 tasks running". */
+  function awayLine() {
+    const running = runningCount();
+    return running ? `Away · ${running} task${running === 1 ? '' : 's'} running` : 'Away';
   }
 
   async function refreshTasks() {
@@ -745,7 +765,8 @@
     'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'proxyEnabled', 'proxyPort', 'proxyConcurrency', 'proxyMode',
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',
-    'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder'];
+    'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder',
+    'ambientEnabled', 'absentAfterMin', 'briefSpeak', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate'];
 
   if ($('set-theme')) $('set-theme').addEventListener('change', () => applyTheme($('set-theme').value)); // live preview; Save persists it
 
@@ -767,8 +788,98 @@
   function revertThemePreview() { applyTheme(savedTheme); }
   function openSettings() {
     settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true;
-    loadSettings(); refreshExtension(); refreshProxy(); renderSettingsSchedules(); refreshLearned();
+    loadSettings().then(refreshAmbient); refreshExtension(); refreshProxy(); renderSettingsSchedules(); refreshLearned();
   }
+
+  // ------------------------------------------------------------ ambient sensing (Settings → Ambient, header)
+  // Sensors are off by default and turn on one at a time, each only through the confirmation sheet
+  // (main refuses any other way). Turning one off, or the master switch, applies at once.
+  const SENSOR_KEYS = ['sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate'];
+  const glyph = $('sensing-glyph');
+
+  function setAmbient(st) {
+    if (!st || typeof st !== 'object') return;
+    amb = { ...amb, ...st, live: Array.isArray(st.live) ? st.live : [], sensors: Array.isArray(st.sensors) ? st.sensors : amb.sensors, catalog: Array.isArray(st.catalog) ? st.catalog : amb.catalog };
+    const live = amb.live;
+    glyph.hidden = !live.length;
+    const tip = live.length ? `Sensing: ${live.join(', ')}. Open Ambient settings` : '';
+    glyph.title = tip;
+    glyph.setAttribute('aria-label', tip || 'Ambient settings');
+    renderStateLine();
+    if (!settingsEl.hidden) renderSensorRows();
+  }
+
+  function renderSensorRows() {
+    const list = $('ambient-sensors');
+    list.classList.toggle('off', !$('set-ambientEnabled').checked);
+    for (const row of list.querySelectorAll('.sensor-row')) {
+      const key = row.dataset.key;
+      const cat = (amb.catalog || []).find((c) => c.key === key);
+      const av = row.querySelector('.s-avail');
+      row.querySelector('input').disabled = !$('set-ambientEnabled').checked;
+      if (!cat || cat.available == null) { av.dataset.state = 'unknown'; av.textContent = amb.enabled ? 'Status unknown: the engine has not reported this sensor.' : ''; continue; }
+      av.dataset.state = cat.available ? 'ok' : 'no';
+      av.textContent = cat.available ? (cat.on && amb.live.includes(cat.label) ? 'Live' : 'Available on this computer') : `Not available: ${cat.reason || 'no supported hardware found'}`;
+    }
+  }
+
+  async function refreshAmbient() {
+    if (has('ambientStatus')) { try { setAmbient(await o.ambientStatus()); } catch (_) {} }
+    renderSensorRows();
+  }
+
+  function openAmbient() {
+    openSettings();
+    requestAnimationFrame(() => { const h = $('ambient-h'); if (h) h.scrollIntoView({ block: 'start' }); });
+  }
+
+  const confirmEl = $('sensor-confirm');
+  let confirmKey = null;
+  let confirmReturn = null;
+  function openConfirm(key) {
+    const row = document.querySelector(`.sensor-row[data-key="${key}"]`);
+    if (!row) return;
+    const cat = (amb.catalog || []).find((c) => c.key === key);
+    confirmKey = key;
+    confirmReturn = document.activeElement;
+    $('sc-name').textContent = (cat && cat.label) || row.querySelector('.s-name').textContent;
+    $('sc-line').textContent = (cat && cat.line) || row.querySelector('.s-line').textContent;
+    $('sc-reads').textContent = (cat && cat.reads) || row.dataset.reads || '';
+    confirmEl.hidden = false;
+    $('sc-ok').focus();
+  }
+  function closeConfirm() {
+    confirmEl.hidden = true;
+    confirmKey = null;
+    if (confirmReturn && confirmReturn.focus) confirmReturn.focus();
+  }
+  $('sc-cancel').addEventListener('click', closeConfirm);
+  confirmEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeConfirm(); } });
+  confirmEl.addEventListener('click', (e) => { if (e.target === confirmEl) closeConfirm(); });
+  $('sc-ok').addEventListener('click', async () => {
+    const key = confirmKey;
+    if (!key) return;
+    let res = null;
+    try { res = await o.ambientEnableSensor(key); } catch (err) { res = { ok: false, error: err && err.message }; }
+    if (res && res.ok) $('set-' + key).checked = true;
+    closeConfirm();
+    refreshAmbient();
+  });
+  for (const key of SENSOR_KEYS) {
+    const el = $('set-' + key);
+    el.addEventListener('change', async () => {
+      if (el.checked) { el.checked = false; openConfirm(key); return; } // on: only through the sheet
+      await o.setSettings({ [key]: false });                            // off: at once
+      refreshAmbient();
+    });
+  }
+  $('set-ambientEnabled').addEventListener('change', async () => {
+    await o.setSettings({ ambientEnabled: $('set-ambientEnabled').checked });
+    renderSensorRows();
+    refreshAmbient();
+  });
+  glyph.addEventListener('click', openAmbient);
+  if (has('ambientStatus')) refreshAmbient();
 
   // Settings → Scheduled tasks: the same rows as the Tasks sheet, each cancellable.
   async function renderSettingsSchedules() {

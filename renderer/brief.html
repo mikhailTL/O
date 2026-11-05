@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>O brief</title>
+  <link rel="stylesheet" href="brief.css">
+</head>
+<body>
+  <article id="brief" role="status" aria-live="polite" hidden>
+    <header class="b-head">
+      <span class="b-mark" aria-hidden="true"></span>
+      <span class="b-label">While you were away</span>
+      <span id="b-count" class="b-count"></span>
+    </header>
+    <div id="b-lines" class="b-lines"></div>
+    <span class="b-time" aria-hidden="true"><span id="b-bar"></span></span>
+  </article>
+  <script src="brief.js"></script>
+</body>
+</html>

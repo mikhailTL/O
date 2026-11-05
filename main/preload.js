@@ -129,5 +129,17 @@ contextBridge.exposeInMainWorld('o', {
   logNote: (summary, detail) => ipcRenderer.invoke('log:note', String(summary || ''), detail || {}),
   proxyStatus: () => ipcRenderer.invoke('proxy:status'),
   proxyRegenerateToken: () => ipcRenderer.invoke('proxy:regenToken'),
+  // ambient sensing (plan J): presence, sensors, the brief overlay
+  ambientStatus: () => ipcRenderer.invoke('ambient:status'),
+  // The only way a sensor turns on: the panel calls this from its confirmation sheet.
+  ambientEnableSensor: (key) => ipcRenderer.invoke('ambient:enableSensor', String(key || ''), true),
+  resumeTask: (id) => ipcRenderer.invoke('tasks:resume', String(id || '')),
+  onBrief: (cb) => {
+    const handler = (_e, b) => cb(b);
+    ipcRenderer.on('brief:show', handler);
+    return () => ipcRenderer.removeListener('brief:show', handler);
+  },
+  briefDone: () => ipcRenderer.send('brief:done'),
+  briefResize: (h) => ipcRenderer.send('brief:resize', Number(h) || 0),
   platform: process.platform,
 });

@@ -15,6 +15,7 @@
         <strong>O <span class="ver">AI</span></strong>
         <span id="state-line">idle</span>
       </div>
+      <button id="sensing-glyph" class="sensing-glyph" type="button" hidden aria-label="Sensing is on. Open Ambient settings"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="1.8"/><path d="M6.6 6.6a4.8 4.8 0 0 0 0 6.8M13.4 6.6a4.8 4.8 0 0 1 0 6.8"/><path d="M4.2 4.2a8.2 8.2 0 0 0 0 11.6M15.8 4.2a8.2 8.2 0 0 1 0 11.6"/></svg></button>
     </div>
     <div class="spacer"></div>
     <button id="btn-new" class="icon" title="New task" aria-label="New task"><svg viewBox="0 0 20 20"><path d="M10.5 3.5H5A1.5 1.5 0 0 0 3.5 5v10A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5"/><path d="M14.6 2.9a1.6 1.6 0 0 1 2.3 2.3L10 12.1l-3 .8.8-3z"/></svg></button>
@@ -272,6 +273,54 @@
     <div id="learned-suggestions" class="mini-list"></div>
     <div id="learned-list" class="mini-list" aria-live="polite"></div>
     <p class="hint">O picks these up from how you use it and from your corrections, and applies them on its own. Remove anything that’s wrong.</p>
+    <h3 id="ambient-h">Ambient</h3>
+    <label class="row check">
+      <input type="checkbox" id="set-ambientEnabled">
+      <span>Notice when I step away</span>
+    </label>
+    <p class="hint">While you’re away, O keeps background work going and changes nothing on screen but the tray icon. When you’re back, low-priority work pauses and a three-sentence brief appears at the top of the screen.</p>
+    <div id="ambient-sensors" class="sensor-list" role="group" aria-label="Sensors">
+      <div class="sensor-row" data-key="sensorWifi" data-reads="Channel state (signal phase and strength) from a CSI-capable Wi-Fi card or an ESP32 node on your network.">
+        <input type="checkbox" id="set-sensorWifi" aria-describedby="sl-wifi">
+        <label for="set-sensorWifi" class="s-text"><span class="s-name">Wi-Fi presence</span><span class="s-line" id="sl-wifi">Notices movement in the room from small changes in your Wi-Fi signal. Room-level only; it never tells people apart.</span><span class="s-avail"></span></label>
+      </div>
+      <div class="sensor-row" data-key="sensorSonar" data-reads="Your speakers and microphones, filtered to the chirp band. Speech and other sound are dropped on the spot.">
+        <input type="checkbox" id="set-sensorSonar" aria-describedby="sl-sonar">
+        <label for="set-sensorSonar" class="s-text"><span class="s-name">Sonar</span><span class="s-line" id="sl-sonar">Plays a near-inaudible 18–22 kHz chirp and listens for its echo to tell whether someone is at the desk.</span><span class="s-avail"></span></label>
+      </div>
+      <div class="sensor-row" data-key="sensorCamera" data-reads="Your webcam, one frame at a time, turned into a yes or no and thrown away.">
+        <input type="checkbox" id="set-sensorCamera" aria-describedby="sl-camera">
+        <label for="set-sensorCamera" class="s-text"><span class="s-name">Camera presence</span><span class="s-line" id="sl-camera">Checks whether a face is in front of the screen. Nobody is recognised.</span><span class="s-avail"></span></label>
+      </div>
+      <div class="sensor-row" data-key="sensorHeartRate" data-reads="Your webcam, the skin area of your face only. The number is never saved, logged, or given to any model.">
+        <input type="checkbox" id="set-sensorHeartRate" aria-describedby="sl-heart">
+        <label for="set-sensorHeartRate" class="s-text"><span class="s-name">Heart rate</span><span class="s-line" id="sl-heart">Estimates your pulse from tiny colour changes in your face on the webcam. Shown live only.</span><span class="s-avail"></span></label>
+      </div>
+    </div>
+    <label class="row">
+      <span>Away after (minutes)</span>
+      <input type="number" id="set-absentAfterMin" min="1" max="120" step="1" placeholder="5">
+    </label>
+    <label class="row check">
+      <input type="checkbox" id="set-briefSpeak">
+      <span>Read the brief aloud</span>
+    </label>
+    <p class="hint">Everything runs on this computer. No audio, video or Wi-Fi data is stored or leaves it; only “here” or “away” is passed on. A dot on the tray icon shows whenever a sensor is live.</p>
+    <div id="sensor-confirm" class="confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="sc-title" hidden>
+      <div class="confirm-card">
+        <h4 id="sc-title">Turn on <span id="sc-name"></span>?</h4>
+        <p id="sc-line" class="sc-line"></p>
+        <dl class="sc-facts">
+          <dt>Reads</dt><dd id="sc-reads"></dd>
+          <dt>Keeps</dt><dd>Nothing. It is processed on this computer and only “here” or “away” is passed on.</dd>
+          <dt>Turn off</dt><dd>Any time, here. The tray icon shows a dot while it is on.</dd>
+        </dl>
+        <div class="sc-buttons">
+          <button id="sc-cancel" type="button" class="quiet-btn">Not now</button>
+          <button id="sc-ok" type="button" class="primary">Turn on</button>
+        </div>
+      </div>
+    </div>
     <h3>Privacy &amp; safety</h3>
     <div class="row update-row">
       <span>A private, tamper-evident record of every step O takes stays on this computer.</span>

@@ -894,7 +894,8 @@ class OAgent extends EventEmitter {
         if (msg.type === 'user' && msg.message && Array.isArray(msg.message.content)) {
           for (const block of msg.message.content) {
             if (block.type !== 'tool_result') continue;
-            this._status('thinking', block.is_error ? 'Hmm, that didn’t work…' : 'Mulling it over…');
+            // toolDone marks a safe point for the task pool (main/tasks.js): this tool call has finished.
+            this._emit({ type: 'status', mood: 'thinking', text: block.is_error ? 'Hmm, that didn’t work…' : 'Mulling it over…', toolDone: true });
             const txt = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '');
             if (toolNames.get(block.tool_use_id) === 'mcp__o__provision' && /"cached":\s*true/.test(txt) && !block.is_error) {
               this._status('success', 'Déjà vu — replaying a saved script, no thinking needed');

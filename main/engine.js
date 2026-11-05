@@ -158,6 +158,14 @@ class EngineProcess extends EventEmitter {
       O_DOCKER_NETWORK: s.dockerNetwork || 'bridge',
       O_SWARM: s.swarmEnabled === false ? '0' : '1',
       O_GENUI: s.genuiEnabled === false ? '0' : '1',
+      // Ambient sensing: a sensor runs only when the master switch and its own toggle are both on.
+      O_AMBIENT: s.ambientEnabled === true ? '1' : '0',
+      O_SENSOR_WIFI: s.ambientEnabled === true && s.sensorWifi === true ? '1' : '0',
+      O_SENSOR_SONAR: s.ambientEnabled === true && s.sensorSonar === true ? '1' : '0',
+      O_SENSOR_CAMERA: s.ambientEnabled === true && s.sensorCamera === true ? '1' : '0',
+      O_SENSOR_HEART_RATE: s.ambientEnabled === true && s.sensorHeartRate === true ? '1' : '0',
+      O_ABSENT_AFTER_S: String(Math.max(1, Math.min(120, parseInt(s.absentAfterMin, 10) || 5)) * 60),
+      O_BRIEF_TTS: s.briefSpeak === true ? '1' : '0',
       PYTHONPATH: this.engineDir + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : ''),
       PYTHONUNBUFFERED: '1',
     });

@@ -25,7 +25,7 @@ const { classifyAction, CHECKPOINT_KINDS, NEVER_BY_O, KIND_LABEL } = require('./
 const MAX_PENDING_PER_GOAL = 6;
 const MAX_KEPT_CHECKPOINTS = 200;
 const GRANT_MS = 2 * 60 * 60 * 1000;
-const ACTIVE = ['queued', 'running'];
+const ACTIVE = ['queued', 'running', 'paused']; // a paused cycle (the person came back) is still this goal's cycle
 const NOUN = { publish: 'post', send_message: 'message', spend: 'purchase', create_account: 'account', accept_terms: 'terms', delete_data: 'deletion' };
 
 const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };

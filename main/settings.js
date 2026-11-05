@@ -63,6 +63,14 @@ const DEFAULTS = Object.freeze({
   // Phase 3 GenUI
   genuiEnabled: true,
   genuiSandbox: true, // allow sandboxed iframe previews
+  // Ambient sensing (plan J): everything off until the person turns it on, one sensor at a time
+  ambientEnabled: false, // master switch: presence polling, away mode, the brief
+  sensorWifi: false, // Wi-Fi CSI room motion (room-level presence only)
+  sensorSonar: false, // 18-22 kHz chirps through the speakers, echoes through the mics
+  sensorCamera: false, // webcam face presence (is someone at the screen)
+  sensorHeartRate: false, // webcam rPPG heart rate, ephemeral, never logged
+  absentAfterMin: 5, // 1..120 minutes without presence before O treats you as away
+  briefSpeak: false, // read the welcome-back brief aloud
   settingsVersion: 5,
 });
 
@@ -175,6 +183,8 @@ function sanitize(obj) {
   if (typeof obj.swarmEnabled === 'boolean') out.swarmEnabled = obj.swarmEnabled;
   if (typeof obj.genuiEnabled === 'boolean') out.genuiEnabled = obj.genuiEnabled;
   if (typeof obj.genuiSandbox === 'boolean') out.genuiSandbox = obj.genuiSandbox;
+  for (const k of ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'briefSpeak']) if (typeof obj[k] === 'boolean') out[k] = obj[k];
+  if (obj.absentAfterMin !== undefined && obj.absentAfterMin !== null && obj.absentAfterMin !== '') { const n = parseInt(obj.absentAfterMin, 10); if (Number.isFinite(n)) out.absentAfterMin = Math.max(1, Math.min(120, n)); }
   if (Number.isInteger(obj.settingsVersion) && obj.settingsVersion >= 1) out.settingsVersion = obj.settingsVersion;
   return out;
 }
