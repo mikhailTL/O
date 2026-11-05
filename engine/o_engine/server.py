@@ -99,6 +99,22 @@ class EngineSettings(BaseModel):
     learning: bool = True  # O_LEARNING: record observations, derive the profile, inject it into cu prompts
     learning_dir: str = ""  # O_LEARNING_DIR: "" -> <data_dir>/learning (see learning_path)
     learning_model: bool = True  # O_LEARNING_MODEL: allow one local-only merge call for near-duplicate items
+    # ---- ambient sensing / autonomous infrastructure (plan J); everything off by default ----
+    ambient: bool = False  # O_AMBIENT: master switch (sensors, presence thread, supervisor)
+    sensor_csi: bool = False  # O_SENSOR_WIFI (O_SENSOR_CSI also read)
+    sensor_sonar: bool = False  # O_SENSOR_SONAR
+    sensor_camera: bool = False  # O_SENSOR_CAMERA
+    sensor_heart: bool = False  # O_SENSOR_HEART_RATE (O_SENSOR_HEART also read): live pulse/breathing, memory only
+    absent_after_s: float = Field(default=300.0, ge=5.0, le=86400.0)  # O_ABSENT_AFTER_S
+    brief_tts: bool = False  # O_BRIEF_TTS: reported only; the app speaks the brief, the engine never does
+    bus_url: str = ""  # O_BUS_URL: "" in-process, mqtt://host:port or redis://host:port/db
+    csi_udp: str = ""  # O_CSI_UDP: host:port an ESP32 CSI node streams to
+    ruview_ws: str = ""  # O_RUVIEW_WS: RuView sensing WebSocket URL
+    ruview_mqtt: str = ""  # O_RUVIEW_MQTT: mqtt://host:port/<topic> of RuView's MQTT output
+    rppg_model: str = "FacePhys.rlap"  # O_RPPG_MODEL: open-rppg model when installed
+    auto_repair: bool = False  # O_AUTO_REPAIR: let the supervisor reinstall a missing engine package
+    vllm_cmd: str = ""  # O_VLLM_CMD: argv to (re)start a local vLLM under the supervisor
+    screenpipe_cmd: str = ""  # O_SCREENPIPE_CMD: argv to (re)start screenpipe under the supervisor
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EngineSettings":
@@ -141,6 +157,22 @@ class EngineSettings(BaseModel):
             "learning": _truthy_env("O_LEARNING", True),
             "learning_dir": _env("O_LEARNING_DIR", ""),
             "learning_model": _truthy_env("O_LEARNING_MODEL", True),
+            # ambient (plan J)
+            "ambient": _truthy_env("O_AMBIENT", False),
+            "sensor_csi": _truthy_env("O_SENSOR_WIFI", _truthy_env("O_SENSOR_CSI", False)),
+            "sensor_sonar": _truthy_env("O_SENSOR_SONAR", False),
+            "sensor_camera": _truthy_env("O_SENSOR_CAMERA", False),
+            "sensor_heart": _truthy_env("O_SENSOR_HEART_RATE", _truthy_env("O_SENSOR_HEART", False)),
+            "absent_after_s": float(_env("O_ABSENT_AFTER_S", "300")),
+            "brief_tts": _truthy_env("O_BRIEF_TTS", False),
+            "bus_url": _env("O_BUS_URL", ""),
+            "csi_udp": _env("O_CSI_UDP", ""),
+            "ruview_ws": _env("O_RUVIEW_WS", ""),
+            "ruview_mqtt": _env("O_RUVIEW_MQTT", ""),
+            "rppg_model": _env("O_RPPG_MODEL", "FacePhys.rlap"),
+            "auto_repair": _truthy_env("O_AUTO_REPAIR", False),
+            "vllm_cmd": _env("O_VLLM_CMD", ""),
+            "screenpipe_cmd": _env("O_SCREENPIPE_CMD", ""),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)
@@ -204,22 +236,22 @@ class EngineDeps:
         # the graph's execute node needs it and NativeRunner construction is free.
         self._p2: dict[str, Any] = {}
         self._p2_lock = threading.RLock()
+        self._graph_fields: dict[str, Any] = dict(
+            context=self.context,
+            parser=self.parser,
+            cache=self.cache,
+            display=self.display,
+            verify_target=self.verify,
+            log=self.log,
+            max_attempts=settings.max_attempts,
+            platform=sys.platform,
+            runner=self.runner,
+            high_risk_sandbox=settings.high_risk_sandbox,
+            settings_like=settings.settings_like,
+            ui=self.ui,
+        )
         self.graph = build_graph(
-            Deps(
-                context=self.context,
-                parser=self.parser,
-                cache=self.cache,
-                sandbox_factory=lambda job_id: Sandbox(str(self.sandbox_root / job_id)),
-                display=self.display,
-                verify_target=self.verify,
-                log=self.log,
-                max_attempts=settings.max_attempts,
-                platform=sys.platform,
-                runner=self.runner,
-                high_risk_sandbox=settings.high_risk_sandbox,
-                settings_like=settings.settings_like,
-                ui=self.ui,
-            )
+            Deps(sandbox_factory=lambda job_id: Sandbox(str(self.sandbox_root / job_id)), **self._graph_fields)
         )
         # Computer use is built lazily: nothing below imports a platform accessibility package
         # until the first /computer/* request, so /health stays importable everywhere.
@@ -402,6 +434,17 @@ class EngineDeps:
                 self._cu["learning"] = build_learning(self.settings, lambda: self.cu_interfaces, lambda: self.cu_procedures)
             return self._cu["learning"]
 
+    def absent_graph(self, isolated: Any) -> Any:
+        """The provisioning graph for USER_ABSENT (plan J.3): the same fixed topology and deps as
+        ``graph``; only the per-job sandbox differs (``isolated.for_job``: microsandbox ->
+        Firecracker -> Docker -> local). Built once, on the first headless job."""
+        from .graph import Deps, build_graph
+
+        with self._p2_lock:
+            if "absent_graph" not in self._p2:
+                self._p2["absent_graph"] = build_graph(Deps(sandbox_factory=isolated.for_job, **self._graph_fields))
+            return self._p2["absent_graph"]
+
     # ------------------------------------------------------------------ Phase 2
 
     @property
@@ -464,6 +507,15 @@ def build_goals(settings: EngineSettings) -> Any:
 
     model = ModelClient(LocalModelClient(settings.vllm_url, settings.vllm_model), None) if settings.learning_model else None
     return GoalStore(settings.data_dir_path / "goals", model=model)
+
+
+class PresenceSimulateRequest(BaseModel):
+    """Body of ``POST /presence/simulate`` (demos and tests only; every call is logged)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    state: str = Field(pattern="^(USER_PRESENT|USER_ABSENT)$")
+    reason: str | None = Field(default=None, max_length=200)
 
 
 class LearnObserveRequest(BaseModel):
@@ -887,6 +939,9 @@ def create_app(
     pool = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="o-job")
 
     state: dict[str, Any] = {"deps": None}
+    from .ambient.layer import AmbientLayer
+
+    ambient = AmbientLayer(settings, log)  # plan J; threads/devices only after start() with O_AMBIENT=1
 
     def _stop_cu_displays() -> None:
         d = state["deps"]
@@ -901,9 +956,14 @@ def create_app(
     async def lifespan(_: FastAPI):
         settings.sandbox_root_path.mkdir(parents=True, exist_ok=True)
         log.record("note", "engine started", version=__version__, permission_mode=settings.permission_mode)
+        try:
+            ambient.start()
+        except Exception as exc:  # noqa: BLE001 - the ambient layer never stops the engine
+            log.record("note", "ambient layer failed to start", error=f"{type(exc).__name__}: {exc}")
         yield
         pool.shutdown(wait=False, cancel_futures=True)
         _stop_cu_displays()
+        ambient.stop()
         log.record("note", "engine stopped")
 
     app = FastAPI(title="O engine", version=__version__, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -928,6 +988,23 @@ def create_app(
         log.record("policy", "schema violation rejected", error=str(exc))
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
+    def _graph_for_presence(d: Any, job: _Job) -> tuple[Any, bool]:
+        """Plan J.3: while USER_ABSENT a queued provision/script job runs headless in an isolated
+        sandbox (same graph topology). PRESENT/UNKNOWN keeps the existing selection unchanged."""
+        absent_graph = getattr(d, "absent_graph", None)
+        if not ambient.absent or not callable(absent_graph):
+            return d.graph, False
+        try:
+            graph = absent_graph(ambient.isolated)
+        except Exception as exc:  # noqa: BLE001 - fall back to the normal path, logged
+            log.record("note", f"job {job.id}: headless graph unavailable; running normally", job_id=job.id,
+                       error=f"{type(exc).__name__}: {exc}")
+            return d.graph, False
+        job.state["headless"] = True
+        log.record("note", f"job {job.id}: user absent; running headless in an isolated sandbox", job_id=job.id,
+                   presence=ambient.presence.state)
+        return graph, True
+
     def _run(job: _Job) -> None:
         sandbox_dir = settings.sandbox_root_path / job.id
         sandbox_dir.mkdir(parents=True, exist_ok=True)
@@ -938,16 +1015,23 @@ def create_app(
         def progress(state: dict[str, Any]) -> None:
             jobs.set_state(job.id, {**job.state, **state, "id": job.id, "done": False})
 
+        graph, headless = _graph_for_presence(d, job)
         try:
             import inspect as _inspect
             kwargs = {"progress": progress} if "progress" in _inspect.signature(d.run_job).parameters else {}
-            result = d.run_job(d.graph, job.request, job.id, settings.permission_mode, jobs.approve_waiter, **kwargs)
+            result = d.run_job(graph, job.request, job.id, settings.permission_mode, jobs.approve_waiter, **kwargs)
             final = _coerce_state(job, result)
             if isinstance(result, dict) and result.get("queue_destroyed"):
                 final["queue_destroyed"] = True
                 log.record("policy", f"job {job.id}: queue destroyed ({result.get('error')})", job_id=job.id, queue_destroyed=True)
         except Exception as exc:
             final = {**job.state, "phase": "report", "done": True, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if headless:
+                ambient.isolated.release(job.id)
+        if headless:
+            final["headless"] = True
+            final["isolation"] = ambient.isolated.last_backend or "local"
         jobs.set_state(job.id, final)
         learn_outcome(getattr(d, "learning", None), job.request.label, job.id, final, elapsed_s=time.monotonic() - started)
         log.record(
@@ -961,6 +1045,7 @@ def create_app(
             error=final.get("error"),
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
+        ambient.record_job(job.id, job.request.label, final, "provision")
 
     @app.get("/health", dependencies=guarded)
     def health() -> dict[str, Any]:
@@ -1085,6 +1170,7 @@ def create_app(
             error=final.get("error"),
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
+        ambient.record_job(job.id, req.goal, final, "computer")
 
     def _queue_cu(req: CURequest, kind: str) -> dict[str, str]:
         job = _Job(uuid.uuid4().hex, req, settings.cu_max_heals, phases=CU_PHASES)
@@ -1187,8 +1273,10 @@ def create_app(
 
         req = _validate(ScriptRunRequest, body)
         payload = _validate(ScriptPayload, req.model_dump())
-        sandbox_dir = settings.sandbox_root_path / f"{SCRIPT_SANDBOX_PREFIX}{uuid.uuid4().hex}"
-        sandbox = Sandbox(str(sandbox_dir))
+        script_id = f"{SCRIPT_SANDBOX_PREFIX}{uuid.uuid4().hex}"
+        sandbox_dir = settings.sandbox_root_path / script_id
+        headless = ambient.absent
+        sandbox = ambient.isolated.for_job(script_id) if headless else Sandbox(str(sandbox_dir))
         log.record("task", f"script run queued: {payload.language} ({len(payload.code)} chars)",
                    language=payload.language, chars=len(payload.code), sandbox=str(sandbox_dir),
                    target_directory=payload.target_directory, timeout_seconds=payload.timeout_seconds)
@@ -1197,8 +1285,14 @@ def create_app(
         except SandboxEscape as exc:
             log.record("policy", "script target_directory rejected", error=str(exc), sandbox=str(sandbox_dir))
             raise SchemaViolation(str(exc)) from None
+        finally:
+            if headless:
+                ambient.isolated.release(script_id)
         record = step_record(result, 0)
         record["sandbox"] = str(sandbox_dir)
+        if headless:
+            record["headless"] = True
+            record["isolation"] = getattr(sandbox, "backend_name", "local")
         log.record("result", f"script run exit={record['exit_code']} ({payload.language})",
                    language=payload.language, exit_code=record["exit_code"], elapsed_ms=record["elapsed_ms"],
                    timed_out=record["timed_out"], sandbox=str(sandbox_dir))
@@ -1233,6 +1327,7 @@ def create_app(
                    phase=final.get("phase"), error=final.get("error"),
                    roles=[(r.get("role"), r.get("ok")) for r in (final.get("result") or {}).get("roles", [])],
                    elapsed_ms=int((time.monotonic() - started) * 1000))
+        ambient.record_job(job.id, req.label, final, "swarm")
 
     @app.post("/swarm/run", dependencies=guarded)
     def swarm_run(body: dict[str, Any]) -> dict[str, str]:
@@ -1335,6 +1430,7 @@ def create_app(
         log.record("result", f"web job {job.id} {'ok' if final['ok'] else 'failed'}", job_id=job.id, ok=final["ok"],
                    via=(final.get("result") or {}).get("via"), error=final.get("error"),
                    elapsed_ms=int((time.monotonic() - started) * 1000))
+        ambient.record_job(job.id, req.label, final, "web")
 
     @app.post("/web/run", dependencies=guarded)
     def web_run(body: dict[str, Any]) -> dict[str, str]:
@@ -1608,6 +1704,49 @@ def create_app(
         log.record("policy", f"goals: autonomy {gid} -> {g['autonomy']}", goal_id=gid, autonomy=g["autonomy"], allowed=g["allowed"])
         return {"ok": True, "goal": g}
     # ------------------------------------------------------------ end goals
+
+    # ------------------------------------------------------------ ambient (plan J)
+    from .ambient.milestones import MilestoneIn
+
+    @app.get("/presence", dependencies=guarded)
+    def presence_route() -> dict[str, Any]:
+        return ambient.presence_view()
+
+    @app.post("/presence/simulate", dependencies=guarded)
+    def presence_simulate(body: dict[str, Any]) -> dict[str, Any]:
+        req = _validate(PresenceSimulateRequest, body)
+        log.record("policy", f"presence simulated: {req.state}", state=req.state, reason=req.reason or "")
+        ambient.presence.simulate(req.state, req.reason or "")
+        return {"ok": True, "presence": ambient.presence_view()}
+
+    @app.get("/sensors", dependencies=guarded)
+    def sensors_route() -> dict[str, Any]:
+        return ambient.sensors_view()
+
+    @app.get("/sensors/live", dependencies=guarded)
+    def sensors_live() -> dict[str, Any]:
+        # The opted-in user's own pulse/breathing, from memory. Deliberately never logged.
+        return ambient.heart_live()
+
+    @app.get("/milestones", dependencies=guarded)
+    def milestones_list(since: float = 0.0, limit: int = Query(default=200, ge=1, le=5000)) -> dict[str, Any]:
+        return {"milestones": ambient.milestones.since(since, limit)}
+
+    @app.post("/milestones", dependencies=guarded)
+    def milestones_create(body: dict[str, Any]) -> dict[str, Any]:
+        req = _validate(MilestoneIn, body)
+        row = ambient.milestones.record(req.kind, req.title, task_id=req.task_id, detail=req.detail,
+                                        presence=ambient.presence.state, ts=req.ts)
+        log.record("note", f"milestone {row['kind']}: {_short(row['title'])}", id=row["id"], milestone_kind=row["kind"],
+                   task_id=row["task_id"], source="app")
+        return {"ok": True, "milestone": row}
+
+    @app.get("/brief/latest", dependencies=guarded)
+    def brief_latest() -> dict[str, Any]:
+        return {"brief": ambient.briefer.get_latest()}
+
+    app.state.ambient = ambient
+    # ------------------------------------------------------------ end ambient
 
     app.state.settings = settings
     app.state.log = log
