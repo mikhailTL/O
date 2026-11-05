@@ -35,6 +35,27 @@ _INTERESTING_STATES = {
     "focused", "checked", "visible", "showing", "enabled", "sensitive", "selected", "expanded", "active",
     "editable", "pressed", "focusable", "modal",
 }
+# Unnamed fields of these roles take the name of the label that labels them (GTK file chooser: the location
+# entry is `text ''` with a sibling `label 'Name:'` linked by LABELLED_BY; the planner asks for name 'Name*').
+_LABELLED_ROLES = frozenset({
+    "text", "entry", "password text", "combo box", "spin button", "slider", "editbar", "terminal", "list box",
+})
+
+
+def _label_name(acc: Any) -> str:
+    """The text of the first LABELLED_BY target of ``acc`` (whitespace collapsed), else ""."""
+    try:
+        for rel in acc.get_relation_set() or []:
+            if rel.get_relation_type() != Atspi.RelationType.LABELLED_BY:
+                continue
+            for i in range(rel.get_n_targets()):
+                target = rel.get_target(i)
+                label = " ".join((target.get_name() or "").split()) if target is not None else ""
+                if label:
+                    return label
+    except Exception:  # noqa: BLE001 - a missing relation leaves the node unnamed
+        pass
+    return ""
 
 
 def _state_names(acc: Any) -> list[str]:
@@ -116,6 +137,8 @@ class AtspiBackend(CUBackend):
             name = acc.get_name() or ""
         except Exception:  # noqa: BLE001
             return None
+        if not name and role in _LABELLED_ROLES:
+            name = _label_name(acc)
         text = ""
         try:
             t = acc.get_text_iface() if hasattr(acc, "get_text_iface") else Atspi.Accessible.get_text(acc)

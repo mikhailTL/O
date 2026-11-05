@@ -45,7 +45,7 @@ _STEP_VOCABULARY = (
     '  {"op":"find","as":"<ref>","target":{"role":"<role>","name":"<glob>"}}\n'
     '  {"op":"click","ref":"<ref>"}\n'
     '  {"op":"type","ref":"<ref>","text":"<text>"}\n'
-    '  {"op":"key","keys":"<e.g. ctrl+s>"}\n'
+    '  {"op":"key","keys":"<one chord, e.g. ctrl+s, Return, ctrl+a>"}\n'
     '  {"op":"set_value","ref":"<ref>","value":"<value>"}\n'
     '  {"op":"invoke","ref":"<ref>","action":"<action>"}\n'
     '  {"op":"assert","target":{"role":"<role>","name":"<glob>","state":"focused|checked|visible"}}\n'
@@ -55,7 +55,8 @@ _STEP_VOCABULARY = (
     '  {"op":"script","script":{"language":"python|bash|javascript|powershell","code":"<code>",'
     '"target_directory":"<absolute dir>","timeout_seconds":<int>}}\n'
     '  {"op":"call","fn":"<app>.<function>","args":{"<name>":<value>}}\n'
-    "Target fields: role, name (glob), text, index, within (ref)."
+    "Target fields: role, name (glob), text, index, within (ref). Omit a field rather than giving it \"\".\n"
+    "key is only for chords like ctrl+s, Return, Escape; use type for any text, paths and filenames."
 )
 
 PROMPT_RULES = (

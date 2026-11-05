@@ -9,7 +9,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { OAgent, PERMISSION_MODES, SAFE_TOOLS, ENGINE_TOOLS, childEnv, fullPath, genuiFrameProblem } = require('../agent');
+const { OAgent, PERMISSION_MODES, SAFE_TOOLS, ENGINE_TOOLS, childEnv, fullPath, genuiFrameProblem, buildPersona } = require('../agent');
 
 const entries = [];
 const ingested = [];
@@ -56,6 +56,13 @@ function ok(cond, label) {
   });
 
   ok(Array.isArray(PERMISSION_MODES) && PERMISSION_MODES.join() === 'log,ask,auto', 'PERMISSION_MODES exported');
+  {
+    // 2026-11-05 real run: old-persona status lines leaked into the transcript; the agent drove the display by hand.
+    const src = require('fs').readFileSync(path.join(__dirname, '..', 'agent.js'), 'utf8');
+    const statuses = [...src.matchAll(/_status\('\w+', '([^']*)'/g), ...src.matchAll(/mood: '\w+', text: ([^,]*),/g)].map((m) => m[1]);
+    ok(statuses.length >= 10 && !statuses.some((t) => /!|Ooh|Mulling|Hmm|Oops|Oh dear|Righto/.test(t)), 'status lines are calm: ' + JSON.stringify(statuses.filter((t) => /!|Ooh|Mulling|Hmm/.test(t))));
+    ok(buildPersona({}).includes('If computer_run fails, read its error and call it again with a corrected goal rather than driving the display yourself.'), 'persona: retry computer_run instead of driving the display');
+  }
   ok(typeof childEnv === 'function' && typeof fullPath === 'function', 'childEnv and fullPath exported');
   ok(!SAFE_TOOLS.includes('mcp__o__provision') && SAFE_TOOLS.includes('mcp__o__workspace_context'), 'provision is not a safe tool; workspace_context is');
   ok(ENGINE_TOOLS.length === 6, 'six engine tools');

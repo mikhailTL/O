@@ -128,7 +128,7 @@ class ScriptedAgent extends EventEmitter {
         this._emit({ type: 'tool', name: 'Bash', summary: `step ${step}` });
         this._t = setTimeout(() => {
           this.inTool = false;
-          this._emit({ type: 'status', mood: 'thinking', text: 'Mulling it over…', toolDone: true });
+          this._emit({ type: 'status', mood: 'thinking', text: 'Thinking', toolDone: true });
           this._t = setTimeout(next, this.plan.gapMs || 30);
         }, this.toolMs);
       };
@@ -139,7 +139,7 @@ class ScriptedAgent extends EventEmitter {
     if (this._done) return;
     this._done = true; this.cancelled++;
     clearTimeout(this._t);
-    this._emit({ type: 'status', mood: 'idle', text: 'Stopped. Standing by!' });
+    this._emit({ type: 'status', mood: 'idle', text: 'Stopped' });
     this._emit({ type: 'done', result: '(stopped)', stopped: true });
     if (this._finish) this._finish({ ok: false, cancelled: true });
   }

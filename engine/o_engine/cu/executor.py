@@ -75,6 +75,9 @@ FailureReason = Literal["loop"]
 DEFAULT_POLL_INTERVAL = 0.25
 DEFAULT_LOOP_THRESHOLD = 3
 DEFAULT_LOOP_WINDOW = 8
+DEFAULT_FIND_SETTLE_POLLS = 8  # x poll_interval: how long a find waits for a just-opened window's tree to settle
+# Steps after which the tree may still be changing (a dialog mapping, a window opening) when the next find runs.
+_SETTLE_AFTER = frozenset({"launch", "click", "key", "type", "set_value", "invoke", "call", "script"})
 
 
 class Grounder(Protocol):
@@ -159,6 +162,7 @@ class ScriptRunner:
         sandbox: Any = None,
         display: Any = None,
         interface_store: Any = None,
+        find_settle_polls: int = DEFAULT_FIND_SETTLE_POLLS,
     ) -> None:
         if loop_threshold < 2:
             raise ValueError("loop_threshold must be >= 2")
@@ -177,6 +181,8 @@ class ScriptRunner:
         self.sandbox = sandbox
         self.display = display
         self.interface_store = interface_store
+        self.find_settle_polls = max(0, int(find_settle_polls))
+        self._prev_op: str | None = None
         self._clock = clock
         self._sleep = sleep
         self._popen = popen
@@ -219,9 +225,11 @@ class ScriptRunner:
         self._loop_evidence = []
         self._baselines = {}
         self._baseline = self._snapshot_baseline(script)
+        self._prev_op = None
         for i, step in enumerate(script.steps):
             self._baselines[i] = dict(self._baseline)
             result = self._run_step(script, i, step, refs, job_id, index=i)
+            self._prev_op = step.op
             results.append(result)
             if not result.ok:
                 return RunResult(ok=False, steps=tuple(results), failed_index=i)
@@ -356,16 +364,38 @@ class ScriptRunner:
             self.backend.click(self._ref(refs, step.ref))
             return None, None
         if isinstance(step, TypeStep):
-            self.backend.type_text(self._ref(refs, step.ref) if step.ref else None, step.text)
+            node = self._ref(refs, step.ref) if step.ref else None
+            if node is not None and node.synthetic:
+                return None, self._pixel_fill(node, step.text, replace=False, job_id=job_id, index=index)
+            self.backend.type_text(node, step.text)
             return None, None
         if isinstance(step, KeyStep):
+            # Every real backend's key() is itself a pixel action, so the coercion only applies where pixels are allowed.
+            if getattr(self.backend, "allow_pixels", False) and not is_key_chord(step.keys):
+                # Real run: the planner sent `key ~/lisbon.txt`; xdotool rejected it as a key sequence.
+                note = f"key {step.keys!r} is not a key chord; typed it as text instead"
+                self.log.record("note", f"{job_id}: step {index}: {note}", job_id=job_id, index=index,
+                                coerced="key->type", keys=step.keys)
+                self.backend.type_text(None, step.keys)
+                return None, note
             self.backend.key(step.keys)
             return None, None
         if isinstance(step, SetValueStep):
-            self.backend.set_value(self._ref(refs, step.ref), step.value)
+            node = self._ref(refs, step.ref)
+            if node.synthetic:
+                return None, self._pixel_fill(node, step.value, replace=True, job_id=job_id, index=index)
+            self.backend.set_value(node, step.value)
             return None, None
         if isinstance(step, InvokeStep):
-            self.backend.invoke(self._ref(refs, step.ref), step.action)
+            node = self._ref(refs, step.ref)
+            if node.synthetic:
+                self._require_pixels_for(node, f"invoke {step.action!r}")
+                self.backend.click(node)
+                note = f"invoke {step.action!r} on screen region {node.id}: clicked its center"
+                self.log.record("note", f"{job_id}: step {index}: {note}", job_id=job_id, index=index,
+                                coerced="invoke->click", node=node.id)
+                return None, note
+            self.backend.invoke(node, step.action)
             return None, None
         if isinstance(step, AssertStep):
             return self._assert(step, refs), None
@@ -378,6 +408,31 @@ class ScriptRunner:
         if isinstance(step, CallStep):
             return None, self._call(script.app, step)
         raise _StepFailure(f"unsupported op {step.op!r}")
+
+    def _require_pixels_for(self, node: Node, what: str) -> None:
+        if not getattr(self.backend, "allow_pixels", False):
+            raise _StepFailure(
+                f"{what}: {node.id!r} was found only on screen, by vision or the locator cache, and pixel actions "
+                "are disabled on this display; only O's isolated display allows them"
+            )
+        if node.rect is None:
+            raise _StepFailure(f"{what}: screen region {node.id!r} has no rectangle")
+
+    def _pixel_fill(self, node: Node, text: str, *, replace: bool, job_id: str, index: int) -> str:
+        """A field found only by vision / the locator cache: click its center, select all when the value is
+        replaced (set_value), then type into the focused widget. Pixel actions exist only on the isolated display."""
+        op = "set_value" if replace else "type"
+        self._require_pixels_for(node, op)
+        x, y = node.rect.center  # type: ignore[union-attr]
+        self.backend.pixel_click(x, y)
+        if replace:
+            self.backend.key("ctrl+a")
+        self.backend.type_text(None, text)
+        note = (f"{op} on screen region {node.id}: clicked ({x},{y})"
+                + (", selected all" if replace else "") + f", typed {len(text)} chars")
+        self.log.record("note", f"{job_id}: step {index}: {note}", job_id=job_id, index=index,
+                        coerced=f"{op}->pixels", node=node.id)
+        return note
 
     @staticmethod
     def _ref(refs: dict[str, Node], name: str) -> Node:
@@ -401,6 +456,9 @@ class ScriptRunner:
         node = self.backend.find(target, within=scope)
         if node is not None:
             return node, "a11y"
+        node = self._settle_find(target, scope)
+        if node is not None:
+            return node, "a11y"
         if self.locator_cache is not None:
             bbox = self.locator_cache.get(app, target, screen_hash)
             if _bbox_ok(bbox):
@@ -417,6 +475,30 @@ class ScriptRunner:
                 return synthetic_node(target, bbox, "vision"), "vision"
         tried = ["a11y"] + (["locator"] if self.locator_cache is not None else []) + (["vision"] if self.grounder else [])
         raise _StepFailure(f"element not found ({target.describe()}); tried {', '.join(tried)}")
+
+    def _settle_find(self, target: Target, scope: Node | None) -> Node | None:
+        """Right after an action (ctrl+s, a click) the window it opens may not be in the tree yet: re-read the
+        tree while it is still changing, up to ``find_settle_polls`` times, before falling back to the screen.
+        Real run: the Save As entry was looked up before the dialog mapped and resolved by vision instead."""
+        if self._prev_op not in _SETTLE_AFTER or not self.find_settle_polls:
+            return None
+        try:
+            last = self.backend.tree_digest(self.backend.tree())
+        except Exception:  # noqa: BLE001
+            return None
+        for _ in range(self.find_settle_polls):
+            self._sleep(self.poll_interval)
+            node = self.backend.find(target, within=scope)
+            if node is not None:
+                return node
+            try:
+                now = self.backend.tree_digest(self.backend.tree())
+            except Exception:  # noqa: BLE001
+                return None
+            if now == last:
+                return None
+            last = now
+        return None
 
     def _wait(self, script: OScript, step: WaitStep, refs: dict[str, Node]) -> ResolvedBy:
         scope = self._scope(step.for_, refs)
@@ -621,6 +703,51 @@ class _ApiBackend:
         elif isinstance(target, str):
             target = Target(name=target)
         return self._backend.find(target, within=within) if within is not None else self._backend.find(target)
+
+
+MODIFIERS = frozenset({
+    "ctrl", "control", "alt", "shift", "super", "meta", "cmd", "command", "win", "hyper", "altgr", "option",
+    "control_l", "control_r", "alt_l", "alt_r", "shift_l", "shift_r", "super_l", "super_r", "meta_l", "meta_r",
+})
+KEYSYMS = frozenset(k.lower() for k in (
+    "Return", "Enter", "KP_Enter", "Tab", "ISO_Left_Tab", "Escape", "Esc", "BackSpace", "Delete", "Del", "Insert",
+    "Home", "End", "Page_Up", "Page_Down", "Prior", "Next", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
+    "space", "Menu", "Print", "Pause", "Break", "Scroll_Lock", "Num_Lock", "Caps_Lock", "minus", "plus", "equal",
+    "comma", "period", "slash", "backslash", "semicolon", "apostrophe", "grave", "bracketleft", "bracketright",
+    "asciitilde", "underscore", "question", "exclam", "at", "numbersign", "dollar", "percent", "asciicircum",
+    "ampersand", "asterisk", "parenleft", "parenright", "colon", "quotedbl", "less", "greater", "bar",
+    "braceleft", "braceright",
+    *MODIFIERS,
+))
+
+
+def _is_keysym(token: str) -> bool:
+    t = token.lower()
+    if len(token) == 1:
+        return token.isprintable() and not token.isspace()
+    if t in KEYSYMS or t.startswith("xf86") or t.startswith("kp_"):
+        return True
+    return t[0] == "f" and t[1:].isdigit() and 1 <= int(t[1:]) <= 35
+
+
+def is_key_chord(keys: str) -> bool:
+    """True for what ``key`` is for: one chord (``ctrl+s``, ``Return``, ``ctrl+shift+t``) or a space-separated
+    run of chords (``ctrl+a Delete``). Text such as ``~/lisbon.txt`` or ``hello world`` is not one."""
+    tokens = keys.split()
+    if not tokens:
+        return False
+    for chord in tokens:
+        parts = chord.split("+")
+        if chord.endswith("+") and len(chord) > 1:  # "ctrl++" -> ctrl, "+"
+            parts = parts[:-2] + ["+"]
+        if not parts or any(not p for p in parts):
+            return False
+        *mods, last = parts
+        if any(m.lower() not in MODIFIERS for m in mods) or not _is_keysym(last):
+            return False
+        if len(tokens) > 1 and len(parts) == 1 and len(last) == 1:
+            return False  # "a b c": letters typed one by one are text
+    return True
 
 
 def _accepts(fn: Any, name: str) -> bool:

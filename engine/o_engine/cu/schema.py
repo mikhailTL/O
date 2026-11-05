@@ -44,6 +44,15 @@ class Target(BaseModel):
     index: int = Field(default=0, ge=0, le=10_000)
     within: str | None = Field(default=None, pattern=NAME_PATTERN, max_length=64)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_is_absent(cls, data: Any) -> Any:
+        # Planners copy unnamed tree nodes (`text ''`) as "name": ""; an empty selector means "any", i.e. absent.
+        # Real run: three of four jobs aborted on "name: String should have at least 1 character".
+        if isinstance(data, dict) and any(data.get(k) == "" for k in ("role", "name", "text")):
+            data = {k: v for k, v in data.items() if not (k in ("role", "name", "text") and v == "")}
+        return data
+
     @model_validator(mode="after")
     def _needs_a_selector(self) -> "Target":
         if self.role is None and self.name is None and self.text is None:

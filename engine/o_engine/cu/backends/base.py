@@ -140,14 +140,35 @@ KNOWN_DIALOGS: tuple[KnownDialog, ...] = (
 )
 
 
+MODAL_ROLES = frozenset({"dialog", "alert", "file chooser"})
+
+
+def is_open_modal(window: Node) -> bool:
+    """A dialog-like top-level window that is on screen and modal: it takes the input of the app it belongs to."""
+    return (window.role in MODAL_ROLES and "modal" in window.states
+            and ("showing" in window.states or "visible" in window.states))
+
+
+def _window_rank(window: Node) -> int:
+    if is_open_modal(window):
+        return 0  # a just-mapped Save As / alert owns the input even before the window manager activates it
+    return 1 if "active" in window.states else 2
+
+
 def focused_roots(roots: list[Node]) -> list[Node]:
-    """Only the application that owns the active window, with that window first among its windows (dialogs
-    of the same app stay, after it). Unchanged when no window is active (no window manager): then every
-    application is returned in the platform's order."""
-    for app in roots:
+    """Only the application that owns the active window, with its open modal dialogs first, then the active
+    window, then its other windows. An open modal dialog of another application (a portal file chooser, a
+    second process' alert) is a root of its own, placed first. Unchanged when no window is active (no window
+    manager): then every application is returned in the platform's order."""
+    for i, app in enumerate(roots):
         if any("active" in w.states for w in app.children):
-            kids = sorted(app.children, key=lambda w: 0 if "active" in w.states else 1)
-            return [app.model_copy(update={"children": kids})]
+            kids = sorted(app.children, key=_window_rank)
+            others = []
+            for j, other in enumerate(roots):
+                modal = [w for w in other.children if is_open_modal(w)] if j != i else []
+                if modal:
+                    others.append(other.model_copy(update={"children": modal}))
+            return [*others, app.model_copy(update={"children": kids})]
     return list(roots)
 
 
