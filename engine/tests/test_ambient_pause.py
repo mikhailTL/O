@@ -187,7 +187,7 @@ def test_provision_priority_low_pauses_between_steps_on_return(tmp_path):
                               screenpipe_db=str(tmp_path / "missing.db"), vllm_url="http://127.0.0.1:1/v1", learning=False)
     app = create_app(settings, deps_factory=EngineDeps)
     app.state.ambient.isolated.candidates = lambda job_dir, s: [LocalVM(job_dir)]
-    steps = [{"target_directory": ".", "command_string": "sleep 0.6; echo a >> trace.txt", "timeout_seconds": 30},
+    steps = [{"target_directory": ".", "command_string": "sleep 2.5; echo a >> trace.txt", "timeout_seconds": 30},
              {"target_directory": ".", "command_string": "echo b >> trace.txt", "timeout_seconds": 30}]
     def wait_phase(c, job_id, phase, timeout=20.0):
         end = time.time() + timeout
@@ -208,7 +208,7 @@ def test_provision_priority_low_pauses_between_steps_on_return(tmp_path):
         low = r.json()["job_id"]
         other = [{**st, "command_string": st["command_string"].replace("trace.txt", "other.txt")} for st in steps]
         normal = c.post("/provision", json={"label": "user ask", "steps": other}, headers=h).json()["job_id"]
-        assert wait_phase(c, low, "execute")["headless"] is True  # inside step 0 (sleep 0.6)
+        assert wait_phase(c, low, "execute")["headless"] is True  # inside step 0 (sleep 2.5)
         wait_phase(c, normal, "execute")
         c.post("/presence/simulate", json={"state": PRESENT}, headers=h)
         deadline = time.time() + 10
