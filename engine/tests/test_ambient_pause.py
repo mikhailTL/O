@@ -187,7 +187,7 @@ def test_provision_priority_low_pauses_between_steps_on_return(tmp_path):
                               screenpipe_db=str(tmp_path / "missing.db"), vllm_url="http://127.0.0.1:1/v1", learning=False)
     app = create_app(settings, deps_factory=EngineDeps)
     app.state.ambient.isolated.candidates = lambda job_dir, s: [LocalVM(job_dir)]
-    steps = [{"target_directory": ".", "command_string": "sleep 2.5; echo a >> trace.txt", "timeout_seconds": 30},
+    steps = [{"target_directory": ".", "command_string": "for i in $(seq 600); do [ -f go ] && break; sleep 0.05; done; echo a >> trace.txt", "timeout_seconds": 30},
              {"target_directory": ".", "command_string": "echo b >> trace.txt", "timeout_seconds": 30}]
     def wait_phase(c, job_id, phase, timeout=20.0):
         end = time.time() + timeout
@@ -208,9 +208,12 @@ def test_provision_priority_low_pauses_between_steps_on_return(tmp_path):
         low = r.json()["job_id"]
         other = [{**st, "command_string": st["command_string"].replace("trace.txt", "other.txt")} for st in steps]
         normal = c.post("/provision", json={"label": "user ask", "steps": other}, headers=h).json()["job_id"]
-        assert wait_phase(c, low, "execute")["headless"] is True  # inside step 0 (sleep 2.5)
+        assert wait_phase(c, low, "execute")["headless"] is True  # inside step 0 (held until the go file)
         wait_phase(c, normal, "execute")
         c.post("/presence/simulate", json={"state": PRESENT}, headers=h)
+        # step 0 of both jobs is held on a "go" file, so the return always lands mid-step 0
+        for jid in (low, normal):
+            (Path(settings.sandbox_root) / jid / "go").write_text("1")
         deadline = time.time() + 10
         while time.time() < deadline and not c.get(f"/jobs/{low}", headers=h).json().get("paused"):
             time.sleep(0.05)
@@ -227,4 +230,7 @@ def test_provision_priority_low_pauses_between_steps_on_return(tmp_path):
             time.sleep(0.05)
         final = c.get(f"/jobs/{low}", headers=h).json()
         assert final["ok"] is True and final["headless"] is True and trace.read_text().split() == ["a", "b"]
+        forget_by = time.time() + 3  # job_finished runs just after the job reports done
+        while time.time() < forget_by and app.state.ambient.pause_gate.priority(low) != "normal":
+            time.sleep(0.02)
         assert app.state.ambient.pause_gate.priority(low) == "normal"  # forgotten after the job
