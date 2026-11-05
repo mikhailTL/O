@@ -731,8 +731,12 @@ async function recallPreferences(args) {
 
 async function rememberPreference(args) {
   if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
-  const text = String((args && args.text) || '').trim();
-  if (!text) return textResult('remember_preference needs non-empty text.', true);
+  // Claude Code defers MCP tool schemas, so a model may call this before it has seen the schema and name the
+  // one field after the tool ({preference: ...}); take that sentence rather than lose what the user said.
+  const a = args && typeof args === 'object' ? args : {};
+  const raw = [a.text, a.preference, a.sentence, a.note, a.value].find((v) => typeof v === 'string' && v.trim());
+  const text = String(raw || '').trim();
+  if (!text) return textResult('remember_preference needs non-empty text: {"text": "<one short sentence>"}.', true);
   try {
     await engine('POST', '/learn/observe', { source: 'correction', ...(TASK_ID ? { task_id: TASK_ID } : {}), text: text.slice(0, 500) }, 5000);
     profileCache.clear();

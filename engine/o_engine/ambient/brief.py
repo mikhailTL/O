@@ -32,7 +32,9 @@ def split_sentences(text: str) -> list[str]:
 
 
 def _clean_title(title: str, limit: int = 80) -> str:
-    t = re.sub(r"[.!?]+", " ", " ".join(str(title or "").split())).strip().strip("\"'")
+    # Only punctuation that would end a sentence (followed by a space or the end) is dropped, so a title like
+    # "Keep ./notes/summary.md updated" keeps its path and file name.
+    t = re.sub(r"[.!?]+(?=\s|$)", " ", " ".join(str(title or "").split())).strip().strip("\"'")
     return (t[: limit - 1] + "…") if len(t) > limit else (t or "an untitled task")
 
 

@@ -116,6 +116,18 @@ def test_claude_grounder_writes_png_and_references_path(fake_run, tmp_path):
     assert ".png" in kw["input"] and "OK button" in kw["input"]
 
 
+def test_claude_grounder_runs_in_the_screenshot_dir(fake_run):
+    import os
+    import re
+
+    fake_run["stdout"] = json.dumps({"result": json.dumps(BOX)})
+    ClaudeCodeGrounder("claude-bin").ground(PNG, "OK button")
+    kw = fake_run["calls"][0][1]
+    png_path = re.search(r"PNG file at: (\S+\.png)", kw["input"]).group(1)
+    assert kw["cwd"] and os.path.dirname(png_path) == kw["cwd"]
+    assert not os.path.exists(kw["cwd"])
+
+
 def test_claude_grounder_nonzero_exit_is_violation(fake_run):
     fake_run["returncode"] = 1
     with pytest.raises(SchemaViolation):

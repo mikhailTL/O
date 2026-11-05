@@ -108,7 +108,10 @@ class AtspiBackend(CUBackend):
         try:
             t = acc.get_text_iface() if hasattr(acc, "get_text_iface") else Atspi.Accessible.get_text(acc)
             if t is not None:
-                text = t.get_text(0, min(t.get_character_count(), 4000)) or ""
+                # Through Atspi.Text explicitly: on the PyGObject object, Accessible.get_text() (no arguments, the
+                # deprecated interface getter) shadows Text.get_text(start, end), so t.get_text(0, n) always raised
+                # and every text field / editor read as empty.
+                text = Atspi.Text.get_text(t, 0, min(Atspi.Text.get_character_count(t), 4000)) or ""
         except Exception:  # noqa: BLE001
             pass
         rect = None

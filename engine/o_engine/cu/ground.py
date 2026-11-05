@@ -23,6 +23,7 @@ import math
 import os
 import sqlite3
 import struct
+import shutil
 import subprocess
 import tempfile
 import time
@@ -187,9 +188,13 @@ class ClaudeCodeGrounder:
         return [self.claude_path, "-p", "--output-format", "json"]
 
     def ground(self, png_bytes: bytes, target_text: str) -> GroundResult | None:
-        fd, path = tempfile.mkstemp(prefix="o-ground-", suffix=".png")
+        # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
+        # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
+        # headless mode (real run: every screenshot check failed with "permission denied").
+        workdir = tempfile.mkdtemp(prefix="o-ground-")
+        path = os.path.join(workdir, "screen.png")
         try:
-            with os.fdopen(fd, "wb") as f:
+            with open(path, "wb") as f:
                 f.write(png_bytes)
             prompt = (
                 GROUND_SYSTEM_PROMPT
@@ -202,15 +207,12 @@ class ClaudeCodeGrounder:
                     input=prompt,
                     capture_output=True,
                     text=True,
-                    timeout=self.timeout,
+                    timeout=self.timeout, cwd=workdir,
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 raise SchemaViolation(f"claude cli failed to run: {e}") from None
         finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            shutil.rmtree(workdir, ignore_errors=True)
         if proc.returncode != 0:
             raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
         try:

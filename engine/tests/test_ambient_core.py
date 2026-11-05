@@ -329,6 +329,13 @@ def test_template_brief_is_exactly_three_sentences(rows):
     assert len(split_sentences(text)) == 3, text
 
 
+def test_template_brief_keeps_paths_in_titles():
+    # real run: "Keep ./notes/summary.md updated ..." came out as "Keep  /notes/summary md updated"
+    text = template_brief([{"kind": "completed", "title": "Keep ./notes/summary.md updated. Done!"}], away_s=60)
+    assert "./notes/summary.md updated" in text, text
+    assert len(split_sentences(text)) == 3, text
+
+
 def test_normalise_model_brief():
     assert normalise_model_brief("**One.** Two! Three?") == "One. Two! Three?"
     assert normalise_model_brief("Only one.") is None

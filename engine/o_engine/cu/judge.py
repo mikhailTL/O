@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -158,9 +159,13 @@ class ClaudeCodeJudge:
         return [self.claude_path, "-p", "--output-format", "json"]
 
     def judge(self, png_bytes: bytes, question: str) -> JudgeVerdict:
-        fd, path = tempfile.mkstemp(prefix="o-judge-", suffix=".png")
+        # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
+        # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
+        # headless mode (real run: every screenshot check failed with "permission denied").
+        workdir = tempfile.mkdtemp(prefix="o-judge-")
+        path = os.path.join(workdir, "screen.png")
         try:
-            with os.fdopen(fd, "wb") as f:
+            with open(path, "wb") as f:
                 f.write(png_bytes)
             prompt = (
                 JUDGE_SYSTEM_PROMPT
@@ -169,15 +174,12 @@ class ClaudeCodeJudge:
             )
             try:
                 proc = subprocess.run(
-                    self._command(), input=prompt, capture_output=True, text=True, timeout=self.timeout
+                    self._command(), input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=workdir
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 raise SchemaViolation(f"claude cli failed to run: {e}") from None
         finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            shutil.rmtree(workdir, ignore_errors=True)
         if proc.returncode != 0:
             raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
         try:

@@ -288,6 +288,11 @@ function makeManager(extra = {}) {
     ok(!rem.isError && learn.observed.length === 1 && learn.observed[0].source === 'correction' && learn.observed[0].task_id === 'tbridge1' && learn.observed[0].text === 'Name photos YYYY-MM-DD', 'remember_preference → POST /learn/observe {source:"correction", task_id, text}');
     await call('recall_preferences', {});
     ok(learn.gets === 2, 'remembering clears the preference cache');
+    // regression (real run, Claude Code 2.1.318 defers MCP schemas): the model called {preference: ...} first
+    const alias = await call('remember_preference', { preference: 'Put the total row at the top' });
+    ok(!alias.isError && learn.observed.length === 2 && learn.observed[1].text === 'Put the total row at the top', 'remember_preference also takes the sentence as {preference}');
+    const empty = await call('remember_preference', { preference: '  ' });
+    ok(empty.isError && /"text"/.test(empty.text) && learn.observed.length === 2, 'remember_preference with no sentence is an error that names the text field');
     // wrong token on /schedule is refused
     const bad = await new Promise((resolve) => {
       const data = JSON.stringify({ op: 'list' });

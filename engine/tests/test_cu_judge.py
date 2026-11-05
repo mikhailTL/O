@@ -93,6 +93,19 @@ def test_claude_judge(fake_run):
     assert ".png" in fake_run["calls"][0][1]["input"]
 
 
+def test_claude_judge_runs_in_the_screenshot_dir(fake_run):
+    # real run: `claude -p` was denied Read of a /tmp PNG outside its working directory
+    import os
+    import re
+
+    fake_run["stdout"] = json.dumps({"result": '{"ok": true, "reason": "fine"}'})
+    ClaudeCodeJudge().judge(PNG, "Saved?")
+    kw = fake_run["calls"][0][1]
+    png_path = re.search(r"PNG file at: (\S+\.png)", kw["input"]).group(1)
+    assert kw["cwd"] and os.path.dirname(png_path) == kw["cwd"]
+    assert not os.path.exists(kw["cwd"])  # cleaned up afterwards
+
+
 def test_judge_primary_then_fallback_once_then_failed_verdict():
     ok = JudgeVerdict(ok=True, reason="fine", source="claude")
     j = Judge(StubJudge("vlm", error=RuntimeError("down")), StubJudge("claude", ok))
