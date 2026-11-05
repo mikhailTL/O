@@ -32,6 +32,11 @@ SAVEAS_TARGET = Path(os.path.expanduser("~/lisbon-saveas.txt"))
 E2E_TARGET = Path(os.path.expanduser("~/lisbon-e2e.txt"))
 E2E_LINES = ("Passport, wallet, phone charger", "Comfortable walking shoes, light rain jacket",
              "Sunscreen, sunglasses, adapter")
+R3_TARGET = Path(os.path.expanduser("~/lisbon-r3.txt"))
+R3_RESAVE = Path(os.path.expanduser("~/lisbon-r3b.txt"))
+R3_LINES = ("Clothes: light layers, rain jacket, comfortable walking shoes",
+            "Gear: phone charger, EU plug adapter, daypack, sunglasses",
+            "Documents: passport/ID, travel insurance, booking confirmations")
 SPI_LAUNCHER = "/usr/libexec/at-spi-bus-launcher"
 TOOLS = ("Xvfb", "mousepad", "dbus-daemon", "xdotool", "import")
 
@@ -118,6 +123,33 @@ def test_lisbon_end_to_end_mirrors_the_real_plan(tmp_path):
     assert E2E_TARGET.read_text().strip().splitlines() == list(E2E_LINES)
     assert not [s for s in r["steps"] if "vision" in s], r["steps"]
     E2E_TARGET.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(bool(_missing()), reason=_missing() or "ok")
+def test_lisbon_real_run3_saves_once_and_leaves_one_window_no_dialogs(tmp_path):
+    """2026-11-05 real run 3, scripted: the save turn ends with `state_assert file_exists ~/lisbon.txt`. That check
+    looked inside the job sandbox, failed, and each heal re-ran ctrl+shift+s / `type ~/lisbon.txt` / Return, which
+    appended the name to the prefilled entry ("lisbon.txt~/lisbon.txt~/...") and left a Save As plus a GTK error
+    dialog open. Now: the check reads the desktop home, the job stops on it (no heal, no re-save), a second job
+    re-saves the titled document under a new name through the prefilled entry (type -> set_value), and a third job
+    that leaves an Open dialog behind has it closed at job end. Exactly one Mousepad window, zero dialogs."""
+    for f in (R3_TARGET, R3_RESAVE):
+        f.unlink(missing_ok=True)
+    r = _child_run("lisbon3", tmp_path)
+    jobs = r["jobs"]
+    assert [j["ok"] for j in jobs] == [True, True, True], jobs
+    assert R3_TARGET.read_text().splitlines() == list(R3_LINES)
+    assert R3_RESAVE.read_text().splitlines() == list(R3_LINES)
+    assert r["replan_calls"] == 0, r  # no heal: the save was proven by its file the first time
+    saves = [c for j in jobs for c in j["keys"] if c == "ctrl+shift+s"]
+    assert saves == ["ctrl+shift+s", "ctrl+shift+s"], jobs  # one Save As per saving job, never repeated
+    assert any("type->set_value" == c for c in r["coercions"]), r["coercions"]
+    assert r["cleanup"] and all("Open" in line or "open" in line for line in r["cleanup"]), r["cleanup"]
+    assert r["x_windows"] == 1, r  # one Mousepad X window: the editor, no Save As / error dialog
+    assert r["atspi_dialogs"] == [], r
+    assert r["mousepad_frames"] == 1, r
+    for f in (R3_TARGET, R3_RESAVE):
+        f.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ child process (real display)
@@ -227,6 +259,156 @@ class LisbonPlanner(ScriptedPlanner):
         return self.parse({"app": app or "mousepad", "goal": g, "steps": steps})
 
 
+class Run3Planner(ScriptedPlanner):
+    """The real planner's plan and turns from real run 3 (engine-actions.jsonl, job 36125d47), scripted. The save
+    turn uses `type` for the file name (the planner's own choice) and ends with `state_assert file_exists ~/...`.
+    ``replan_step`` replays the real heals (an absolute path, a tree check with an inline state, the window title)
+    and counts the calls: a fixed engine makes none."""
+
+    HEALS = (
+        {"op": "state_assert", "checks": [{"kind": "file_exists", "arg": None}]},
+        {"op": "state_assert", "checks": [{"kind": "tree", "arg": None}]},
+        {"op": "state_assert", "checks": [{"kind": "tree", "arg": None}]},
+    )
+
+    def __init__(self, parse, target: Path, job: str):
+        super().__init__(parse)
+        self.target, self.job = target, job
+        self.replans = 0
+
+    def plan_milestones(self, goal, app, notes="", memory=None):
+        from o_engine.cu.schema import Milestone
+
+        if self.job == "leftover":
+            ms = (Milestone(goal="Look at the Open dialog of the editor", done_when={"role": "frame", "name": "*Mousepad"}),)
+        else:
+            ms = ((Milestone(goal="Make sure the text editor is open with an empty editable document focused",
+                             done_when={"role": "text", "name": "*"}),
+                   Milestone(goal="Type the 3-line Lisbon packing list into the editor",
+                             done_when={"role": "text", "text": R3_LINES[2]}))
+                  if self.job == "first" else ())
+            ms += (Milestone(goal=f"Open the Save dialog and save the document as {self.target.name} in the home "
+                                  f"directory (~/{self.target.name})",
+                             done_when=f"Is the document saved as {self.target.name}?"),)
+        try:
+            from o_engine.cu.planner import with_save_checks  # what Planner.plan_milestones applies
+        except ImportError:
+            return ms
+        return with_save_checks(goal, ms)
+
+    def next_steps(self, milestone, tree_summary, memory=None, notes="", interfaces=(), max_steps=5, app=""):
+        self.turns += 1
+        g = milestone.goal
+        if g.startswith("Make sure"):
+            steps = [
+                {"op": "wait", "for": {"role": "frame", "name": "Untitled*"}, "timeout_s": 10},
+                {"op": "find", "as": "editor", "target": {"role": "text", "name": "*"}},
+                {"op": "click", "ref": "editor"},
+                {"op": "assert", "target": {"role": "text", "name": "*", "state": "focused"}},
+            ]
+        elif g.startswith("Type"):
+            steps = [
+                {"op": "find", "as": "editor", "target": {"role": "text", "name": "*"}},
+                {"op": "click", "ref": "editor"},
+                {"op": "type", "ref": "editor", "text": "\n".join(R3_LINES)},
+                {"op": "screenshot_assert", "question": "Does the text editor show exactly three lines?"},
+            ]
+        elif g.startswith("Look"):
+            steps = [{"op": "key", "keys": "ctrl+o"},
+                     {"op": "wait", "for": {"role": "file chooser"}, "timeout_s": 15}]
+        else:
+            steps = [
+                {"op": "key", "keys": "ctrl+shift+s"},
+                {"op": "find", "as": "name_entry", "target": {"role": "text", "name": "Name*"}},
+                {"op": "type", "ref": "name_entry", "text": f"~/{self.target.name}"},
+                {"op": "key", "keys": "Return"},
+                {"op": "state_assert", "checks": [{"kind": "file_exists", "arg": f"~/{self.target.name}"}]},
+            ]
+        return self.parse({"app": app or "text-editor", "goal": g, "steps": steps})
+
+    def replan_step(self, script, index, reason, tree_summary="", **kw):
+        from o_engine.cu.planner import step_to_dict
+
+        args = (str(self.target), json.dumps({"role": "frame", "name": f"*{self.target.name} - Mousepad", "state": "visible"}),
+                json.dumps({"role": "frame", "name": f"*{self.target.name} - Mousepad"}))
+        step = json.loads(json.dumps(self.HEALS[min(self.replans, 2)]))
+        step["checks"][0]["arg"] = args[min(self.replans, 2)]
+        self.replans += 1
+        return step
+
+    def replace_step(self, script, index, step):
+        from o_engine.cu.planner import script_to_dict, step_to_dict
+
+        d = script_to_dict(script)
+        d["steps"] = [step_to_dict(s) for s in d["steps"]]
+        d["steps"][index] = step
+        return self.parse(d)
+
+
+def _lisbon3(backend, work_dir: Path, display) -> dict:
+    """Three jobs on the same editor: write + save (real run 3), re-save under a new name, leave an Open dialog."""
+    from o_engine.actionlog import ActionLog
+    from o_engine.cu.graph import CUDeps, build_cu_graph, run_cu_job
+    from o_engine.cu.judge import ClaudeCodeJudge, Judge, StateJudge, VLMJudge
+    from o_engine.cu.schema import parse_script
+    from o_engine.executor import Sandbox
+
+    count = work_dir / "fake-claude-calls"
+    fake = work_dir / "claude"
+    fake.write_text(FAKE_CLAUDE.format(python=sys.executable, count=str(count)))
+    fake.chmod(0o755)
+    log = ActionLog(str(work_dir / "data"))
+    sandbox_root = work_dir / "sandbox"
+    sandbox_root.mkdir(exist_ok=True)
+
+    def state_judge(sandbox, be):
+        try:
+            return StateJudge(Sandbox(sandbox_root), be, desktop_home=os.path.expanduser("~"))
+        except TypeError:  # an engine without desktop_home (the pre-fix reproduction)
+            return StateJudge(Sandbox(sandbox_root), be)
+
+    jobs, replans = [], 0
+    plan = (("first", R3_TARGET, "In the text editor, type a 3-line packing list for Lisbon (line 1: \"" + R3_LINES[0]
+             + "\", line 2: \"" + R3_LINES[1] + "\", line 3: \"" + R3_LINES[2] + "\"), then save the file as ~/"
+             + R3_TARGET.name + " (home directory, name " + R3_TARGET.name + ")."),
+            ("resave", R3_RESAVE, f"In the text editor, save the open document again as ~/{R3_RESAVE.name}."),
+            ("leftover", R3_RESAVE, "In the text editor, look at the Open dialog."))
+    for job, target, goal in plan:
+        planner = Run3Planner(parse_script, target, job)
+        judge = Judge(VLMJudge("http://127.0.0.1:9/v1", "none", timeout=2), ClaudeCodeJudge(str(fake)))
+        deps = CUDeps(backend_factory=lambda slot: backend, grounder=None, judge=judge, planner=planner,
+                      procedures=None, notes=None, log=log, max_heals=3, state_judge_factory=state_judge,
+                      sandbox_for=lambda job_id: Sandbox(sandbox_root))
+        backend.focus_existing("mousepad")
+        state = run_cu_job(build_cu_graph(deps), goal, "text-editor", f"r3-{job}", max_heals=3, max_model_calls=6)
+        replans += planner.replans
+        rows = [json.loads(x) for p in (work_dir / "data").glob("*.jsonl") for x in p.read_text().splitlines() if x]
+        mine = [r for r in rows if r.get("detail", {}).get("job_id") == f"r3-{job}"]
+        jobs.append({"job": job, "ok": state["ok"], "error": state["error"], "attempt": state["attempt"],
+                     "keys": [r["detail"]["step"]["keys"] for r in mine
+                              if r["kind"] == "tool" and r["detail"].get("op") == "key"],
+                     "steps": [s["command"][:90] + " :: " + (s["stderr_tail"] or s["stdout_tail"])[:120] for s in state["steps"]]})
+    rows = [json.loads(x) for p in (work_dir / "data").glob("*.jsonl") for x in p.read_text().splitlines() if x]
+    time.sleep(1)
+    x_windows = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "^mousepad$"],
+                               env={**os.environ, "DISPLAY": DISPLAY}, capture_output=True, text=True).stdout.split()
+    apps = [a for a in backend.tree_all() if a.name.lower() == "mousepad"]
+    try:
+        dialogs = [list(d) for d in backend.open_dialogs()]
+    except AttributeError:
+        dialogs = [[a.name, w.role, w.name] for a in apps for w in a.children if w.role in ("dialog", "alert", "file chooser")]
+    return {
+        "jobs": jobs,
+        "replan_calls": replans,
+        "coercions": [r["detail"]["coerced"] for r in rows if r.get("detail", {}).get("coerced")],
+        "cleanup": [r["detail"]["cleanup"] for r in rows if r.get("detail", {}).get("cleanup")],
+        "x_windows": len(x_windows),
+        "mousepad_frames": sum(1 for a in apps for w in a.children if w.role == "frame"),
+        "atspi_dialogs": dialogs,
+        "fake_cli_calls": len(count.read_text().split()) if count.exists() else 0,
+    }
+
+
 def _child(out_path: str, work: str, mode: str = "graph") -> None:
     from o_engine.actionlog import ActionLog
     from o_engine.display import IsolatedDisplay
@@ -261,6 +443,9 @@ def _child(out_path: str, work: str, mode: str = "graph") -> None:
 
         if mode == "saveas":
             Path(out_path).write_text(json.dumps(_saveas(AtspiBackend(display=DISPLAY, allow_pixels=True), work_dir)))
+            return
+        if mode == "lisbon3":
+            Path(out_path).write_text(json.dumps(_lisbon3(AtspiBackend(display=DISPLAY, allow_pixels=True), work_dir, display)))
             return
         from o_engine.cu.judge import ClaudeCodeJudge, Judge, VLMJudge
         from o_engine.cu.schema import parse_script

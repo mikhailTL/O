@@ -383,7 +383,8 @@ def _sha256_file(path: Any) -> str | None:
         return None
 
 
-def _parse_selector(arg: str) -> Target:
+def _parse_selector(arg: str) -> tuple[Target, str | None]:
+    """The target of a ``tree`` check and the state given inside it (``{"role":..,"state":"visible"}``), if any."""
     text = arg.strip()
     if text.startswith("{"):
         try:
@@ -392,12 +393,20 @@ def _parse_selector(arg: str) -> Target:
             raise ValueError(f"tree selector is not JSON: {e.msg}") from None
         if not isinstance(obj, dict):
             raise ValueError("tree selector must be a JSON object")
+        state = obj.pop("state", None)
+        if state is not None and not isinstance(state, str):
+            raise ValueError("tree selector state must be a string")
         try:
-            return Target.model_validate(obj)
+            return Target.model_validate(obj), state
         except ValidationError as e:
             problems = "; ".join(f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors())
             raise ValueError(f"tree selector invalid: {problems}") from None
-    return Target(name=text)
+    return Target(name=text), None
+
+
+# Credential folders under the desktop home that a file check never reads, even read-only.
+_PRIVATE_HOME_DIRS = frozenset({".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store",
+                                ".netrc", ".pgpass", ".git-credentials"})
 
 
 class StateJudge:
@@ -412,9 +421,12 @@ class StateJudge:
     PROBE_TIMEOUT_S = 10
     MAX_FILE_BYTES = 16 * 1024 * 1024
 
-    def __init__(self, sandbox: Any, backend: Any) -> None:
+    def __init__(self, sandbox: Any, backend: Any, desktop_home: str | None = None) -> None:
         self.sandbox = sandbox
         self.backend = backend
+        # The HOME of the apps on the computer-use display. A GUI save lands there (``~/lisbon.txt`` is
+        # /root/lisbon.txt), never in the job sandbox; file checks may read it (read-only), nothing else.
+        self.desktop_home = os.path.realpath(desktop_home) if desktop_home else None
         self.model_calls = 0  # always 0; exposed so wiring tests can assert it
 
     # ---------------------------------------------------------------- baseline
@@ -426,6 +438,19 @@ class StateJudge:
             key = str(p)
             try:
                 out[key] = _sha256_file(self.sandbox.resolve(key))
+            except Exception:
+                out[key] = None
+        return out
+
+    def stat(self, paths: Any) -> dict[str, list | None]:
+        """``[mtime_ns, size]`` of each path now (``None`` when absent / unreadable / refused): the job-start
+        record that tells a fresh save from a file that was already there."""
+        out: dict[str, list | None] = {}
+        for p in paths:
+            key = str(p)
+            try:
+                st = os.stat(self._path(key))
+                out[key] = [int(st.st_mtime_ns), int(st.st_size)]
             except Exception:
                 out[key] = None
         return out
@@ -446,10 +471,38 @@ class StateJudge:
         return JudgeVerdict(ok=True, reason=f"{len(items)} state check(s) hold", source="state")
 
     def _path(self, arg: str) -> Any:
+        desktop = self._desktop_path(arg)
+        if desktop is not None:
+            return desktop
         try:
             return self.sandbox.resolve(arg)
         except Exception as e:
             raise ValueError(f"path resolves outside sandbox ({e})") from None
+
+    def _desktop_path(self, arg: str) -> str | None:
+        """``~``/``~/x`` and absolute paths inside ``desktop_home`` (credential folders excepted), or None.
+
+        Real run 3: the GUI saved /root/lisbon.txt, but ``file_exists '~/lisbon.txt'`` was resolved inside
+        the job sandbox (``<sandbox>/~/lisbon.txt``) and failed; the heal then re-ran the whole save."""
+        home = self.desktop_home
+        text = arg.strip()
+        if not home:
+            if text == "~" or text.startswith("~/"):
+                raise ValueError("path is under ~ but no desktop home is configured for this job")
+            return None
+        if text == "~" or text.startswith("~/"):
+            candidate = os.path.join(home, text[2:]) if len(text) > 1 else home
+        elif os.path.isabs(text):
+            candidate = text
+        else:
+            return None
+        resolved = os.path.realpath(candidate)
+        if resolved != home and not resolved.startswith(home.rstrip(os.sep) + os.sep):
+            return None  # not under the desktop home: the sandbox rule decides (and refuses an escape)
+        rel = os.path.relpath(resolved, home).split(os.sep)
+        if rel and rel[0] in _PRIVATE_HOME_DIRS:
+            raise ValueError(f"path is in a private folder (~/{rel[0]}); file checks may not read it")
+        return resolved
 
     def _one(self, check: StateCheck, baseline: dict[str, str | None] | None) -> tuple[bool, str]:
         kind = check.kind
@@ -489,12 +542,13 @@ class StateJudge:
                 return False, "file unchanged since baseline"
             return True, "digest changed"
         if kind == "tree":
-            target = _parse_selector(check.arg)
+            target, inline_state = _parse_selector(check.arg)
             node = self.backend.find(target)
             if node is None:
                 return False, f"element not found in accessibility tree ({target.describe()})"
-            if check.expect:
-                want = check.expect.strip().lower()
+            expect = check.expect or inline_state
+            if expect:
+                want = expect.strip().lower()
                 have = {str(s).lower() for s in (getattr(node, "states", None) or [])}
                 if want not in have:
                     return False, f"state {want!r} not set (states: {sorted(have)})"

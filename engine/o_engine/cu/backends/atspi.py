@@ -33,7 +33,7 @@ MAX_NODES = 20_000
 _API_ACTIONS = ("click", "press", "activate", "jump", "toggle", "invoke")
 _INTERESTING_STATES = {
     "focused", "checked", "visible", "showing", "enabled", "sensitive", "selected", "expanded", "active",
-    "editable", "pressed", "focusable", "modal",
+    "editable", "pressed", "focusable", "modal", "single line", "multi line",
 }
 # Unnamed fields of these roles take the name of the label that labels them (GTK file chooser: the location
 # entry is `text ''` with a sibling `label 'Name:'` linked by LABELLED_BY; the planner asks for name 'Name*').

@@ -165,6 +165,10 @@ class CUState(TypedDict, total=False):
     steps_before_turn: int  # len(steps) when the current turn began (re-execution drops the rest)
     storable: bool  # False when the milestone turns could not be combined into one valid OScript
     turn_candidates: Optional[list]  # k candidate scripts for turn 1, picked by ``ground``
+    resume_index: Optional[int]  # set by ``heal``: the next run starts at the replaced step, not at step 0
+    file_baseline: dict  # path -> [mtime_ns, size] | None at plan time, for every file the job must save
+    dialogs_at_start: list  # (app, role, name) of the dialogs already open when the job began (left alone)
+    unstorable: bool  # a turn was accepted on its state check after a step failed: not a clean procedure
 
 
 @dataclass
@@ -272,17 +276,27 @@ def step_record(result: Any, index: int | None = None, script_step: Any = None) 
 
 def _run_is_loop(run: Any, records: list[dict]) -> bool:
     """True when the run stopped on the loop breaker (``StepResult.status == "loop"``)."""
-    failed = _get(run, "failed_index")
-    if failed is None or not 0 <= int(failed) < len(records):
-        return False
-    return records[int(failed)].get("status") == "loop"
+    rec = _record_at(records, _get(run, "failed_index"))
+    return rec is not None and rec.get("status") == "loop"
+
+
+def _record_at(records: list[dict], index: Any) -> dict | None:
+    """The row of script step ``index`` (a resumed run's rows do not start at 0)."""
+    if index is None:
+        return None
+    for rec in records:
+        if rec.get("index") == int(index):
+            return rec
+    return None
 
 
 def run_records(run: Any, script: Any) -> list[dict]:
     steps = _script_steps(script)
     rows: list[dict] = []
-    for index, row in enumerate(list(_get(run, "steps") or [])):
-        rows.append(step_record(row, index, steps[index] if index < len(steps) else None))
+    for pos, row in enumerate(list(_get(run, "steps") or [])):
+        idx = _get(row, "index")
+        index = int(idx) if idx is not None else pos  # a resumed run's rows start at the resume index
+        rows.append(step_record(row, index, steps[index] if 0 <= index < len(steps) else None))
     return rows
 
 
@@ -614,6 +628,40 @@ def build_cu_graph(deps: CUDeps):
                             runner=deps.runner, sandbox=sandbox,
                             display=getattr(backend, "display", None), interface_store=deps.interface_store)
 
+    def open_dialogs() -> list:
+        fn = getattr(deps.backend_factory(0), "open_dialogs", None)
+        if not callable(fn):
+            return []
+        try:
+            return [list(row) for row in fn()]
+        except Exception:  # noqa: BLE001 - no tree, nothing to remember
+            return []
+
+    def close_job_dialogs(state: CUState) -> list[str]:
+        """Close the dialogs this job left open (any not open when it began), through the a11y tree, and log it."""
+        backend = deps.backend_factory(0)
+        fn = getattr(backend, "close_dialogs", None)
+        if not callable(fn) or not callable(getattr(backend, "open_dialogs", None)):
+            return []
+        keep = [tuple(row) for row in (state.get("dialogs_at_start") or [])]
+        try:
+            done = list(fn(keep) or [])
+        except Exception as e:  # noqa: BLE001 - cleanup never changes the outcome
+            log.record("note", f"{state['id']}: dialog cleanup failed ({type(e).__name__}: {e})", job_id=state["id"])
+            return []
+        for line in done:
+            log.record("note", f"{state['id']}: closed a dialog left open by the job: {line}", job_id=state["id"],
+                       cleanup=line)
+        if done:
+            try:
+                left = [list(r) for r in backend.open_dialogs() if tuple(r) not in keep]
+            except Exception:  # noqa: BLE001
+                left = []
+            if left:
+                log.record("note", f"{state['id']}: {len(left)} dialog(s) still open after cleanup", job_id=state["id"],
+                           dialogs=left)
+        return done
+
     def tree_summary(slot: int, window: Any = None) -> str:
         backend = deps.backend_factory(slot)
         try:
@@ -645,7 +693,8 @@ def build_cu_graph(deps: CUDeps):
         max_heals = int(state.get("max_attempts") or deps.max_heals)
         memory = state.get("memory") or WorkingMemory.from_goal(state["goal"])
         out = {"phase": "context", "notes_text": notes_text, "tree_summary": summaries[0],
-               "tree_summaries": summaries, "max_attempts": max_heals, "memory": memory, "infeasible": False}
+               "tree_summaries": summaries, "max_attempts": max_heals, "memory": memory, "infeasible": False,
+               "dialogs_at_start": open_dialogs()}
         if has_stored_procedure(state):
             # I3 / P1: a replay makes zero model calls, so the gate (one model question) is for fresh goals only.
             log.record("note", f"{state['id']}: feasibility skipped: stored procedure", job_id=state["id"],
@@ -703,6 +752,7 @@ def build_cu_graph(deps: CUDeps):
             if milestones:
                 log.record("graph", f"{state['id']}: planned {len(milestones)} milestone(s)", job_id=state["id"],
                            phase="plan", milestones=[str(_get(m, "goal") or "")[:120] for m in milestones])
+                baseline = file_baseline(state, milestones)
                 script = next_turn_script(state, milestones[0], 0, memory, 1, defer_pick=True)
                 candidates = script if isinstance(script, list) else None
                 if candidates:
@@ -710,7 +760,8 @@ def build_cu_graph(deps: CUDeps):
                 return {"phase": "plan", "cached": False, "script": script, "scores": [], "procedure": None,
                         "turn_candidates": candidates,
                         "parent_id": None, "persisted": False, "milestones": milestones, "milestone_index": 0,
-                        "turns": 1, "turn_scripts": [], "steps_before_turn": 0, "storable": True, "memory": memory}
+                        "turns": 1, "turn_scripts": [], "steps_before_turn": 0, "storable": True, "memory": memory,
+                        "file_baseline": baseline}
             log.record("note", f"{state['id']}: planner returned no milestones; one-shot plan", job_id=state["id"])
         script = deps.planner.plan(goal, app, state.get("tree_summary", ""))
         return {"phase": "plan", "cached": False, "script": script, "scores": [], "procedure": None,
@@ -792,10 +843,14 @@ def build_cu_graph(deps: CUDeps):
         out["ground"] = result
         return out
 
-    def run_once(state: CUState, config: RunnableConfig, script: Any, offset: int = 0) -> tuple[Any, list[dict], dict]:
-        """Run ``script`` on slot 0; returns (runner, records, run dict with loop/baseline evidence)."""
+    def run_once(state: CUState, config: RunnableConfig, script: Any, offset: int = 0,
+                 start: int = 0) -> tuple[Any, list[dict], dict]:
+        """Run ``script`` on slot 0 from step ``start``; returns (runner, records, run dict with loop/baseline evidence)."""
         rn = runner(0, state["id"])
-        run = rn.run(script, state["id"])
+        if start and not _accepts_kwarg(rn.run, "start"):
+            log.record("note", f"{state['id']}: runner cannot resume; re-running from step 0", job_id=state["id"])
+            start = 0
+        run = rn.run(script, state["id"], start=start) if start else rn.run(script, state["id"])
         records = run_records(run, script)
         for rec in records:
             genui.ui_step(_tracker(config), offset + int(rec["index"] or 0), rec["command"],
@@ -803,13 +858,14 @@ def build_cu_graph(deps: CUDeps):
         failed_index = _get(run, "failed_index")
         ok = bool(_get(run, "ok", False))
         error = None
-        if failed_index is not None and 0 <= int(failed_index) < len(records):
-            error = records[int(failed_index)].get("stderr_tail") or ""
+        failed_rec = _record_at(records, failed_index)
+        if failed_rec is not None:
+            error = failed_rec.get("stderr_tail") or ""
         loop = _run_is_loop(run, records)
         evidence_fn = getattr(rn, "loop_evidence", None)
         baseline_fn = getattr(rn, "baseline", None)
         info = {
-            "ok": ok, "failed_index": failed_index, "error": error, "loop": loop,
+            "ok": ok, "failed_index": failed_index, "error": error, "loop": loop, "start": start,
             "loop_evidence": list(evidence_fn() or []) if (loop and callable(evidence_fn)) else [],
             "baselines": {int(rec["index"] or i): baseline_fn(int(rec["index"] or i)) for i, rec in enumerate(records)}
             if callable(baseline_fn) else {},
@@ -824,12 +880,83 @@ def build_cu_graph(deps: CUDeps):
         done_when = _get(milestone, "done_when")
         if done_when is None:
             return {"ok": True, "reason": "milestone declares no done_when", "source": "none"}
+        if isinstance(done_when, (tuple, list)):
+            return state_checks_verdict(state, done_when)
         if isinstance(done_when, str):
             if deps.judge is None:
                 return {"ok": True, "reason": "no judge configured", "source": "none"}
             backend = deps.backend_factory(0)
             return _judge_answer(deps.judge, _screenshot(backend), done_when, tree=backend.tree, final=False)
         return _a11y_check(deps.backend_factory(0), done_when)
+
+    def state_checks_verdict(state: CUState, checks: Any) -> dict:
+        """``StateJudge.verify`` of ``checks`` (no model call), plus freshness: a ``file_exists`` on a file that
+        was already there at plan time with the same mtime and size proves nothing about this job's save."""
+        backend = deps.backend_factory(0)
+        sj = state_judge_for(state["id"], backend)
+        if sj is None:
+            return {"ok": True, "reason": "no state judge configured", "source": "none"}
+        checks = list(checks)
+        v = sj.verify(checks, state["id"], None)
+        if not bool(_get(v, "ok")):
+            return {"ok": False, "reason": str(_get(v, "reason") or ""), "source": "state"}
+        baseline = state.get("file_baseline") or {}
+        stat = getattr(sj, "stat", None)
+        stale = []
+        for c in checks:
+            if _get(c, "kind") != "file_exists" or str(_get(c, "expect") or "").lower() == "false":
+                continue
+            arg = str(_get(c, "arg"))
+            before = baseline.get(arg)
+            if before is not None and callable(stat) and stat([arg]).get(arg) == before:
+                stale.append(arg)
+        if stale:
+            return {"ok": False, "source": "state",
+                    "reason": f"{', '.join(stale)} unchanged since the job started (no save in this job yet)"}
+        return {"ok": True, "reason": str(_get(v, "reason") or ""), "source": "state"}
+
+    def goal_file_verdict(state: CUState) -> dict | None:
+        """The goal's own end state for a save/export goal: every target file it names exists and was written
+        during this job. None when the goal names no file or no state judge is configured."""
+        try:
+            from .planner import save_targets
+        except ImportError:
+            return None
+        targets = save_targets(state.get("goal") or "")
+        if not targets or not callable(deps.state_judge_factory):
+            return None
+        try:
+            from .schema import StateCheck
+            checks = [StateCheck(kind="file_exists", arg=t) for t in targets]
+        except Exception:  # noqa: BLE001
+            return None
+        v = state_checks_verdict(state, checks)
+        log.record("verify", f"{state['id']}: goal file check {'passed' if v['ok'] else 'failed'}: {', '.join(targets)}",
+                   job_id=state["id"], targets=targets, **v)
+        return v
+
+    def file_baseline(state: CUState, milestones: list) -> dict:
+        """[mtime_ns, size] at plan time of every file the job must save (goal targets + file_exists checks)."""
+        try:
+            from .planner import save_targets
+            paths = list(save_targets(state.get("goal") or ""))
+        except ImportError:
+            paths = []
+        for m in milestones or []:
+            done = _get(m, "done_when")
+            if isinstance(done, (tuple, list)):
+                paths += [str(_get(c, "arg")) for c in done if _get(c, "kind") == "file_exists"]
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return {}
+        sj = state_judge_for(state["id"], deps.backend_factory(0))
+        stat = getattr(sj, "stat", None)
+        if not callable(stat):
+            return {}
+        try:
+            return dict(stat(paths))
+        except Exception:  # noqa: BLE001
+            return {}
 
     def remember(state: CUState, memory: Any, records: list[dict], turn: int) -> Any:
         """``memory.extract`` after a judged step through the planner's client, local model only: a client
@@ -855,8 +982,11 @@ def build_cu_graph(deps: CUDeps):
         script = state["script"]
         milestones = state.get("milestones")
         if milestones is None:
-            _, records, info = run_once(state, config, script)
-            return {"phase": "execute", "steps": records, "run": info, "failed_index": info["failed_index"]}
+            _, records, info = run_once(state, config, script, start=int(state.get("resume_index") or 0))
+            start = info["start"]
+            prior = [r for r in (state.get("steps") or []) if start and int(r.get("index") or 0) < start]
+            return {"phase": "execute", "steps": prior + records, "run": info, "failed_index": info["failed_index"],
+                    "resume_index": None}
         return execute_milestones(state, config, script, list(milestones))
 
     def execute_milestones(state: CUState, config: RunnableConfig, script: Any, milestones: list) -> dict:
@@ -867,19 +997,44 @@ def build_cu_graph(deps: CUDeps):
         memory = state.get("memory") or WorkingMemory.from_goal(state["goal"])
         passed = list(state.get("turn_scripts") or [])
         kept = int(state.get("steps_before_turn") or 0)
-        steps = list(state.get("steps") or [])[:kept]
+        # A healed turn resumes at the replaced step (``heal`` sets ``resume_index``): the rows of the steps
+        # before it, from the attempt that failed, stay; the steps themselves are not run again.
+        start = int(state.get("resume_index") or 0)
+        all_steps = list(state.get("steps") or [])
+        steps = all_steps[:kept]
+        unstorable = bool(state.get("unstorable"))
         max_turns = max(1, int(deps.max_turns or 1))
         decided: dict | None = None
+        steps_before = kept
+        last = len(milestones) - 1
         while True:
-            _, records, info = run_once(state, config, script, offset=len(steps))
-            steps_before = len(steps)
+            _, records, info = run_once(state, config, script, offset=steps_before, start=start)
+            if start and info["start"]:
+                steps.extend(r for r in all_steps[kept:] if int(r.get("index") or 0) < info["start"])
+            start = 0
             steps.extend(records)
             if not info["ok"]:
-                return {"phase": "execute", "steps": steps, "run": info, "failed_index": info["failed_index"],
-                        "script": script, "milestone_index": mi, "turns": turn, "memory": memory,
-                        "turn_scripts": passed, "steps_before_turn": steps_before}
-            passed.append(script)
-            verdict = judge_done_when(state, milestones[mi], mi)
+                # The job stops as soon as its state check passes: a failed step after the file was saved
+                # (a redundant re-check, a dialog that is already gone) is not a reason to heal and redo the save.
+                rescue = milestone_rescue(state, milestones, mi)
+                if rescue is None:
+                    return {"phase": "execute", "steps": steps, "run": info, "failed_index": info["failed_index"],
+                            "script": script, "milestone_index": mi, "turns": turn, "memory": memory,
+                            "turn_scripts": passed, "steps_before_turn": steps_before, "resume_index": None,
+                            "unstorable": unstorable}
+                log.record("verify", f"{job_id}: milestone {mi} done after turn {turn} although step "
+                           f"{info['failed_index']} failed ({rescue['reason'][:120]}); not healing",
+                           job_id=job_id, milestone=mi, turn=turn, failed_index=info["failed_index"], **rescue)
+                unstorable = True
+                info = {**info, "ok": True, "failed_index": None, "error": None}
+                verdict = rescue
+            else:
+                passed.append(script)
+                verdict = judge_done_when(state, milestones[mi], mi)
+                if not verdict["ok"] and mi == last:
+                    goal_v = goal_file_verdict(state)
+                    if goal_v is not None and goal_v["ok"]:
+                        verdict = goal_v
             log.record("verify", f"{job_id}: milestone {mi} {'done' if verdict['ok'] else 'not done'} after turn {turn}",
                        job_id=job_id, milestone=mi, turn=turn, **verdict)
             memory = remember(state, memory, records, turn)
@@ -902,10 +1057,17 @@ def build_cu_graph(deps: CUDeps):
             enter(state, "plan", config, turn=turn, milestone=mi)
             steps_before = len(steps)
             script = next_turn_script(state, milestones[mi], mi, memory, turn)
+        if decided["ok"]:
+            # The final verdict of a save/export goal is the file, not the window title.
+            goal_v = goal_file_verdict(state)
+            if goal_v is not None and not goal_v["ok"]:
+                decided = {"ok": False, "source": "state", "reason": f"goal file check failed: {goal_v['reason']}"}
         m = cu_meter.current()
         if decided["ok"] and m is not None and m.deferred:
             decided = final_goal_check(state, decided, m)
         combined, storable = _combine_scripts(deps.planner, state["app"], state["goal"], passed)
+        if unstorable:
+            storable = False
         if not storable:
             log.record("note", f"{job_id}: milestone turns do not combine into one procedure; nothing will be stored",
                        job_id=job_id, turns=len(passed))
@@ -913,7 +1075,21 @@ def build_cu_graph(deps: CUDeps):
         return {"phase": "execute", "steps": steps, "run": info, "failed_index": None,
                 "script": combined if (decided["ok"] and storable) else script, "milestone_index": mi,
                 "turns": turn, "memory": memory, "turn_scripts": passed, "steps_before_turn": steps_before,
-                "storable": storable}
+                "storable": storable, "resume_index": None, "unstorable": unstorable}
+
+    def milestone_rescue(state: CUState, milestones: list, mi: int) -> dict | None:
+        """After a failed step: the milestone's state checks (never a model question, never an a11y glob) or,
+        on the last milestone, the goal's file check. A passing verdict ends the milestone without a heal."""
+        done = _get(milestones[mi], "done_when")
+        if isinstance(done, (tuple, list)):
+            v = state_checks_verdict(state, done)
+            if v["ok"] and v["source"] == "state":
+                return v
+        if mi == len(milestones) - 1:
+            v = goal_file_verdict(state)
+            if v is not None and v["ok"]:
+                return v
+        return None
 
     def final_goal_check(state: CUState, decided: dict, m: Any) -> dict:
         """Some milestone or screen check was deferred (no local judge): one final goal question decides."""
@@ -972,8 +1148,9 @@ def build_cu_graph(deps: CUDeps):
         if not run.get("ok"):
             steps = state.get("steps") or []
             reason = run.get("error") or ""
-            if not reason and failed_index is not None and 0 <= int(failed_index) < len(steps):
-                reason = steps[int(failed_index)].get("stderr_tail") or ""
+            if not reason:
+                rec = _record_at(list(reversed(steps)), failed_index)  # the latest row of that step
+                reason = (rec or {}).get("stderr_tail") or ""
             kind = "looped" if run.get("loop") else "failed"
             result = {"ok": False, "error": f"step {failed_index} {kind}" + (f": {reason[:200]}" if reason else ""),
                       "reason": reason, "source": "executor", "goal": False, "loop": bool(run.get("loop"))}
@@ -998,6 +1175,13 @@ def build_cu_graph(deps: CUDeps):
                 failed_index = current_last
         else:
             result = {"ok": True, "error": None, "reason": "", "source": "none", "goal": True}
+        if result["ok"] and not run.get("decided"):
+            goal_v = goal_file_verdict(state)  # a save/export goal is judged by its file, not by the window
+            if goal_v is not None and not goal_v["ok"]:
+                result = {"ok": False, "error": f"goal not achieved: goal file check failed: {goal_v['reason'][:200]}",
+                          "reason": goal_v["reason"], "source": "state", "goal": False}
+                if failed_index is None:
+                    failed_index = current_last
         m = cu_meter.current()
         if not result["ok"] and m is not None and m.exhausted:
             result["error"] = f"{result['error'] or 'goal not achieved'}; {_cap_reason(m)}"
@@ -1041,7 +1225,7 @@ def build_cu_graph(deps: CUDeps):
                    loop=bool(loop_evidence), loop_evidence=loop_evidence)
         out: dict = {"phase": "heal", "script": new_script, "attempt": attempt, "healed_step": index,
                      "healed_reason": reason, "cached": False, "run": None, "failed_index": None,
-                     "persisted": False}
+                     "persisted": False, "resume_index": index}
         current_pid = state.get("procedure_id")
         if deps.procedures is not None and current_pid:
             # The script being healed is a stored version: persist v<N+1> now so lineage exists even if
@@ -1054,8 +1238,10 @@ def build_cu_graph(deps: CUDeps):
             log.record("cache", f"{state['id']}: stored healed procedure {new_pid}", job_id=state["id"],
                        procedure_id=new_pid, parent=current_pid, healed_step=index, attempt=attempt)
             out.update({"procedure_id": new_pid, "parent_id": current_pid, "procedure": stored, "persisted": True})
-        log.record("note", f"{state['id']}: re-executing the whole healed script from step 0 (ScriptRunner has no start index)",
-                   job_id=state["id"], healed_step=index, attempt=attempt)
+        # Resume at the replaced step. Real run 3 re-ran steps 0-3 (ctrl+shift+s, type, Return) after each
+        # heal of the step-4 check, appending the file name to the prefilled entry three times.
+        log.record("note", f"{state['id']}: resuming the healed script at step {index}; steps before it are not re-run",
+                   job_id=state["id"], healed_step=index, attempt=attempt, resume_index=index)
         return out
 
     def build_interface(state: CUState, stored: Any, pid: Optional[str]) -> None:
@@ -1111,6 +1297,8 @@ def build_cu_graph(deps: CUDeps):
 
     def report(state: CUState, config: RunnableConfig) -> dict:
         enter(state, "report", config, ok=bool(state.get("ok")))
+        if not state.get("infeasible"):
+            close_job_dialogs(state)
         ok = bool(state.get("ok"))
         error = state.get("error")
         if state.get("infeasible"):
@@ -1194,6 +1382,10 @@ def initial_state(
         "steps_before_turn": 0,
         "storable": True,
         "turn_candidates": None,
+        "resume_index": None,
+        "file_baseline": {},
+        "dialogs_at_start": [],
+        "unstorable": False,
         "candidates": max(1, int(candidates or 1)),
         "scores": [],
         "goal": goal,

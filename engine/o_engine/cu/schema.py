@@ -320,12 +320,31 @@ class OScript(BaseModel):
 
 class Milestone(BaseModel):
     """One sub-goal of a reactive plan (P1). ``done_when`` is a ``Target`` that must be present in the
-    accessibility tree when the milestone is done, or a yes/no question for the screenshot judge."""
+    accessibility tree when the milestone is done, state checks (``{"checks": [...]}`` or a list of
+    ``StateCheck``; e.g. ``file_exists`` on a saved file) that ``StateJudge`` verifies with no model call,
+    or a yes/no question for the screenshot judge."""
 
     model_config = _STRICT
 
     goal: str = Field(min_length=1, max_length=MAX_TEXT)
-    done_when: Target | Annotated[str, Field(min_length=1, max_length=MAX_TEXT)]
+    done_when: tuple[StateCheck, ...] | Target | Annotated[str, Field(min_length=1, max_length=MAX_TEXT)]
+
+    @field_validator("done_when", mode="before")
+    @classmethod
+    def _checks_form(cls, v: Any) -> Any:
+        if isinstance(v, dict) and "checks" in v:
+            if set(v) != {"checks"}:
+                raise ValueError("a checks done_when holds only 'checks'")
+            v = v["checks"]
+        if isinstance(v, list):
+            if not v or len(v) > MAX_CHECKS:
+                raise ValueError(f"done_when checks: 1 to {MAX_CHECKS}")
+            return tuple(StateCheck.model_validate(c) if isinstance(c, dict) else c for c in v)
+        return v
+
+    @property
+    def checks(self) -> tuple[StateCheck, ...] | None:
+        return self.done_when if isinstance(self.done_when, tuple) else None
 
 
 def parse_script(raw: Any) -> OScript:

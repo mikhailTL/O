@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import Iterable, Iterator
@@ -172,6 +173,14 @@ def focused_roots(roots: list[Node]) -> list[Node]:
     return list(roots)
 
 
+# Buttons that leave the document as it was: never "No"/"Don't save" (they would discard edits).
+_CLOSE_BUTTONS = ("cancel", "close", "ok", "dismiss")
+
+
+def _is_open_dialog(window: Node) -> bool:
+    return window.role in MODAL_ROLES and ("showing" in window.states or "visible" in window.states)
+
+
 def dialog_text(node: Node) -> str:
     return " ".join(f"{n.name} {n.text}" for n in node.walk()).lower()
 
@@ -271,6 +280,68 @@ class CUBackend(ABC):
                         break
                     done.append(f"{known.label} ({root.name or '?'}): clicked {pick.name!r}")
                     break
+        return done
+
+    def open_dialogs(self) -> list[tuple[str, str, str]]:
+        """``(app, role, name)`` of every dialog / alert / file chooser on screen, across all applications."""
+        out: list[tuple[str, str, str]] = []
+        for root in self.tree_all():
+            app = root.name if root.role == "application" else ""
+            for win in (root.children if root.role == "application" else [root]):
+                if _is_open_dialog(win):
+                    out.append((app, win.role, win.name))
+        return out
+
+    def close_dialogs(self, keep: Iterable[tuple[str, str, str]] = (), max_rounds: int = 6,
+                      settle: float = 0.4) -> list[str]:
+        """Close every open dialog that is not in ``keep`` (a multiset of ``open_dialogs()`` rows), topmost
+        first: its Cancel / Close / OK button through the a11y tree, else Escape on it (pixels only).
+        One dialog per round, then the tree is read again (an error alert sits over the Save As it came from).
+        Returns one line per dialog acted on."""
+        import time as _time
+
+        done: list[str] = []
+        stuck: set[tuple[str, str, str]] = set()
+        for _ in range(max(1, max_rounds)):
+            budget = Counter(keep)
+            pick: tuple[str, Node] | None = None
+            for root in self.tree_all():
+                app = root.name if root.role == "application" else ""
+                wins = [w for w in (root.children if root.role == "application" else [root]) if _is_open_dialog(w)]
+                # alerts before the dialogs they sit on
+                for win in sorted(wins, key=lambda w: 0 if w.role == "alert" else 1):
+                    key = (app, win.role, win.name)
+                    if budget[key] > 0:
+                        budget[key] -= 1
+                        continue
+                    if key in stuck:
+                        continue
+                    pick = (app, win)
+                    break
+                if pick:
+                    break
+            if pick is None:
+                break
+            app, win = pick
+            key = (app, win.role, win.name)
+            buttons = {_button_name(b): b for b in win.walk() if b.role in ("push button", "button")}
+            button = next((buttons[b] for b in _CLOSE_BUTTONS if b in buttons), None)
+            try:
+                if button is not None:
+                    self.click(button)
+                    done.append(f"{win.role} {win.name!r} ({app or '?'}): clicked {button.name!r}")
+                else:
+                    try:
+                        self.focus_window(win)
+                    except BackendError:
+                        pass
+                    self.key("Escape")
+                    done.append(f"{win.role} {win.name!r} ({app or '?'}): pressed Escape")
+            except BackendError as e:
+                done.append(f"{win.role} {win.name!r} ({app or '?'}): could not close ({e})")
+                stuck.add(key)
+            if settle:
+                _time.sleep(settle)
         return done
 
     def focused_window(self) -> Node | None:

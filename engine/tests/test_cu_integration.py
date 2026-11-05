@@ -439,8 +439,10 @@ def test_never_changing_tree_stops_with_loop_after_three_repeats(tmp_path):
     v1_bytes = (store.dir / v1.path).read_bytes()
     state = run_cu_job(graph, GOAL, APP, "lp-1", max_heals=2)
     assert state["ok"] is False and state["attempt"] == 2
-    assert "step 2 looped" in state["error"] and "loop" in state["error"] and "gave up after 2 heal(s)" in state["error"]
+    # each heal resumes at the replaced step (steps before it are never re-run): refused at 2, then 4, then 6
+    assert "step 6 looped" in state["error"] and "loop" in state["error"] and "gave up after 2 heal(s)" in state["error"]
     assert state["steps"][-1]["status"] == "loop" and len(state["steps"][-1]["evidence"]) == 3
+    assert [s["index"] for s in state["steps"]] == [0, 1, 2, 3, 4, 5, 6]
     assert len(backend.actions) == 2 * 3, "two keys execute per attempt; the third is refused each time"
     assert planner.calls["replan_step"] == 2
     assert all(ev and len(ev) == 3 for ev in planner.loop_evidence_seen), planner.loop_evidence_seen

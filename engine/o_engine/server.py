@@ -63,6 +63,12 @@ def _granted_folders_env(raw: str) -> list[str]:
     return [i.strip() for i in items if isinstance(i, str) and i.strip() and os.path.isabs(i.strip())]
 
 
+def cu_desktop_home() -> str:
+    """The HOME of the apps on the computer-use display: a ``launch`` step inherits the engine's environment,
+    so a GUI save to ``~/x`` lands under the engine's own HOME (``O_CU_DESKTOP_HOME`` overrides)."""
+    return os.environ.get("O_CU_DESKTOP_HOME") or os.path.expanduser("~")
+
+
 def resolve_workspace(requested: Any, granted: list[str]) -> Path:
     """The real path of ``requested`` when it IS one of the granted folders (after resolving symlinks and
     ``..`` on both sides) and is an existing directory; otherwise ``SchemaViolation``. A subfolder, a parent
@@ -436,7 +442,7 @@ class EngineDeps:
                     displays=list(self.cu_displays),
                     ui=self.ui,
                     feasibility=PerJobFeasibilityGate(model, self.cu_backend, self.cu_sandbox, self.log) if s.cu_feasibility else None,
-                    state_judge_factory=lambda sandbox, backend: StateJudge(sandbox, backend),
+                    state_judge_factory=lambda sandbox, backend: StateJudge(sandbox, backend, desktop_home=cu_desktop_home()),
                     interface_store=store,
                     interface_builder=builder,
                     runner=self.runner,

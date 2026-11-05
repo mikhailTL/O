@@ -223,7 +223,9 @@ def test_key_with_text_is_typed_and_the_coercion_logged(tmp_path):
 
 
 def test_planner_prompt_says_key_is_for_chords():
-    assert "key is only for chords like ctrl+s, Return, Escape; use type for any text, paths and filenames." in STATIC_PREFIX
+    assert "key is only for chords like ctrl+s, Return, Escape; never put text, paths or filenames in key." in STATIC_PREFIX
+    # real run 3: a file name typed into the prefilled Save As entry was appended; set_value replaces
+    assert "set_value REPLACES a field's whole value" in STATIC_PREFIX and "type INSERTS at the cursor" in STATIC_PREFIX
     assert 'Omit a field rather than giving it ""' in STATIC_PREFIX
 
 

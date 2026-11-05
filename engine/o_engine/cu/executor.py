@@ -218,7 +218,10 @@ class ScriptRunner:
         except Exception:  # noqa: BLE001 - a missing baseline fails the check later, never the run
             return {}
 
-    def run(self, script: OScript, job_id: str) -> RunResult:
+    def run(self, script: OScript, job_id: str, start: int = 0) -> RunResult:
+        """Run ``script.steps[start:]``. ``start > 0`` resumes a healed script at the replaced step: the steps
+        before it already ran (re-running a ``key ctrl+shift+s`` / ``type`` would redo the save), so they are
+        skipped, and only the refs that the remaining steps use are re-found, through the tree, without acting."""
         refs: dict[str, Node] = {}
         results: list[StepResult] = []
         self._ring.clear()
@@ -226,7 +229,12 @@ class ScriptRunner:
         self._baselines = {}
         self._baseline = self._snapshot_baseline(script)
         self._prev_op = None
+        start = max(0, min(int(start or 0), len(script.steps) - 1))
+        if start:
+            self._rebind_refs(script, start, refs, job_id)
         for i, step in enumerate(script.steps):
+            if i < start:
+                continue
             self._baselines[i] = dict(self._baseline)
             result = self._run_step(script, i, step, refs, job_id, index=i)
             self._prev_op = step.op
@@ -234,6 +242,35 @@ class ScriptRunner:
             if not result.ok:
                 return RunResult(ok=False, steps=tuple(results), failed_index=i)
         return RunResult(ok=True, steps=tuple(results), failed_index=None)
+
+    def _rebind_refs(self, script: OScript, start: int, refs: dict[str, Node], job_id: str) -> None:
+        """Re-find (tree only, no action, no vision) every ref bound before ``start`` that a later step uses."""
+        used: set[str] = set()
+        for step in script.steps[start:]:
+            ref = getattr(step, "ref", None)
+            if ref:
+                used.add(ref)
+            for t in (getattr(step, "target", None), getattr(step, "for_", None)):
+                if isinstance(t, Target) and t.within:
+                    used.add(t.within)
+        found: list[str] = []
+        missing: list[str] = []
+        for step in script.steps[:start]:
+            if not isinstance(step, FindStep) or step.as_ not in used:
+                continue
+            try:
+                node = self.backend.find(step.target, within=self._scope(step.target, refs))
+            except Exception:  # noqa: BLE001 - an unbound ref fails the step that uses it
+                node = None
+            if node is None:
+                missing.append(step.as_)
+            else:
+                refs[step.as_] = node
+                found.append(step.as_)
+        self.log.record("note", f"{job_id}: resuming at step {start}; steps 0-{start - 1} already ran and are not "
+                        f"repeated" + (f"; re-found {', '.join(found)}" if found else "")
+                        + (f"; could not re-find {', '.join(missing)}" if missing else ""),
+                        job_id=job_id, start=start, refs=found, missing=missing)
 
     def _run_step(self, script: OScript, i: int, step: Any, refs: dict[str, Node], job_id: str, index: int = 0) -> StepResult:
         started = self._clock()
@@ -367,6 +404,15 @@ class ScriptRunner:
             node = self._ref(refs, step.ref) if step.ref else None
             if node is not None and node.synthetic:
                 return None, self._pixel_fill(node, step.text, replace=False, job_id=job_id, index=index)
+            why = self._type_replaces(node, step.text) if node is not None else None
+            if why:
+                # Real run 3: `type ~/lisbon.txt` into the Save As name entry appended to the prefilled
+                # "lisbon.txt" on each re-run ("lisbon.txt~/lisbon.txt~/..."). A file name is a whole value.
+                self.backend.set_value(node, step.text)
+                note = f"type into {why}: replaced its value (set_value) instead of inserting at the cursor"
+                self.log.record("note", f"{job_id}: step {index}: {note}", job_id=job_id, index=index,
+                                coerced="type->set_value", node=node.id)
+                return None, note
             self.backend.type_text(node, step.text)
             return None, None
         if isinstance(step, KeyStep):
@@ -408,6 +454,30 @@ class ScriptRunner:
         if isinstance(step, CallStep):
             return None, self._call(script.app, step)
         raise _StepFailure(f"unsupported op {step.op!r}")
+
+    def _type_replaces(self, node: Node, text: str) -> str | None:
+        """Why a ``type`` into ``node`` must replace its value rather than insert at the cursor, or None.
+
+        The rule (also in the planner prompt): ``set_value`` replaces a field's value, ``type`` inserts at the
+        cursor. A ``type`` is still a replacement when it targets a single-line entry inside a file chooser /
+        save-open dialog (the file-name field), or a single-line entry that already holds text and the typed
+        text is a whole value (a path or a file name). Multi-line editors are never coerced."""
+        if node.role not in _ENTRY_ROLES or "\n" in text or not text.strip():
+            return None
+        states = {s.lower() for s in (node.states or [])}
+        if "multi line" in states:
+            return None
+        try:
+            chain = _ancestors(self.backend.tree(), node.id)
+        except Exception:  # noqa: BLE001 - no tree: keep insert semantics
+            chain = []
+        in_dialog = next((a for a in chain if _is_file_dialog(a)), None)
+        if in_dialog is not None:
+            return f"the file-name entry of {in_dialog.role} {in_dialog.name!r}"
+        single = "single line" in states or any(a.role in ("dialog", "alert") for a in chain)
+        if single and (node.text or "").strip() and _looks_like_whole_value(text):
+            return f"single-line entry {node.name!r} that already held text"
+        return None
 
     def _require_pixels_for(self, node: Node, what: str) -> None:
         if not getattr(self.backend, "allow_pixels", False):
@@ -685,6 +755,41 @@ class ScriptRunner:
 
 
 # ------------------------------------------------------------------ helpers
+
+_ENTRY_ROLES = frozenset({"text", "entry", "editbar", "combo box"})
+_FILE_DIALOG_WORDS = ("save", "open", "export", "import", "file", "choose", "select", "rename", "location")
+
+
+def _ancestors(nodes: Any, node_id: str) -> list[Node]:
+    """The chain of ancestors of the node with ``node_id`` (nearest first), or [] when it is not in ``nodes``."""
+    stack: list[tuple[Node, tuple[Node, ...]]] = [(n, ()) for n in reversed(list(nodes or []))]
+    while stack:
+        node, chain = stack.pop()
+        if node.id == node_id:
+            return list(reversed(chain))
+        for child in reversed(node.children or []):
+            stack.append((child, (*chain, node)))
+    return []
+
+
+def _is_file_dialog(node: Node) -> bool:
+    if node.role == "file chooser":
+        return True
+    if node.role not in ("dialog", "alert"):
+        return False
+    name = (node.name or "").lower()
+    return any(w in name for w in _FILE_DIALOG_WORDS)
+
+
+def _looks_like_whole_value(text: str) -> bool:
+    """A path or a file name (``~/lisbon.txt``, ``/tmp/a``, ``report.csv``): something a field holds whole."""
+    t = text.strip()
+    if t.startswith(("~", "/", "./", "../")) or "/" in t or "\\" in t:
+        return True
+    import re as _re
+
+    return bool(_re.fullmatch(r"[\w .()\-]+\.[A-Za-z0-9]{1,8}", t))
+
 
 
 class _ApiBackend:

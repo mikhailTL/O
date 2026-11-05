@@ -56,13 +56,19 @@ _STEP_VOCABULARY = (
     '"target_directory":"<absolute dir>","timeout_seconds":<int>}}\n'
     '  {"op":"call","fn":"<app>.<function>","args":{"<name>":<value>}}\n'
     "Target fields: role, name (glob), text, index, within (ref). Omit a field rather than giving it \"\".\n"
-    "key is only for chords like ctrl+s, Return, Escape; use type for any text, paths and filenames."
+    "key is only for chords like ctrl+s, Return, Escape; never put text, paths or filenames in key.\n"
+    "set_value REPLACES a field's whole value: use it for every field you fill with a complete value (a file\n"
+    "name or path in a Save/Open dialog, a search box, a form field). type INSERTS at the cursor: use it only to\n"
+    "add text to a document or editor. A type into the file-name entry of a file chooser is run as set_value.\n"
+    "A path under the home folder may be written ~/name; state_assert file checks read it where the app saved it."
 )
 
 PROMPT_RULES = (
     "Rules:\n"
     "- Prefer op script for file, format and bulk work; use the GUI only for what the app exposes solely in its UI.\n"
-    "- Follow every script, save, export or submit step with a state_assert (or a tree assert) that proves its effect.\n"
+    "- Follow every script, save, export or submit step with a state_assert (or a tree assert) that proves its effect;\n"
+    "  after a save or export that is a state_assert file_exists on the target path (not the window title).\n"
+    "- Once a check proves the milestone, stop: never re-open a dialog or redo a save that already succeeded.\n"
     "- Prefer accessibility targets taken from the tree summary. Use find before click/type/set_value/invoke.\n"
     "- When an available function fits the work, use op call instead of GUI steps.\n"
     "- Never explain."
@@ -96,9 +102,11 @@ MILESTONES_SYSTEM_PROMPT = (
     "You split a desktop automation goal into ordered milestones for a reactive executor.\n"
     "Respond with ONLY one JSON object, no prose, no markdown, no code fences:\n"
     '{"milestones": [{"goal": "<sub-goal>", "done_when": <check>}, ...]}\n'
-    "<check> is either an accessibility target object {\"role\": \"<role>\", \"name\": \"<glob>\"} that must be\n"
-    f"present when the milestone is done, or a yes/no question string for a screenshot judge. 1 to {MAX_MILESTONES}\n"
-    "milestones, each independently checkable, in execution order. Never explain."
+    "<check> is an accessibility target object {\"role\": \"<role>\", \"name\": \"<glob>\"} that must be\n"
+    "present when the milestone is done, state checks {\"checks\": [{\"kind\": \"file_exists\", \"arg\": \"<path>\"}]},\n"
+    "or a yes/no question string for a screenshot judge. A milestone that saves or exports a file is done when\n"
+    "the file exists: its check is {\"checks\": [{\"kind\": \"file_exists\", \"arg\": \"<the target path>\"}]}, never\n"
+    f"the window title. 1 to {MAX_MILESTONES} milestones, each independently checkable, in execution order. Never explain."
 )
 
 NEXT_STEPS_SYSTEM_PROMPT = (
@@ -465,7 +473,7 @@ class Planner:
         milestone (the whole goal, checked by ``goal_question``) so the graph behaves as plan-once."""
         from .schema import Milestone
 
-        fallback = (Milestone(goal=goal, done_when=goal_question(goal)),)
+        fallback = with_save_checks(goal, (Milestone(goal=goal, done_when=goal_question(goal)),))
         notes_text = self._notes_for(app) if notes is None else notes
         try:
             raw = json.loads(self.complete_json(MILESTONES_SYSTEM_PROMPT, build_milestones_prompt(goal, app, notes_text, memory)))
@@ -482,14 +490,14 @@ class Planner:
                 return fallback
             row = dict(row)
             done = row.get("done_when")
-            if isinstance(done, dict) and "state" in done:
+            if isinstance(done, dict) and "state" in done and "checks" not in done:
                 done = {k: v for k, v in done.items() if k != "state"}
                 row["done_when"] = done
             try:
                 out.append(Milestone.model_validate(row))
             except Exception:
                 return fallback
-        return tuple(out)
+        return with_save_checks(goal, tuple(out))
 
     def next_steps(
         self,
@@ -590,6 +598,48 @@ class Planner:
         steps[index] = step_to_dict(step)
         sdict["steps"] = steps
         return self.parse_script(json.dumps(sdict))
+
+
+# "save it as ~/lisbon.txt", "export to /tmp/report.pdf", "save the file as notes.md": the path a save/export
+# goal names. Only an absolute or ~/ path with an extension counts ("save time" never matches; a bare
+# "notes.md" has no knowable folder, so it is left to the planner's own checks).
+_SAVE_TARGET = re.compile(
+    r"\b(?:save[sd]?|saving|export(?:s|ed|ing)?|write|writes|written)\b[^.;\n]{0,80}?\b(?:as|to|into|in)\s+"
+    r"[`'\"]?((?:~/|/)[\w.\-~/]*[\w\-]\.[A-Za-z0-9]{1,8})\b",
+    re.IGNORECASE,
+)
+_SAVE_WORDS = re.compile(r"\b(save|saving|saved|export|exporting|exported|write .* file)\b", re.IGNORECASE)
+
+
+def save_targets(goal: str) -> list[str]:
+    """The file paths a save / export goal names, in order, without duplicates (``[]`` when none)."""
+    out: list[str] = []
+    for m in _SAVE_TARGET.finditer(goal or ""):
+        path = m.group(1).rstrip(".,;:)'\"`")
+        if path and path not in out:
+            out.append(path)
+    return out
+
+
+def with_save_checks(goal: str, milestones: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Make a save/export goal checkable from state: the milestone that saves (the first whose goal says
+    save/export, else the last) gets ``done_when = file_exists <target>`` for each target the goal names,
+    unless some milestone already checks those files. Real run 3: the save milestone was judged by the
+    window title, which still read ``lisbon.txt`` after three failed re-saves."""
+    from .schema import Milestone, StateCheck
+
+    targets = save_targets(goal)
+    if not targets or not milestones:
+        return milestones
+    have = {c.arg for m in milestones for c in (getattr(m, "checks", None) or ()) if c.kind in ("file_exists", "file_contains")}
+    if all(t in have for t in targets):
+        return milestones
+    index = next((i for i, m in enumerate(milestones) if _SAVE_WORDS.search(str(_get(m, "goal") or ""))),
+                 len(milestones) - 1)
+    checks = tuple(StateCheck(kind="file_exists", arg=t) for t in targets)
+    out = list(milestones)
+    out[index] = Milestone(goal=str(_get(out[index], "goal")), done_when=checks)
+    return tuple(out)
 
 
 def goal_question(goal: str) -> str:
