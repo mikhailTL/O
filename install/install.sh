@@ -88,11 +88,14 @@ version_ge() {
   return 0
 }
 
-# find_python : first python3/python on PATH that is >= 3.10
+# find_python : first Python >= 3.10 among PATH names, Homebrew, python.org and uv installs
 find_python() {
   local cand v
-  for cand in python3 python; do
-    if command -v "$cand" >/dev/null 2>&1; then
+  for cand in python3.13 python3.12 python3.11 python3.10 python3 python \
+      /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+      /Library/Frameworks/Python.framework/Versions/3.1[0-9]/bin/python3 \
+      "$HOME"/.local/share/uv/python/cpython-3.1[0-9]*/bin/python3; do
+    if command -v "$cand" >/dev/null 2>&1 || [ -x "$cand" ]; then
       v="$("$cand" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])' 2>/dev/null)" || continue
       if version_ge "$v" "3.10.0"; then
         echo "$cand"
@@ -101,6 +104,21 @@ find_python() {
     fi
   done
   return 1
+}
+
+# install_python_uv : no admin rights needed — installs uv, then a managed CPython 3.12
+install_python_uv() {
+  local uv
+  uv="$(command -v uv 2>/dev/null || true)"
+  [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ] && uv="$HOME/.local/bin/uv"
+  if [ -z "$uv" ]; then
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null 2>&1 || return 1
+    uv="$HOME/.local/bin/uv"
+    [ -x "$uv" ] || return 1
+  fi
+  "$uv" python install 3.12 >/dev/null 2>&1 || return 1
+  "$uv" python find 3.12 2>/dev/null
 }
 
 # ---------- steps ----------
@@ -154,7 +172,10 @@ PYTHON=""
 step_python() {
   if PYTHON="$(find_python)"; then
     ok "python ($("$PYTHON" --version 2>&1))"
+  elif [ "$DRY" != "1" ] && PYTHON="$(install_python_uv)" && [ -n "$PYTHON" ]; then
+    ok "python ($("$PYTHON" --version 2>&1), installed with uv)"
   else
+    PYTHON=""
     fail "python" "install Python 3.10 or newer from https://www.python.org/downloads/ (Linux: apt/dnf python3 + python3-venv) and run this script again"
   fi
 }
