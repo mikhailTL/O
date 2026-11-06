@@ -1,0 +1,49 @@
+/* Launch film v4 (films.film4): O's black glass, white glow and orb stay the base; the cel FX (celfx.js) are the
+   energy layer. The FX palette below (one place: celfx.js reads these variables for the shader and the ink) is
+   the only colour in the film and appears only on FX, HUD brackets and a few accent strokes, so
+   the interface itself stays monochrome. Every rule here is scoped to .cfx-* (made only by celfx.js) or to
+   sections marked .fx4, so the earlier films render exactly as before. */
+:root {
+  /* cel bands, outside in: deep -> mid -> pale -> white-hot core; the rim is the chromatic offset copy */
+  --fx-deep: #1a2fb8;
+  --fx-mid: #3a7bff;
+  --fx-pale: #a8c8ff;
+  --fx-core: #ffffff;
+  --fx-rim: #8fe6ff;
+  /* HUD and accents */
+  --fx-hud: #3d8bff;
+  --fx-hud-glow: rgba(61, 139, 255, .55);
+  --fx-rim-a: rgba(143, 230, 255, .85);
+  --fx-mid-a: rgba(58, 123, 255, .5);
+}
+
+.cfx-flame, .cfx-bloom, .cfx-grid, .cfx-ink, .cfx-flash { pointer-events: none; }
+.cfx-bloom { mix-blend-mode: screen; }
+.cfx-ink { position: absolute; left: 0; top: 0; }
+.cfx-flash { position: absolute; inset: 0; opacity: 0; mix-blend-mode: screen; border-radius: inherit; }
+
+/* HUD: thin viewfinder corners + a small sentence-case label */
+.cfx-hud { position: absolute; opacity: 0; pointer-events: none; filter: drop-shadow(0 0 6px var(--fx-hud-glow)); }
+.cfx-hud i { position: absolute; width: var(--cl); height: var(--cl); border: 0 solid var(--fx-hud); }
+.cfx-hud .tl { left: 0; top: 0; border-left-width: 3px; border-top-width: 3px; }
+.cfx-hud .tr { right: 0; top: 0; border-right-width: 3px; border-top-width: 3px; }
+.cfx-hud .bl { left: 0; bottom: 0; border-left-width: 3px; border-bottom-width: 3px; }
+.cfx-hud .br { right: 0; bottom: 0; border-right-width: 3px; border-bottom-width: 3px; }
+.cfx-hud .cx { left: 50%; top: 50%; width: 22px; height: 0; margin-left: -11px; border-top-width: 2px; opacity: .7; }
+.cfx-hud .cy { left: 50%; top: 50%; width: 0; height: 22px; margin-top: -11px; border-left-width: 2px; opacity: .7; }
+.cfx-hud .lb { position: absolute; left: 0; bottom: calc(100% + 12px); font: 500 21px/1 var(--sans); letter-spacing: .02em; color: var(--fx-hud); white-space: nowrap; text-shadow: 2px 1px 0 var(--fx-rim-a); }
+.cfx-hud.below .lb { bottom: auto; top: calc(100% + 12px); }
+.cfx-hud.right .lb { left: auto; right: 0; }
+/* label sitting on the bracket's top edge, right-aligned to the top-right corner, cut out of the line */
+.cfx-hud.edge .lb { left: auto; right: calc(var(--cl) + 10px); bottom: auto; top: -11px; padding: 0 8px; background: #050506; line-height: 21px; }
+.fx4 .f-tile .seal, .fx4 .f-tile .check { right: 118px; }
+
+/* accents in fx shots */
+.fx4 .f-time b, .fx4 .f-row .tword, .fx4 .cfx-count { text-shadow: 3px 1px 0 var(--fx-rim-a), -1px 0 0 var(--fx-mid-a), 0 0 22px rgba(255, 255, 255, .28); }
+.fx4 .f-tile .grid { display: none; }
+.fx4 .f-metric svg { position: relative; z-index: 2; }
+.fx4 .f-metric polyline { stroke-width: 2.5; }
+.fx4 .f-metric circle { display: none; }
+.fx4 .claim { position: absolute; z-index: 2; }
+.fx4 .wm4 { font: 500 172px/1 var(--display); letter-spacing: -.04em; color: var(--w96); }
+.fx4 .soft-bloom { position: absolute; border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 255, 255, .16), rgba(255, 255, 255, .05) 55%, rgba(255, 255, 255, 0)); pointer-events: none; }

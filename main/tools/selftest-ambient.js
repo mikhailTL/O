@@ -183,16 +183,16 @@ const fakeScreen = {
 
   // ------------------------------------------------------------ settings: everything off by default
   {
-    const keys = ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'briefSpeak'];
-    ok(keys.every((k) => DEFAULTS[k] === false), 'ambient master switch, every sensor and "read aloud" default to off');
+    const keys = ['sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'briefSpeak'];
+    ok(DEFAULTS.ambientEnabled === true && keys.every((k) => DEFAULTS[k] === false), 'presence (OS idle time) is on by default; every sensor and "read aloud" default to off');
     ok(DEFAULTS.absentAfterMin === 5, 'away-after defaults to 5 minutes');
     const s = new Settings(path.join(tmp, 'set'));
-    ok(keys.every((k) => s.get()[k] === false), 'a fresh settings file has them all off');
+    ok(s.get().ambientEnabled === true && keys.every((k) => s.get()[k] === false), 'a fresh settings file has presence on and every sensor off');
     ok(s.set({ absentAfterMin: '500' }).absentAfterMin === 120 && s.set({ absentAfterMin: 0 }).absentAfterMin === 1 && s.set({ sensorSonar: 'yes' }).sensorSonar === false, 'absentAfterMin is clamped to 1..120 and sensor flags must be booleans');
     const ep = new EngineProcess({ userDataDir: path.join(tmp, 'eng'), getSettings: () => ({ ...DEFAULTS }) });
     const off = ep._env();
-    ok(off.O_AMBIENT === '0' && off.O_SENSOR_WIFI === '0' && off.O_SENSOR_SONAR === '0' && off.O_SENSOR_CAMERA === '0' && off.O_SENSOR_HEART_RATE === '0' && off.O_BRIEF_TTS === '0' && off.O_ABSENT_AFTER_S === '300',
-      'engine env: O_AMBIENT=0, every O_SENSOR_*=0, O_BRIEF_TTS=0, O_ABSENT_AFTER_S=300 by default');
+    ok(off.O_AMBIENT === '1' && off.O_SENSOR_WIFI === '0' && off.O_SENSOR_SONAR === '0' && off.O_SENSOR_CAMERA === '0' && off.O_SENSOR_HEART_RATE === '0' && off.O_BRIEF_TTS === '0' && off.O_ABSENT_AFTER_S === '300',
+      'engine env: O_AMBIENT=1, every O_SENSOR_*=0, O_BRIEF_TTS=0, O_ABSENT_AFTER_S=300 by default');
     const ep2 = new EngineProcess({ userDataDir: path.join(tmp, 'eng'), getSettings: () => ({ ...DEFAULTS, ambientEnabled: true, sensorSonar: true, sensorCamera: true, absentAfterMin: 2, briefSpeak: true }) });
     const on = ep2._env();
     ok(on.O_AMBIENT === '1' && on.O_SENSOR_SONAR === '1' && on.O_SENSOR_CAMERA === '1' && on.O_SENSOR_WIFI === '0' && on.O_SENSOR_HEART_RATE === '0' && on.O_ABSENT_AFTER_S === '120' && on.O_BRIEF_TTS === '1',
@@ -242,7 +242,7 @@ const fakeScreen = {
     ok(defaultPriority('goal') === 'low' && defaultPriority('schedule') === 'low' && defaultPriority('user') === 'normal', 'goal cycles and scheduled tasks are low priority; asked-for tasks are normal');
   }
 
-  const settings = { ...DEFAULTS, maxParallelTasks: 4 };
+  const settings = { ...DEFAULTS, ambientEnabled: false, maxParallelTasks: 4 }; // start off; the test turns it on
   // A task's plan: the agent is created inside start() (synchronously) for a task that gets a slot, so the
   // plan is handed over through `nextPlan`; a queued or resumed task finds it in `plans` by id.
   const plans = new Map();

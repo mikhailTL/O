@@ -13,7 +13,8 @@
     "dist": "electron-builder",
     "demo:record": "node tools/demo/record.js",
     "demo:launch": "node tools/demo/launch.js",
-    "demo:film": "node tools/demo/launch.js --film film"
+    "demo:film": "node tools/demo/launch.js --film film",
+    "demo:film4": "node tools/demo/launch.js --film film4"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.84",

@@ -20,7 +20,7 @@ const DEFAULTS = Object.freeze({
   quiet: true, // never take keyboard focus on its own (safe while gaming)
   screenAccess: true, // let O take screenshots of your screen (see_screen tool)
   autoUpdateCheck: true, // check GitHub for a new version at startup and every few hours
-  updateRepo: 'slithr-in4/O',
+  updateRepo: 'mikhailTL/O',
   updateBranch: 'main',
   updatePath: '', // folder inside the repo that holds O ('' = the repo root)
   updateToken: '', // optional read-only GitHub token, needed only if the repo is private
@@ -66,7 +66,7 @@ const DEFAULTS = Object.freeze({
   genuiEnabled: true,
   genuiSandbox: true, // allow sandboxed iframe previews
   // Ambient sensing (plan J): everything off until the person turns it on, one sensor at a time
-  ambientEnabled: false, // master switch: presence polling, away mode, the brief
+  ambientEnabled: true, // master switch: presence polling (OS idle time; sensors stay off until enabled), away mode, the brief
   sensorWifi: false, // Wi-Fi CSI room motion (room-level presence only)
   sensorSonar: false, // 18-22 kHz chirps through the speakers, echoes through the mics
   sensorCamera: false, // webcam face presence (is someone at the screen)

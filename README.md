@@ -31,8 +31,8 @@ One command, then start O.
 
 | OS | Install | Start |
 |---|---|---|
-| Linux / macOS | `git clone https://github.com/slithr-in4/O && bash O/install/install.sh` | `cd O && npm start` |
-| Windows (PowerShell) | `git clone https://github.com/slithr-in4/O; powershell -ExecutionPolicy Bypass -File O\install\install.ps1` | double-click **`Start O.bat`** |
+| Linux / macOS | `git clone https://github.com/mikhailTL/O && bash O/install/install.sh` | `cd O && npm start` |
+| Windows (PowerShell) | `git clone https://github.com/mikhailTL/O; powershell -ExecutionPolicy Bypass -File O\install\install.ps1` | double-click **`Start O.bat`** |
 
 Needs Node.js 18+, Python 3.10+ and a Claude subscription (run `claude` once to sign in). vLLM installs locally on Linux with an NVIDIA GPU; elsewhere the installer asks for a vLLM server URL (`--vllm-url URL` skips the question). O appears bottom-right with a tray icon.
 

@@ -21,7 +21,7 @@ function standIn() {
   });
 }
 
-async function makeFilm(name, { out, stills = false, stillsDir = null, audio = null, keepScenes = false, log = console.log } = {}) {
+async function makeFilm(name, { out, stills = false, stillsDir = null, audio = null, keepScenes = false, scenes = null, log = console.log } = {}) {
   if (!films[name]) throw new Error(`unknown film ${name} (have: ${Object.keys(films).join(', ')})`);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `o-film-${name}-`));
   // an animated film (films[name].standalone) needs no take: the panel frames talk to a quiet stand-in
@@ -36,6 +36,7 @@ async function makeFilm(name, { out, stills = false, stillsDir = null, audio = n
     studio = await openStudio(backend, state, genui);
     const results = [];
     for (const f of film.files) {
+      if (scenes && !scenes.includes(f.id)) continue;
       log(`[${name}] scene ${f.id} (${f.film.map((s) => s.shot).join(' → ')})`);
       if (stills) {
         const r = await renderScene(studio, { id: f.id, film: f.film, edges: f.edges || film.edges, cues: film.cues, stills: f.stills || [Math.round(1200)], stillsDir: stillsDir || path.join(work, 'stills'), log });

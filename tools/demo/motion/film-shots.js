@@ -124,10 +124,11 @@
     var rowsBox = put(el('div', 'f-rows'), X, Y - 22); inner.appendChild(rowsBox);
     return composer(inner, X, Y, W).then(function (p) {
       tl.at(inner, [{ opacity: 0, transform: 'scale(.95)' }, { opacity: 1, transform: 'scale(1)' }], { t: 0, d: 800 });
-      var t = o.typeAt || 800, spawns = [];
+      var t = o.typeAt || 800, spawns = [], sends = [];
       o.tasks.forEach(function (task) {
         var end = L.typeIntoComposer(p, tl, task.prompt, t, o.cps || 40);
         send(p, tl, end + 180);
+        sends.push(end + 180);
         spawns.push(end + 340);
         t = end + (o.gap || 700);
       });
@@ -143,6 +144,7 @@
         });
       });
       var len = spawns[spawns.length - 1] + (o.tail || 3200);
+      sec._fx = { p: p, spawns: spawns, sends: sends, rows: rows, rowsBox: rowsBox, rate: rate };
       tl.at(cam, [{ transform: 'scale(1)' }, { transform: 'scale(1.07)' }], { t: 800, d: len - 800, ease: 'cubic-bezier(.3,.1,.4,1)' });
       return len;
     });
@@ -172,6 +174,7 @@
     var last = 600 + rowsEls.length * 120 + 500;
     counter(tl, $('b', time), o.seconds, 200, last, function (v) { return v + ' s'; });
     var hold = o.hold || 4600;
+    sec._fx = { card: card, time: time, rows: rowsEls, last: last };
     tl.at(push, [{ transform: 'scale(1)' }, { transform: 'scale(1.035)' }], { t: 0, d: hold, ease: 'linear' });
     return hold;
   };
@@ -230,6 +233,7 @@
       sec.appendChild(line);
       tl.fadeIn(line, lastLand - 700 + i * 110, 500, 10);
     });
+    sec._fx = { folders: folders, time: time, lastLand: lastLand };
     return Math.max(o.hold || 0, lastLand + 1300);
   };
 
@@ -264,6 +268,7 @@
     });
     counter(tl, $('b', time), o.seconds, 500, t, function (v) { return v + ' s'; });
     tl.fadeIn(ready, t + 150, 600, 10);
+    sec._fx = { fields: fields, ready: ready, card: card, time: time, readyAt: t + 150 };
     return Math.max(o.hold || 0, t + 1900);
   };
 
@@ -327,6 +332,7 @@
     c2.style.color = 'var(--w70)';
     sec.append(c1, c2);
     tl.fadeIn(c1, 1100, 800, 12); tl.fadeIn(c2, 2100, 800, 12);
+    sec._fx = { focus: focus, hops: hops, stage: stage, disp: disp };
     return o.hold || 6200;
   };
 
@@ -351,6 +357,7 @@
       var tc = end + 1000;
       tl.at(chip, [{ opacity: 0, transform: 'translateX(-20px) scale(.96)' }, { opacity: 1, transform: 'translateX(0) scale(1)' }], { t: tc, d: 600 });
       var ts = tc + 1300;
+      sec._fx = { chip: chip, tc: tc, user: user };
       tl.at(longR, [{ opacity: 1, filter: 'blur(0px)' }, { opacity: 0, filter: 'blur(10px)' }], { t: ts, d: 500, out: true });
       tl.fadeIn(shortHead, ts + 350, 600, 8); tl.fadeIn(shortR, ts + 450, 700, 12);
       return ts + 450 + (o.tail || 2400);
@@ -376,6 +383,7 @@
         var done = p >= 1;
         if (row.classList.contains('done') !== done) row.classList.toggle('done', done);
       });
+      (sec._fx = sec._fx || { lines: [] }).lines.push({ row: row, bar: bar, word: word, at: at, dur: dur });
       return at + dur;
     }
     var e1 = line(250, o.title, o.firstLabel, o.first, 600, o.firstMs || 2600);
@@ -397,6 +405,7 @@
       inner.appendChild(offer);
       tl.at(offer, [{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'translateY(0)' }], { t: end + 300, d: 500 });
       var btn = $('button', offer), tp = end + 1300;
+      sec._fx = { btn: btn, tp: tp };
       tl.at(btn, [{ transform: 'scale(1)' }, { transform: 'scale(.94)', offset: 0.4 }, { transform: 'scale(1)' }], { t: tp, d: 320, ease: 'ease-out' });
       tl.at(btn, [{ boxShadow: '0 0 0 0 rgba(255,255,255,0)' }, { boxShadow: '0 0 0 10px rgba(255,255,255,.18)', offset: 0.4 }, { boxShadow: '0 0 30px 6px rgba(255,255,255,.0)' }], { t: tp, d: 700, ease: 'ease-out' });
       return tp + (o.tail || 1100);
@@ -446,6 +455,7 @@
       });
     });
     // what it did, day by day, on the right
+    sec._fx = { card: card, metrics: metrics, T0: T0, T1: T1, dayAt: dayAt };
     var rail = put(el('div', 'f-tl-rail'), 1305, 180, null, 0); sec.appendChild(rail);
     rail.style.height = ((o.log.length - 1) * 140 + 10) + 'px';
     tl.fadeIn(rail, 600, 600, 0);
@@ -477,6 +487,7 @@
     var btns = card.querySelectorAll('.acts button');
     Array.prototype.forEach.call(btns, function (b) { tl.at(b, [{ opacity: 1 }, { opacity: 0 }], { t: tTap + 350, d: 300 }); });
     tl.at($('.done', card), [{ opacity: 0, transform: 'translateX(14px)' }, { opacity: 1, transform: 'translateX(0)' }], { t: tTap + 600, d: 500 });
+    sec._fx = { card: card, ap: ap, tTap: tTap };
     var eb = put(el('div', 'f-eyebrow', esc(o.eyebrow)), 1310, 360);
     var c = put(el('div', 'f-claim', esc(o.claim)), 1310, 404, 520); c.style.fontSize = '60px';
     sec.append(eb, c);
@@ -552,6 +563,7 @@
       var grid = $('.grid', tile), n = Math.floor((ti.w - 60) / 16), bars = [], seeds = [];
       for (var b = 0; b < n; b++) { var bi = el('i', ''); bi.style.left = (b * 16) + 'px'; grid.appendChild(bi); bars.push(bi); seeds.push(r() * 6.28); }
       var check = $('.check', tile), seal = $('.seal', tile), fill = $('.f-bar i', tile);
+      (sec._fx = sec._fx || { tiles: [] }).tiles.push({ tile: tile, done: ti.done, spec: ti });
       tl.fn(function (ms) {
         var settle = eo((ms - ti.done) / 500);
         for (var k = 0; k < bars.length; k++) {
@@ -613,6 +625,7 @@
     sec.appendChild(brief);
     var tb = 2000;
     tl.at(brief, [{ opacity: 0, transform: 'translateY(-36px)' }, { opacity: 1, transform: 'translateY(0)' }], { t: tb, d: 700 });
+    sec._fx = { brief: brief, tb: tb };
     var spans = brief.querySelectorAll('p span');
     Array.prototype.forEach.call(spans, function (s, i) { tl.at(s, [{ opacity: 0 }, { opacity: 1 }], { t: tb + 400 + i * 650, d: 500 }); });
     return o.hold || 9200;
@@ -631,6 +644,7 @@
       g.claims.forEach(function (c, i) {
         var s = el('span', '', esc(c.verb) + '.'); verb.appendChild(s);
         var at = gStart + i * dur;
+        ((sec._fx = sec._fx || { verbs: [] }).verbs).push({ claim: claim, span: s, at: at, dur: dur, first: i === 0, last: i === g.claims.length - 1, gStart: gStart, gLen: gLen });
         if (i > 0) tl.at(s, [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'translateY(0)' }], { t: at, d: 450 });
         if (i < g.claims.length - 1) tl.at(s, [{ opacity: 1 }, { opacity: 0 }], { t: at + dur - 450, d: 450 });
         var f = put(el('div', 'f-card f-frag', c.frag), g.fx, g.fy); sec.appendChild(f);

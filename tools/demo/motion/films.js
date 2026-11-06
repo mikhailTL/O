@@ -449,4 +449,51 @@ films.film = async () => ({
 });
 films.film.standalone = true;
 
+/**
+ * Launch film v4 (docs/videos/o-film4.mp4): the consumer film's story, copy and UI fragments (films.film is the
+ * single source for them) with the cel FX energy layer (celfx.js, film4-shots.js) on the moments where O does
+ * something no person could: ignition, parallel spawn, results landing, operating an app, replay, the goal line,
+ * headless work while away, the claims and the close. The return beat stays calm. Pacing tightened slightly.
+ */
+films.film4 = async () => {
+  const base = await films.film();
+  const spec = (id, i, extra) => Object.assign({}, base.files.find((f) => f.id === id).film[i], extra || {});
+  return {
+    title: 'O — the computer that works while you do (v4)',
+    cues: {},
+    edges: base.edges,
+    files: [
+      { id: '01-open', stills: [1400, 1530, 2300, 3300, 5200], edges: { fadeIn: 200, blur: 260 }, film: [
+        { shot: 'ignite', line: spec('01-open', 0).line, hold: 6200 },
+        spec('01-open', 1, { hold: 2300 }),
+      ] },
+      { id: '02-tasks', stills: [2470, 8800], film: [spec('02-tasks', 0, { shot: 'parallel4', tail: 3300 })] },
+      { id: '03-results', stills: [1530, 11600], film: [
+        spec('03-results', 0, { shot: 'deskTable4', hold: 4000 }),
+        spec('03-results', 1, { shot: 'photos4' }),
+        spec('03-results', 2, { shot: 'form4', cps: 52 }),
+      ] },
+      { id: '04-apps', stills: [2000], film: [spec('04-apps', 0, { shot: 'apps4', hold: 5800 })] },
+      { id: '05-learns', stills: [9000], film: [
+        spec('05-learns', 0, { shot: 'learn4', tail: 1700 }),
+        spec('05-learns', 1, { shot: 'replay4', replayMs: 200, tail: 2200 }),
+      ] },
+      { id: '06-goals', stills: [7000, 13000], film: [
+        spec('06-goals', 0, { shot: 'goalAsk4', tail: 900 }),
+        spec('06-goals', 1, { shot: 'goalView4', tail: 1300 }),
+        spec('06-goals', 2, { shot: 'approve4', hold: 5000 }),
+      ] },
+      { id: '07-away', stills: [8000], film: [
+        spec('07-away', 0, { hold: 5000 }),
+        spec('07-away', 1, { shot: 'sandboxes4', hold: 5400 }),
+      ] },
+      { id: '08-return', stills: [4000], film: [spec('08-return', 0, { shot: 'ret4', hold: 9000 })] },
+      { id: '09-claims', stills: [1200, 7200], film: [spec('09-claims', 0, { shot: 'claims4' })] },
+      { id: '10-close', stills: [960, 1400, 2600], edges: { fadeIn: 100, blur: 800 }, film: [{ shot: 'close4', hold: 4800 }] },
+    ],
+    facts: () => Object.assign(base.facts(), { fx: 'Cel FX layer (celfx.js): procedural, seeded, drawn on twos/threes.' }),
+  };
+};
+films.film4.standalone = true;
+
 module.exports = { films, story, CU_TREE };
