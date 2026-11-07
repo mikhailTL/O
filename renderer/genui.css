@@ -2,25 +2,24 @@
    Status pills share the action-log `.kind` look. Motion: transform/opacity only. */
 
 .gu-surface {
-  border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--sheen), var(--raised);
+  border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--raised);
   box-shadow: var(--highlight); color: var(--text-2); font-size: 12.5px; line-height: 1.45; overflow: hidden;
 }
 .gu-surface[data-status="failed"] { border-color: var(--bad-line); }
 .gu-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  border-bottom: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--hairline);
 }
 .gu-title { flex: 1; min-width: 0; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gu-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .gu-empty { color: var(--text-3); font-size: 12.5px; }
 .gu-missing { color: var(--text-3); font: 11px var(--mono); }
 
-/* status pill: same recipe as .alrow .kind */
+/* status label: same recipe as .alrow .kind */
 .gu-pill { flex: 0 0 auto; }
-.gu-head .gu-pill { background: var(--surface-inset); } /* the head is already a tint; the pill must not add a third */
-.gu-pill[data-status="running"] { color: var(--accent-bright); border-color: var(--accent-line); background: var(--accent-soft); }
+.gu-pill[data-status="running"] { color: var(--text); }
 .gu-pill[data-status="ok"] { color: var(--success); }
-.gu-pill[data-status="failed"] { color: var(--danger); border-color: var(--bad-line); background: transparent; }
+.gu-pill[data-status="failed"] { color: var(--danger); }
 .gu-pill[data-status="skipped"] { text-decoration: line-through; }
 
 /* layout */
@@ -44,8 +43,8 @@
 .gu-step-detail { color: var(--text-3); font-size: 12px; padding-left: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* progress bar: fill scales on X only */
-.gu-bar { height: 3px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
-.gu-bar-fill { height: 100%; width: 100%; background: var(--accent-grad); box-shadow: 0 0 8px rgba(90, 184, 255, 0.7); transform-origin: left center; transition: transform var(--t-morph) var(--ease-out); }
+.gu-bar { height: 3px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.gu-bar-fill { height: 100%; width: 100%; background: var(--accent); transform-origin: left center; transition: transform var(--t-morph) var(--ease-out); }
 .gu-progress { display: flex; flex-direction: column; gap: 4px; }
 .gu-progress-label { font-size: 12px; color: var(--text-3); }
 
@@ -69,7 +68,7 @@
 .gu-kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
 
 /* button: closed action set */
-.gu-btn { align-self: flex-start; padding: 3px 12px; border-radius: 999px; }
+.gu-btn { align-self: flex-start; padding: 3px 12px; }
 .gu-btn[data-action="deny"] { color: var(--danger); background: transparent; }
 .gu-row > .gu-btn { flex: 0 0 auto; }
 
@@ -103,7 +102,7 @@
 .run[data-status="failed"] { border-color: var(--bad-line); }
 .runs-head {
   display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; column-gap: 8px;
-  width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: var(--r-card); background: var(--sheen); color: var(--text-2); font-size: 12px;
+  width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: var(--r-card); background: transparent; color: var(--text-2); font-size: 12px;
 }
 .runs-head:active { transform: none; }
 .runs-head .chev { width: 14px; height: 14px; color: var(--text-3); transition: transform var(--t-hover) var(--ease-out); }

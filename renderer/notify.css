@@ -9,24 +9,23 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
 
 .nslot { position: relative; }
 .nslot .ngoo { position: absolute; inset: -12px -40px -12px -12px; pointer-events: none; filter: url(#o-goo); }
-.nslot .nblob { position: absolute; background: rgb(30, 38, 58); border-radius: var(--r-card); }
-.nslot .nedge { position: absolute; top: 18px; bottom: 18px; right: 0; width: 26px; border-radius: 13px; background: rgb(30, 38, 58); }
+.nslot .nblob { position: absolute; background: var(--blob); border-radius: var(--r-card); }
+.nslot .nedge { position: absolute; top: 18px; bottom: 18px; right: 0; width: 26px; border-radius: 13px; background: var(--blob); }
 
 .ncard {
   position: relative;
-  background: var(--sheen), rgba(16, 19, 27, 0.86);
+  background: rgba(10, 10, 11, 0.86);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);
   padding: 11px 12px 10px 14px;
-  box-shadow: var(--highlight), 0 12px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--highlight), var(--glow);
   color: var(--text);
   overflow: hidden;
 }
-.ncard::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--accent-grad); box-shadow: 0 0 10px rgba(90, 184, 255, 0.7); }
-.ncard.ntask.is-done::before { background: var(--success); box-shadow: 0 0 8px rgba(91, 224, 166, 0.6); }
-:root[data-theme="light"] .ncard { background: #fff; }
+.ncard::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--text); }
+:root[data-theme="light"] .ncard { background: #FFFFFF; box-shadow: var(--highlight); }
 .nslot.out { animation: nout 220ms var(--ease-io) forwards; }
 @keyframes nout { to { transform: translateX(110%); opacity: 0; } }
 
@@ -43,18 +42,18 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
 .nrow { display: flex; align-items: center; gap: 6px; }
 .nrow .spacer { flex: 1; }
 .ntimer { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.nrow button { border-radius: 999px; padding: 3px 13px; }
+.nrow button { padding: 3px 13px; }
 .nmore { text-align: center; font-size: 11px; color: var(--text-3); }
 @media (hover: hover) and (pointer: fine) { .nopen:hover:not(:disabled) { background: var(--surface-2); color: var(--text); } }
 
 .ntask { display: flex; align-items: flex-start; gap: 4px; padding: 9px 8px 9px 12px; }
 .ntask-open { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; text-align: left; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: inherit; }
-.ntask-mark { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--success); box-shadow: 0 0 6px rgba(91, 224, 166, 0.6); }
-.ntask.is-needs .ntask-mark { background: var(--accent-bright); box-shadow: 0 0 6px var(--accent); }
+.ntask-mark { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--text-3); }
+.ntask.is-needs .ntask-mark { background: var(--accent); }
 .ntask-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
 .ntask-body b { font: 600 12.5px/1.35 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ntask-body span { font-size: 11.5px; color: var(--text-3); margin-top: 1px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-@media (hover: hover) and (pointer: fine) { .ntask-open:hover:not(:disabled) .ntask-body b { color: var(--accent-bright); background: transparent; } .ntask-open:hover:not(:disabled) { background: transparent; } }
+@media (hover: hover) and (pointer: fine) { .ntask-open:hover:not(:disabled) .ntask-body b { color: var(--text); background: transparent; } .ntask-open:hover:not(:disabled) { background: transparent; } }
 .ncp-meta { margin: 0 0 9px; font-size: 11.5px; color: var(--text-3); overflow-wrap: anywhere; }
 .ncp .ntitle b { white-space: normal; overflow-wrap: anywhere; }
 

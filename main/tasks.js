@@ -14,6 +14,11 @@
 // 'absent' to 'present' pauses running low-priority tasks at their next safe point (no tool call in flight:
 // the Claude Code process is stopped and later resumed in the same session) and holds queued ones.
 // 'unknown' (ambient sensing off) changes nothing.
+//
+// Fast path (main/fastpath.js): a plainly simple new request ("open myscs.org", "launch Spotify", "search
+// <query>") is done right here with no Claude Code process and no model call, and the task ends as done within
+// a few hundred ms. Anything the fast path is unsure about (or that fails) goes to the full agent as before.
+// In Electron it is on by default (settings.fastPath !== false); tests inject `fastPath`.
 
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
@@ -33,6 +38,11 @@ const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').tri
 function titleOf(prompt) { return clip(prompt, 60) || 'New task'; }
 /** Goal cycles and scheduled tasks are background work (low); what the person asks for is normal. */
 function defaultPriority(source) { return source === 'goal' || source === 'schedule' ? 'low' : 'normal'; }
+/** The fast path is on by default inside the app (it opens URLs with Electron's shell); plain Node gets none unless injected. */
+function defaultFastPath(getSettings) {
+  if (!process.versions.electron) return null;
+  try { return require('./fastpath').createFastPath({ getSettings }); } catch (_) { return null; }
+}
 
 class TaskManager extends EventEmitter {
   /**
@@ -40,8 +50,10 @@ class TaskManager extends EventEmitter {
    * @param {(taskId:string) => import('./agent').OAgent} o.createAgent  a fresh agent bound to this task id
    * @param {() => object} [o.getSettings]  reads maxParallelTasks
    * @param {() => number} [o.now]
+   * @param {{match(prompt:string):object|null, run(plan:object):Promise<object>}|null} [o.fastPath]  main/fastpath.js; default: on in Electron
+   * @param {{record(e:object):any}} [o.actionLog]  where fast-path runs are recorded
    */
-  constructor({ createAgent, getSettings, now } = {}) {
+  constructor({ createAgent, getSettings, now, fastPath, actionLog } = {}) {
     super();
     if (typeof createAgent !== 'function') throw new Error('TaskManager needs createAgent');
     this.createAgent = createAgent;
@@ -53,6 +65,8 @@ class TaskManager extends EventEmitter {
     this._claimed = new Map(); // task id -> pre-warmed agent claimed by a task that has not started yet
     this._disposed = false;
     this.presence = 'unknown';
+    this.fastPath = fastPath !== undefined ? fastPath : defaultFastPath(this.getSettings);
+    this.actionLog = actionLog || null;
   }
 
   maxParallel() {
@@ -73,7 +87,7 @@ class TaskManager extends EventEmitter {
   snapshot(t) {
     return {
       id: t.id, title: t.title, prompt: t.prompt, status: t.status, statusLine: t.statusLine, mood: t.mood,
-      createdAt: t.createdAt, startedAt: t.startedAt, endedAt: t.endedAt, source: t.source, scheduleId: t.scheduleId || null, goalId: t.goalId || null,
+      createdAt: t.createdAt, startedAt: t.startedAt, endedAt: t.endedAt, source: t.source, scheduleId: t.scheduleId || null, goalId: t.goalId || null, fast: !!t.fast,
       priority: t.priority || 'normal', pausing: !!t.pauseRequested,
       position: t.status === 'queued' ? this.queue.indexOf(t.id) + 1 : 0, result: clip(t.result, 300), error: clip(t.error, 300),
       runs: t.runs, tools: [...t.tools].slice(0, 20),
@@ -93,6 +107,10 @@ class TaskManager extends EventEmitter {
     if (this._disposed) return { ok: false, error: 'O is shutting down' };
     let t = taskId ? this.get(taskId) : null;
     let followUp = false;
+    if (!taskId && !goalId && source === 'user') {
+      const plan = this._fastPlan(prompt);
+      if (plan) return this._startFast({ prompt, title, source, priority, plan });
+    }
     if (t && !ACTIVE.includes(t.status)) {
       followUp = true;
       t.prompt = prompt;
@@ -130,6 +148,65 @@ class TaskManager extends EventEmitter {
   }
 
   _emitTask(t, ev) { this.emit('event', { ...ev, taskId: t.id }); }
+
+  _fastPlan(prompt) {
+    if (!this.fastPath || typeof this.fastPath.match !== 'function') return null;
+    if ((this.getSettings() || {}).fastPath === false) return null;
+    try { return this.fastPath.match(prompt) || null; } catch (_) { return null; }
+  }
+
+  _log(entry) { try { if (this.actionLog && typeof this.actionLog.record === 'function') this.actionLog.record(entry); } catch (_) {} }
+
+  /** A fast-path task: running at once, no agent, no queue slot. The work starts on the next tick so the caller can set up its chat first. */
+  _startFast({ prompt, title, source, priority, plan }) {
+    const id = newTaskId();
+    const t = {
+      id, title: clip(title, 60) || titleOf(prompt), prompt, status: 'running', statusLine: clip(plan.summary || 'On it', 80), mood: 'working',
+      createdAt: this.now(), startedAt: this.now(), endedAt: null, source, scheduleId: null, goalId: null, sessionId: null, agent: null,
+      result: '', error: '', runs: 1, tools: new Set(['o_fastpath']),
+      priority: PRIORITIES.includes(priority) ? priority : defaultPriority(source), inFlight: 0, pauseRequested: false, pausing: false, runPrompt: null, fast: true,
+    };
+    this.tasks.set(id, t);
+    this._trim();
+    this._changed();
+    setImmediate(() => { this._runFast(t, plan).catch(() => {}); });
+    return { ok: true, taskId: id, queued: false, position: 0, followUp: false, fast: true };
+  }
+
+  async _runFast(t, plan) {
+    if (t.status !== 'running') return; // stopped before it began
+    this._emitTask(t, { type: 'tool', name: 'o_fastpath', summary: plan.summary || 'On it', fast: true });
+    let r;
+    try { r = await this.fastPath.run(plan); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    if (t.status !== 'running') return;
+    const durationMs = this.now() - (t.startedAt || this.now());
+    if (!r || !r.ok) {
+      if (r && r.refused) { // a payment site: refused outright, never handed to the agent
+        t.status = 'failed'; t.endedAt = this.now(); t.mood = 'error'; t.error = String(r.error || 'Blocked by O');
+        t.statusLine = clip(t.error, 80);
+        this._log({ kind: 'policy', summary: 'Fast path refused: ' + clip(plan.url || plan.label, 120), detail: { taskId: t.id, plan: { kind: plan.kind, url: plan.url || null }, reason: t.error } });
+        this._emitTask(t, { type: 'error', message: t.error, fast: true });
+        this.emit('end', { task: this.snapshot(t), ok: false, sessionId: null, durationMs, result: '' });
+        this._changed();
+        return;
+      }
+      // Could not do it the quick way: the full agent takes the request from here.
+      this._log({ kind: 'note', summary: 'Fast path fell back to the agent: ' + clip(r && r.error || 'failed', 120), detail: { taskId: t.id, plan: { kind: plan.kind, url: plan.url || null } } });
+      t.fast = false; t.tools.delete('o_fastpath'); t.runs = 0;
+      t.status = 'queued'; t.statusLine = 'Waiting for a free slot'; t.mood = 'listening';
+      this.queue.push(t.id);
+      this._pump();
+      this._changed();
+      return;
+    }
+    t.status = 'done'; t.endedAt = this.now(); t.mood = 'success'; t.statusLine = 'Done';
+    t.result = String(r.result || 'Done.');
+    this._log({ kind: 'task', summary: `Fast path: ${clip(plan.summary || plan.kind, 100)} (no model call, ${durationMs} ms)`, detail: { taskId: t.id, plan: { kind: plan.kind, url: plan.url || null, app: plan.app ? plan.app.name : null }, durationMs, costUsd: 0 } });
+    this._emitTask(t, { type: 'status', mood: 'success', text: 'Done.', toolDone: true });
+    this._emitTask(t, { type: 'done', result: t.result, sessionId: null, costUsd: 0, durationMs, fast: true });
+    this.emit('end', { task: this.snapshot(t), ok: true, sessionId: null, durationMs, result: t.result });
+    this._changed();
+  }
 
   _trim() {
     if (this.tasks.size <= MAX_KEPT) return;
@@ -316,6 +393,13 @@ class TaskManager extends EventEmitter {
       this._changed();
       return { ok: true, wasQueued: true };
     }
+    if (t.status === 'running' && t.fast && !t.agent) { // a fast-path task that has not finished its OS hand-off
+      t.status = 'stopped'; t.statusLine = 'Stopped'; t.mood = 'idle'; t.endedAt = this.now();
+      this._emitTask(t, { type: 'done', result: '(stopped)', stopped: true });
+      this.emit('end', { task: this.snapshot(t), ok: false, sessionId: null, durationMs: 0 });
+      this._changed();
+      return { ok: true };
+    }
     if (t.status === 'running' && t.agent) {
       t.stopRequested = true;
       t.pauseRequested = false;
@@ -364,4 +448,4 @@ class TaskManager extends EventEmitter {
   }
 }
 
-module.exports = { TaskManager, titleOf, defaultPriority, DEFAULT_MAX, MAX_MAX, PRIORITIES, RESUME_PROMPT, PAUSED_LINE };
+module.exports = { TaskManager, titleOf, defaultPriority, defaultFastPath, DEFAULT_MAX, MAX_MAX, PRIORITIES, RESUME_PROMPT, PAUSED_LINE };
