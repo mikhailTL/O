@@ -18,7 +18,7 @@
     gated_fail: 'Did not pass', pr_open: 'Ready for you', approved: 'Installing', shipped: 'In use',
     rolled_back: 'Undone', rejected: 'Set aside',
   };
-  const GOOD = new Set(['gated', 'approved', 'shipped', 'held', 'skill_adopted', 'skill_approved']);
+  const GOOD = new Set(['gated', 'approved', 'shipped', 'held', 'skill_adopted', 'skill_approved', 'practiced']);
   const WAITS = new Set(['pr_open', 'gated_pass']);
   let data = { feed: [], skills: [], proposals: [], status: {} };
   let open = new Set();
@@ -103,7 +103,8 @@
     el.innerHTML = `<div class="cp-kind">New skill · installs third-party code (${esc(what)})</div>
       <div class="cp-head">${esc(k.name || k.title || k.id)}</div>
       ${k.description || k.summary ? `<p class="cp-sum">${esc(k.description || k.summary)}</p>` : ''}
-      <p class="ev-meta">${[k.license ? esc(k.license) : '', src ? `<a href="${esc(src)}" target="_blank" rel="noopener">source</a>` : ''].filter(Boolean).join(' · ') || 'O installs it only after you approve.'}</p>
+      ${k.proposed_adapter ? `<pre class="ev-adapter" aria-label="What O would add">${esc(String(k.proposed_adapter).slice(0, 600))}</pre>` : ''}
+      <p class="ev-meta">${[k.license ? esc(k.license) : '', src ? `<a href="${esc(src)}" target="_blank" rel="noopener">source</a>` : '', 'nothing is installed until you approve'].filter(Boolean).join(' · ')}</p>
       <div class="cp-acts"><button type="button" class="cp-skip">Decline</button><button type="button" class="cp-approve">Approve</button></div>`;
     el.querySelector('.cp-approve').addEventListener('click', () => act('k:' + k.id, () => o.evolveSkill(k.id, true), el));
     el.querySelector('.cp-skip').addEventListener('click', () => act('k:' + k.id, () => o.evolveSkill(k.id, false), el));

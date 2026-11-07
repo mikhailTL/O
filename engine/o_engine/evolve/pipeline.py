@@ -37,6 +37,9 @@ from .schema import GateReport, Proposal, Signal
 AUTO_SHIP_MODES = ("never", "deps_only", "low_risk")
 BUILDABLE = ("accepted", "proposed")
 MIN_BUILD_USD = 0.25
+TRIAGE_BATCH = 40  # signals per triage call
+TRIAGE_MAX_USD = 0.5  # cap per triage call (counts toward the rolling budget)
+TRIAGE_MIN_USD = 0.05
 WEEK_S = 7 * 86400
 DAY_S = 86400
 DEFAULTS: dict[str, Any] = {
@@ -206,6 +209,22 @@ class LocalStore:
             if new:
                 self._save()
             return new
+
+    def backlog_add(self, ids: list[str]) -> list[str]:
+        """Signal ids not yet triaged, oldest first (bounded)."""
+        with self._lock:
+            cur = self._d.setdefault("backlog", [])
+            cur.extend(i for i in ids if i not in cur)
+            del cur[:-1000]
+            if ids:
+                self._save()
+            return list(cur)
+
+    def backlog_drop(self, ids: list[str]) -> None:
+        with self._lock:
+            drop = set(ids)
+            self._d["backlog"] = [i for i in self._d.get("backlog", []) if i not in drop]
+            self._save()
 
     def signals(self, limit: int = 200) -> list[Signal]:
         rows = sorted(self._d["signals"].values(), key=lambda r: r.get("_seen", 0), reverse=True)[:limit]
@@ -477,13 +496,23 @@ class Evolver:
             self._record("scan", error=f"{type(exc).__name__}: {exc}", new=0)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "new_signals": 0, "new_proposals": 0}
         new = self.store.add_signals(found)
+        self._ingest_skill_signals(new)
         known = {p.id for p in self.store.proposals()}
         proposals: list[Proposal] = []
-        if new and self.deps.triage is not None:
+        # Signals wait in a backlog until there is budget to triage them (triage is a paid model call).
+        backlog = self.store.local.backlog_add([s.id for s in new])
+        pending = [s for s in (self.store.get_signal(i) for i in backlog[:TRIAGE_BATCH]) if s is not None]
+        cap = min(TRIAGE_MAX_USD, self.budget()["available_usd"])
+        if pending and self.deps.triage is not None and cap >= TRIAGE_MIN_USD:
             try:
-                proposals = list(_call(self.deps.triage, new, priors=self.priors()) or [])
+                proposals = list(_call(self.deps.triage, pending, priors=self.priors(), budget_usd=cap) or [])
+                self.store.local.backlog_drop([s.id for s in pending])
             except Exception as exc:  # noqa: BLE001
                 self._record("triage_failed", error=f"{type(exc).__name__}: {exc}")
+            spent = float(getattr(self.deps.triage, "last_spent", 0.0) or 0.0)
+            if spent:
+                self._record("triaged", signals=len(pending), spent_usd=round(spent, 6))
+        new = pending or new
         added = 0
         for p in proposals:
             if p.id in known:
@@ -495,6 +524,24 @@ class Evolver:
                          sources=srcs, signal_ids=list(p.signal_ids))
         self._record("scan", found=len(found), new=len(new), proposals=added)
         return {"ok": True, "found": len(found), "new_signals": len(new), "new_proposals": added}
+
+    def _ingest_skill_signals(self, new: list[Signal]) -> int:
+        """Signals tagged ``skill`` become approval-gated candidates in the skills registry (never installed here)."""
+        ingest = getattr(self.deps.skills, "ingest_signals", None)
+        if not callable(ingest):
+            return 0
+        sigs: list[Any] = list(new)
+        m = _method(self.deps.store, ("signals",))
+        if m is not None:
+            try:
+                sigs = list(m(topic="skill") or []) + sigs
+            except Exception:  # noqa: BLE001 - a store without topic filtering: the new signals are enough
+                pass
+        try:
+            return len(ingest(sigs) or [])
+        except Exception as exc:  # noqa: BLE001
+            self._record("skills_error", error=f"{type(exc).__name__}: {exc}"[:300])
+            return 0
 
     # ------------------------------------------------------------ build -> gates -> ship
 
@@ -724,27 +771,37 @@ class Evolver:
     # ------------------------------------------------------------ skills (tier 1)
 
     def skills_tick(self) -> list[dict[str, Any]]:
-        """Adopt skills distilled from O's own practice once practiced to threshold. Candidate skills that
-        would install or run third-party code are never adopted here: they wait for ``approve_skill``."""
-        m = _method(self.deps.skills, ("adopt_practiced", "adopt_ready", "promote_practiced", "tick"))
-        if m is None:
-            return []
+        """Skills distilled from O's own practice are adopted by the registry once practiced to threshold
+        (``SkillRegistry.observe`` promotes them); this records each newly active one in the feed. Candidate
+        skills that would install or run third-party code are never adopted here: they wait for ``decide_skill``."""
+        reg = self.deps.skills
+        adopted: list[Any] = []
         try:
-            adopted = list(m() or [])
+            m = _method(reg, ("adopt_practiced", "adopt_ready", "promote_practiced"))
+            if m is not None:
+                adopted = list(m() or [])
+            elif callable(getattr(reg, "active", None)):
+                adopted = list(reg.active() or [])
         except Exception as exc:  # noqa: BLE001
             self._record("skills_error", error=f"{type(exc).__name__}: {exc}"[:300])
             return []
+        seen = {(r.get("skill_id"), r.get("skill_version")) for r in self.journal.read(events=("skill_adopted",))}
         out = []
         for a in adopted:
             row = _as_dict(a)
-            self._record("skill_adopted", skill_id=str(row.get("id", "")), name=str(row.get("name") or row.get("title") or ""),
-                         detail=str(row.get("description") or row.get("summary") or "")[:300])
+            key = (str(row.get("id", "")), row.get("version"))
+            if key in seen:
+                continue
+            name = str(row.get("name") or row.get("title") or "") or " ".join(x for x in (str(row.get("goal") or ""), f"in {row['app']}" if row.get("app") else "") if x)
+            self._record("skill_adopted", skill_id=key[0], skill_version=key[1], name=name,
+                         detail=str(row.get("description") or row.get("summary") or row.get("reason") or "")[:300])
             out.append(row)
         return out
 
     def skill_candidates(self) -> list[dict[str, Any]]:
+        """Third-party skills (MCP servers, CLIs, libraries) waiting for the person's approval."""
         reg = self.deps.skills
-        m = _method(reg, ("candidates", "pending", "pending_candidates"))
+        m = _method(reg, ("pending", "candidates", "pending_candidates"))
         rows: list[Any] = []
         try:
             if m is not None:
@@ -763,7 +820,7 @@ class Evolver:
         if m is None:
             return {"ok": False, "error": "skills registry unavailable"}
         try:
-            r = m(sid)
+            r = _call(m, sid, by="user", via="app")
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
         self._record("skill_approved" if approve else "skill_rejected", skill_id=sid, by="user")
@@ -882,6 +939,12 @@ def _as_dict(x: Any) -> dict[str, Any]:
     return {"id": str(x)}
 
 
+def _cost_time(a: Any) -> str:
+    a = a if isinstance(a, dict) else {}
+    cost = float(a.get("cost_usd") or 0)
+    return f"{float(a.get('seconds') or 0):.0f}s/${cost:.2f}" if cost else f"{float(a.get('seconds') or 0):.0f}s/$0"
+
+
 def _feed_text(r: dict[str, Any], title: str) -> str:
     e, t = r.get("event"), title or r.get("title") or ""
     if e == "scan" and r.get("new"):
@@ -914,6 +977,8 @@ def _feed_text(r: dict[str, Any], title: str) -> str:
         return f"Set aside {t}"
     if e == "skill_adopted":
         return f"Learned a skill from practice: {r.get('name') or r.get('skill_id')}"
+    if e == "practiced":
+        return f"Learned to {r.get('name') or r.get('family')}: {_cost_time(r.get('first'))} → {_cost_time(r.get('last'))}"
     if e == "skill_approved":
         return f"Installed a skill you approved: {r.get('skill_id')}"
     return ""
@@ -940,3 +1005,119 @@ def run_cycle(settings: Any, deps: PipelineDeps, evolver: Evolver | None = None)
     return {"ok": True, "enabled": True, "scan": scan, "built": picked,
             "results": [ev.proposal_view(p) for p in (ev.store.get(i) for i in picked) if p is not None],
             "budget": ev.budget()}
+
+
+# --------------------------------------------------------------------------------- practice (tier 1 learning)
+
+
+class PracticeHost:
+    """Runs ``Practicer`` sessions while the person is away (``USER_ABSENT``) and stops them when they return
+    (``USER_PRESENT``): the practicer re-checks presence before every item, and the isolated display is torn
+    down when the session ends. Learning curves that improved are recorded in the Evolution feed."""
+
+    ABSENT, PRESENT = "USER_ABSENT", "USER_PRESENT"
+
+    def __init__(self, factory: Callable[[], tuple[Any, Any, Any]], journal: Journal | None = None, log: Any = None,
+                 max_items: int = 10, max_seconds: float = 1800.0, spawn: Callable[[Callable[[], None]], Any] | None = None) -> None:
+        self._factory = factory  # -> (curriculum, practicer, env); built on first use
+        self._parts: tuple[Any, Any, Any] | None = None
+        self.journal, self.log = journal, log
+        self.max_items, self.max_seconds = max_items, max_seconds
+        self._spawn = spawn or (lambda fn: threading.Thread(target=fn, daemon=True, name="o-practice").start())
+        self._lock = threading.Lock()
+        self.running = False
+        self.stop_requested = False
+        self.last: dict[str, Any] | None = None
+        self.error = ""
+
+    def parts(self) -> tuple[Any, Any, Any]:
+        with self._lock:
+            if self._parts is None:
+                self._parts = self._factory()
+            return self._parts
+
+    def on_presence(self, msg: dict[str, Any]) -> None:
+        state = msg.get("state") if isinstance(msg, dict) else None
+        if state == self.ABSENT:
+            self.start()
+        elif state == self.PRESENT:
+            self.stop()
+
+    def start(self) -> bool:
+        with self._lock:
+            if self.running:
+                return False
+            self.running, self.stop_requested = True, False
+        self._spawn(self._session)
+        return True
+
+    def stop(self) -> None:
+        self.stop_requested = True
+
+    def _note(self, summary: str, **detail: Any) -> None:
+        if self.log is not None:
+            try:
+                self.log.record("note", summary, **detail)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _session(self) -> None:
+        env = None
+        try:
+            cur, pr, env = self.parts()
+            env.start()
+            try:
+                cur.refresh()
+            except Exception as exc:  # noqa: BLE001 - an empty refresh still leaves the existing queue
+                self._note(f"practice: curriculum refresh failed: {type(exc).__name__}")
+            while not self.stop_requested:
+                r = pr.run(max_items=self.max_items, max_seconds=self.max_seconds)
+                self.last = {k: v for k, v in r.items() if k != "curves"}
+                self._record_curves(r.get("curves") or {})
+                if not r.get("attempts") or r.get("stopped") not in ("max items", "session time"):
+                    break
+            self.error = ""
+        except Exception as exc:  # noqa: BLE001 - e.g. PracticeRefused: no Xvfb, host display, display in use
+            self.error = f"{type(exc).__name__}: {exc}"[:300]
+            self._note(f"practice did not run: {self.error}")
+        finally:
+            if env is not None:
+                try:
+                    env.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            with self._lock:
+                self.running = False
+
+    def _record_curves(self, curves: dict[str, Any]) -> None:
+        if self.journal is None:
+            return
+        done = {(r.get("family"), r.get("attempts")) for r in self.journal.read(events=("practiced",))}
+        for fam, c in curves.items():
+            rows = c.get("attempts") or []
+            if len(rows) < 2 or not c.get("improved") or (fam, len(rows)) in done:
+                continue
+            first, last = c["first"], c["last"]
+            self.journal.append("practiced", family=fam, name=fam.replace("_", " ").replace(".", ": ", 1), attempts=len(rows),
+                                first={k: first.get(k) for k in ("seconds", "cost_usd", "model_calls", "steps")},
+                                last={k: last.get(k) for k in ("seconds", "cost_usd", "model_calls", "steps")},
+                                success_rate=c.get("success_rate"))
+
+    def view(self) -> dict[str, Any]:
+        try:
+            cur, pr, env = self.parts()
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+        queue = []
+        try:
+            for it, sch in cur.queue(limit=20):
+                queue.append({"id": it.id, "family": it.family, "app": it.app, "goal": it.goal[:200], "origin": it.origin,
+                              "due_ts": getattr(sch, "due_ts", None), "mastered": getattr(sch, "mastered", False)})
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "available": True, "running": self.running, "error": self.error, "last": self.last,
+            "curves": cur.learning_curve(), "queue": queue, "gaps": cur.gap_report(),
+            "spend": {"spent_24h_usd": pr.ledger.spent(), "budget_usd": pr.budget_usd, "remaining_usd": pr.remaining_usd()},
+            "isolated": bool(getattr(env, "is_isolated", False)),
+        }

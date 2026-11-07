@@ -83,6 +83,7 @@ const DEFAULTS = Object.freeze({
   evolveScanMinutes: 45, // 5..1440 between incremental source scans
   evolveSlotsActive: 1, // 0..8 builds at once while you use the computer
   evolveSlotsAway: 3, // 0..8 builds at once while you are away
+  practiceBudgetUsd: 0.5, // rolling 24 h cap on practice spend (O rehearses its own tasks on an isolated display while you are away)
   settingsVersion: 5,
 });
 
@@ -208,6 +209,7 @@ function sanitize(obj) {
   evNum('evolveScanMinutes', 5, 1440, true);
   evNum('evolveSlotsActive', 0, 8, true);
   evNum('evolveSlotsAway', 0, 8, true);
+  evNum('practiceBudgetUsd', 0, 100, false);
   if (['never', 'deps_only', 'low_risk'].includes(obj.evolveAutoShip)) out.evolveAutoShip = obj.evolveAutoShip;
   if (typeof obj.evolveGithubToken === 'string') out.evolveGithubToken = obj.evolveGithubToken.trim();
   if (typeof obj.evolveRepo === 'string' && (obj.evolveRepo.trim() === '' || /^[\w.-]+\/[\w.-]+$/.test(obj.evolveRepo.trim()))) out.evolveRepo = obj.evolveRepo.trim();

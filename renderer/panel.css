@@ -840,3 +840,4 @@ body:is(.has-strip, .has-goals) .hero-pet { width: 56px; height: 56px; margin-bo
 }
 @media (prefers-reduced-motion: reduce) { .ev-row[data-status="building"] .ev-pill { animation: none; } }
 .ev-check .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ev-adapter { margin: 0 0 8px; padding: 7px 10px; max-height: 96px; overflow: auto; border-radius: 10px; background: var(--surface-inset); border: 1px solid var(--line); font: 11.5px/1.45 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }

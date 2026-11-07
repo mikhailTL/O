@@ -86,7 +86,7 @@ const GENUI_ACTIONS = ['open-log', 'open-file', 'retry', 'approve', 'deny'];
 const HAS_WILL_FRAME_NAVIGATE = (parseInt(process.versions.electron, 10) || 0) >= 26;
 // Settings exported to the engine as O_AMBIENT / O_SENSOR_* / O_ABSENT_AFTER_S / O_BRIEF_TTS (main/engine.js).
 const AMBIENT_KEYS = ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'absentAfterMin', 'briefSpeak'];
-const EVOLVE_KEYS = ['evolveEnabled', 'evolveBudgetUsd', 'evolvePerProposalUsd', 'evolveAutoShip', 'evolveGithubToken', 'evolveRepo', 'evolveScanMinutes', 'evolveSlotsActive', 'evolveSlotsAway'];
+const EVOLVE_KEYS = ['evolveEnabled', 'evolveBudgetUsd', 'evolvePerProposalUsd', 'evolveAutoShip', 'evolveGithubToken', 'evolveRepo', 'evolveScanMinutes', 'evolveSlotsActive', 'evolveSlotsAway', 'practiceBudgetUsd'];
 const PERMISSION_TIMEOUT_MS = 60 * 1000; // ask mode: matches the agent's auto-deny; a timeout destroys the queue
 const UNREAD_NOTIFY_DEBOUNCE_MS = 30 * 1000;
 let unreadNotifyTimer = null;

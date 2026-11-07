@@ -70,6 +70,7 @@ function fakeGitHub(state) {
   {
     const { Settings, DEFAULTS } = require('../settings');
     check(DEFAULTS.evolveEnabled === true && DEFAULTS.evolveBudgetUsd === 10 && DEFAULTS.evolveAutoShip === 'low_risk', 'defaults: enabled, $10/week, low_risk auto-ship');
+    check(DEFAULTS.practiceBudgetUsd === 0.5, 'practice budget defaults to $0.50 per 24 h');
     check(DEFAULTS.evolveSlotsAway > DEFAULTS.evolveSlotsActive, 'more build slots while away than while active');
     const s = new Settings(tmp());
     const r = s.set({ evolveBudgetUsd: '-5', evolveAutoShip: 'always', evolveSlotsAway: 99, evolveRepo: 'not a repo', evolveScanMinutes: 1, evolveGithubToken: '  tok  ' });
@@ -83,12 +84,13 @@ function fakeGitHub(state) {
     const { evolveEnv } = require('../scheduler');
     const e = evolveEnv({ evolveEnabled: false, evolveBudgetUsd: 4, evolveAutoShip: 'deps_only', updateRepo: 'a/b', evolveGithubToken: 'x' }, '/ud');
     check(e.O_EVOLVE_ENABLED === '0' && e.O_EVOLVE_BUDGET_USD === '4' && e.O_EVOLVE_AUTO_SHIP === 'deps_only' && e.O_EVOLVE_REPO === 'a/b', 'evolveEnv maps settings');
+    check(e.O_PRACTICE_BUDGET_USD === '0.5' && evolveEnv({ practiceBudgetUsd: 2 }).O_PRACTICE_BUDGET_USD === '2', 'practice budget (default $0.50 per 24 h) reaches the engine');
     check(e.O_EVOLVE_APP_LOG === path.join('/ud', 'o-actions.jsonl'), 'engine reads the app action log for post-ship cost/outcomes');
     const engineSrc = fs.readFileSync(path.join(ROOT, 'main', 'engine.js'), 'utf8');
     check(/\.\.\.evolveEnv\(s, this\.userDataDir\)/.test(engineSrc), 'engine.js spreads evolveEnv into the child env');
     const mainSrc = fs.readFileSync(path.join(ROOT, 'main', 'main.js'), 'utf8');
     const m = mainSrc.match(/const ENGINE_KEYS = \[([\s\S]*?)\];/);
-    check(m && /\.\.\.EVOLVE_KEYS/.test(m[1]) && /const EVOLVE_KEYS = \[[^\]]*'evolveAutoShip'[^\]]*'evolveGithubToken'/.test(mainSrc), 'evolve keys restart the engine');
+    check(m && /\.\.\.EVOLVE_KEYS/.test(m[1]) && /const EVOLVE_KEYS = \[[^\]]*'evolveAutoShip'[^\]]*'evolveGithubToken'[^\]]*'practiceBudgetUsd'/.test(mainSrc), 'evolve keys restart the engine');
     check(/evolveHost\.onUpdate\(ev\)/.test(mainSrc) && /evolveHost\.onEngineReady\(\)/.test(mainSrc), 'main wires updater events and engine-ready to the evolve host');
   }
 

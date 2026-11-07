@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .learn import Telemetry
-from .pipeline import Evolver, GitHub, PipelineDeps, _call, evolve_settings, git_push, run_cycle
+from .pipeline import Evolver, GitHub, PipelineDeps, PracticeHost, _call, evolve_settings, git_push, run_cycle
 
 
 class TickRequest(BaseModel):
@@ -57,6 +57,25 @@ def _try(fn: Callable[[], Any]) -> Any:
         return None
 
 
+class _Triage:
+    """triage.triage with the capability map and a ``claude -p`` client; ``last_spent`` is what the last call
+    cost, which the pipeline books against the rolling budget."""
+
+    def __init__(self, mod: Any, claude_path: str, store: Any) -> None:
+        self.mod, self.store, self.last_spent = mod, store, 0.0
+        self.client = mod.TriageClient(claude_path)
+        from .capmap import load_capmap
+
+        self.capmap = load_capmap()
+
+    def __call__(self, signals: list[Any], priors: Any = None, budget_usd: float = 0.5) -> list[Any]:
+        before = float(getattr(self.client, "spent_usd", 0.0))
+        try:
+            return self.mod.triage(signals, self.capmap, self.client, budget_usd, store=self.store)
+        finally:
+            self.last_spent = max(0.0, float(getattr(self.client, "spent_usd", 0.0)) - before)
+
+
 def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
     """Wire the sibling stages (store, sources, triage, builder, gates, baseline, protected, skills) when they
     import; whatever is missing is listed in ``/evolve/status`` and that stage is skipped."""
@@ -86,10 +105,10 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
         if fn is not None:
             scan = lambda: list(_call(fn, store=store) or [])  # noqa: E731 - ETag/cursor caching lives in the store
     triage = None
-    if m_triage is not None:
-        fn = _first(m_triage, ("triage",))
-        if fn is not None:
-            triage = lambda signals, priors=None: _call(fn, signals, priors=priors, store=store)  # noqa: E731
+    if m_triage is not None and getattr(m_triage, "triage", None) is not None:
+        triage = _try(lambda: _Triage(m_triage, str(getattr(engine_settings, "claude_path", "") or "claude"), store))
+        if triage is None:
+            missing.append("triage (capability map)")
     build = None
     if m_builder is not None and getattr(m_builder, "build", None) is not None:
         claude = str(getattr(engine_settings, "claude_path", "") or "claude")
@@ -115,10 +134,33 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
     )
 
 
+def practice_parts(engine_settings: Any, engine_deps: Callable[[], Any], ambient: Any, skills: Any) -> tuple[Any, Any, Any]:
+    """Curriculum + Practicer + the isolated practice display (``:140``), sharing the engine's computer-use
+    memory (procedures, interfaces) behind the practice quarantine. Built on first use, never at import."""
+    from ..ambient.presence import os_idle_seconds
+    from .curriculum import Curriculum
+    from .practice import (PRACTICE_BASE_DISPLAY, IsolatedPracticeEnvironment, Practicer, Quarantine,
+                           budget_from_settings, practice_deps)
+
+    d = engine_deps()
+    data = Path(getattr(engine_settings, "data_dir", Path.home() / ".o-engine"))
+    pdir = data / "practice"
+    cur = Curriculum(pdir, data_dir=data, procedures=d.cu_procedures, interfaces=d.cu_interfaces)
+    env = IsolatedPracticeEnvironment(f":{PRACTICE_BASE_DISPLAY}")
+    pdeps = practice_deps(d.cu_deps, env, quarantine=Quarantine(pdir / "quarantine.jsonl"))
+    presence = (lambda: ambient.presence.state) if ambient is not None else None
+    pr = Practicer(cur, pdir, env=env, deps=pdeps, budget_usd=budget_from_settings(engine_settings),
+                   presence_fn=presence, idle_fn=os_idle_seconds, skills=skills,
+                   learning=getattr(d, "learning", None), interfaces=d.cu_interfaces)
+    return cur, pr, env
+
+
 def evolve_router(engine_settings: Any, guard: list[Any], log: Any = None,
-                  evolver_factory: Callable[[], Evolver] | None = None) -> APIRouter:
+                  evolver_factory: Callable[[], Evolver] | None = None, *, ambient: Any = None,
+                  engine_deps: Callable[[], Any] | None = None,
+                  practice_factory: Callable[[], tuple[Any, Any, Any]] | None = None) -> APIRouter:
     router = APIRouter(prefix="/evolve", dependencies=guard)
-    state: dict[str, Any] = {"ev": None}
+    state: dict[str, Any] = {"ev": None, "practice": None}
     lock = threading.Lock()
     jobs: dict[str, dict[str, Any]] = {}
 
@@ -131,6 +173,28 @@ def evolve_router(engine_settings: Any, guard: list[Any], log: Any = None,
                     evo = evolve_settings()
                     state["ev"] = Evolver(evolve_settings, build_deps(engine_settings, evo))
             return state["ev"]
+
+    def practice() -> PracticeHost | None:
+        with lock:
+            if state["practice"] is None and (practice_factory is not None or engine_deps is not None):
+                factory = practice_factory or (lambda: practice_parts(engine_settings, engine_deps, ambient, ev().deps.skills))
+                state["practice"] = PracticeHost(factory, journal=None, log=log)
+        host = state["practice"]
+        if host is not None and host.journal is None:
+            host.journal = ev().journal  # learning curves land in the Evolution feed
+        return host
+
+    if ambient is not None:
+        # USER_ABSENT starts a practice session on the isolated display; USER_PRESENT stops it.
+        def _on_presence(msg: dict[str, Any]) -> None:
+            host = practice()
+            if host is not None:
+                host.on_presence(msg)
+
+        try:
+            ambient.presence.listeners.append(_on_presence)
+        except Exception:  # noqa: BLE001 - no presence machine: practice only runs on demand
+            pass
 
     def note(kind: str, summary: str, **detail: Any) -> None:
         if log is not None:
@@ -159,7 +223,9 @@ def evolve_router(engine_settings: Any, guard: list[Any], log: Any = None,
     @router.get("/feed")
     def feed(hours: float = Query(default=24.0, gt=0, le=24 * 30)) -> dict[str, Any]:
         e = ev()
-        return {"feed": e.feed(hours), "skills": e.skill_candidates(), "status": e.status()}
+        host = state["practice"]
+        prac = {"running": host.running, "error": host.error} if host is not None else None
+        return {"feed": e.feed(hours), "skills": e.skill_candidates(), "status": e.status(), "practice": prac}
 
     @router.get("/ledger")
     def ledger(limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
@@ -245,7 +311,16 @@ def evolve_router(engine_settings: Any, guard: list[Any], log: Any = None,
 
     @router.get("/skills")
     def skills() -> dict[str, Any]:
-        return {"candidates": ev().skill_candidates()}
+        e = ev()
+        view = getattr(e.deps.skills, "view", None)
+        out = dict(view()) if callable(view) else {}
+        out["candidates"] = e.skill_candidates()
+        return out
+
+    @router.get("/practice")
+    def practice_route() -> dict[str, Any]:
+        host = practice()
+        return host.view() if host is not None else {"available": False, "error": "practice is not wired"}
 
     @router.post("/skills/{sid}/approve")
     def skill_approve(sid: str) -> dict[str, Any]:

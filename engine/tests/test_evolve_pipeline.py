@@ -296,3 +296,129 @@ def test_pr_body_marks_failures():
     rep = GateReport(proposal_id="p1", branch="b", passed=False, checks=[GateCheck(name="secret_scan", passed=False, detail="a|b")])
     body = pr_body(prop(1), rep, [])
     assert "FAILED" in body and "| secret_scan | FAIL |" in body and "a/b" in body
+
+
+# ------------------------------------------------------------------ practice + skills wiring
+
+
+def test_practice_host_runs_while_away_and_records_curves(tmp_path):
+    from o_engine.evolve.learn import Journal
+    from o_engine.evolve.pipeline import PracticeHost
+
+    calls = []
+
+    class Env:
+        is_isolated = True
+
+        def start(self):
+            calls.append("start")
+
+        def stop(self):
+            calls.append("stop")
+
+    curves = {"mousepad.write_save": {"attempts": [{}, {}, {}], "improved": True, "success_rate": 1.0,
+                                       "first": {"seconds": 38.2, "cost_usd": 0.12, "model_calls": 6, "steps": 9},
+                                       "last": {"seconds": 9.1, "cost_usd": 0.0, "model_calls": 0, "steps": 5}},
+              "gimp.export": {"attempts": [{}], "improved": False}}
+
+    class Cur:
+        def refresh(self):
+            calls.append("refresh")
+
+        def learning_curve(self):
+            return curves
+
+        def queue(self, limit=None):
+            return []
+
+        def gap_report(self):
+            return {"voice": []}
+
+    class Ledger:
+        def spent(self):
+            return 0.1
+
+    class Pr:
+        ledger, budget_usd = Ledger(), 0.5
+
+        def remaining_usd(self):
+            return 0.4
+
+        def run(self, max_items=10, max_seconds=1800):
+            calls.append("run")
+            return {"attempts": [{"ok": True}], "stopped": "user returned", "curves": curves}
+
+    j = Journal(tmp_path / "j.jsonl")
+    host = PracticeHost(lambda: (Cur(), Pr(), Env()), journal=j, spawn=lambda fn: fn())
+    host.on_presence({"state": "USER_PRESENT"})
+    assert calls == []
+    host.on_presence({"state": "USER_ABSENT"})
+    assert calls == ["start", "refresh", "run", "stop"] and not host.running
+    rows = j.read(events=("practiced",))
+    assert len(rows) == 1 and rows[0]["family"] == "mousepad.write_save"
+    host.start()
+    assert len(j.read(events=("practiced",))) == 1  # same curve is not announced twice
+    v = host.view()
+    assert v["spend"] == {"spent_24h_usd": 0.1, "budget_usd": 0.5, "remaining_usd": 0.4} and v["gaps"] == {"voice": []}
+    from o_engine.evolve.pipeline import _feed_text
+    assert _feed_text(rows[0], "") == "Learned to mousepad: write save: 38s/$0.12 → 9s/$0"
+
+
+def test_practice_refused_is_contained(tmp_path):
+    from o_engine.evolve.pipeline import PracticeHost
+
+    class Env:
+        stopped = False
+
+        def start(self):
+            raise RuntimeError("isolated practice displays need Linux + Xvfb")
+
+        def stop(self):
+            Env.stopped = True
+
+    host = PracticeHost(lambda: (None, None, Env()), spawn=lambda fn: fn())
+    host.on_presence({"state": "USER_ABSENT"})
+    assert "Xvfb" in host.error and Env.stopped and not host.running
+
+
+def test_skill_signals_feed_the_real_registry_and_only_the_user_approves(tmp_path):
+    from o_engine.evolve.schema import Signal
+    from o_engine.evolve.skills import SkillRegistry
+
+    reg = SkillRegistry(tmp_path / "skills")
+    s = Signal(id="sk1", kind="mcp_server", source="mcp-registry", title="ocr-mcp", url="https://github.com/x/ocr-mcp",
+               repo="x/ocr-mcp", license="MIT", topics=["skill", "ocr"])
+    f = Fakes(signals=[s, sig(2)])
+    ev = make(tmp_path, f, skills=reg)
+    ev.tick("active")
+    pend = ev.skill_candidates()
+    assert len(pend) == 1 and pend[0]["title"] == "ocr-mcp" and pend[0]["status"] == "needs_approval"
+    assert reg.external()[pend[0]["id"]].status == "needs_approval"  # a tick never approves
+    r = ev.decide_skill(pend[0]["id"], True)
+    assert r["ok"] and reg.external()[pend[0]["id"]].status == "approved"
+    assert reg.external()[pend[0]["id"]].decided_by == "user" and reg.external()[pend[0]["id"]].decided_via == "app"
+    assert ev.skill_candidates() == []
+
+
+def test_triage_waits_for_budget_and_books_its_spend(tmp_path):
+    f = Fakes(signals=[sig(1), sig(2)], proposals=[prop(1, risk="medium"), prop(2, risk="medium")])
+    seen = []
+
+    def triage(signals, priors=None, budget_usd=0.0):
+        seen.append((sorted(s.id for s in signals), budget_usd))
+        triage.last_spent = 0.2
+        return f.triage(signals)
+
+    triage.last_spent = 0.0
+    clock = [1_000_000.0]
+    ev = make(tmp_path, f, settings={"evolveBudgetUsd": 0.0, "evolveSlotsActive": 0}, clock=clock)
+    ev.deps.triage = triage
+    r = ev.scan_and_triage()
+    assert r["new_signals"] == 2 and r["new_proposals"] == 0 and seen == []  # no budget: signals wait
+    ev._settings = lambda: {"evolveRepo": "o/O", "evolveBudgetUsd": 10.0, "evolveSlotsActive": 0}
+    clock[0] += 3600
+    r = ev.scan_and_triage()
+    assert seen == [(["s1", "s2"], 0.5)] and r["new_proposals"] == 2
+    assert ev.budget()["spent_24h"] == 0.2
+    ev.scan_and_triage()
+    assert len(seen) == 1  # backlog cleared

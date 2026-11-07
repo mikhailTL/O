@@ -342,6 +342,7 @@ function evolveEnv(s = {}, userDataDir = '') {
     O_EVOLVE_SCAN_MINUTES: num(s.evolveScanMinutes, 45, 5, 1440),
     O_EVOLVE_SLOTS_ACTIVE: num(s.evolveSlotsActive, 1, 0, 8),
     O_EVOLVE_SLOTS_AWAY: num(s.evolveSlotsAway, 3, 0, 8),
+    O_PRACTICE_BUDGET_USD: num(s.practiceBudgetUsd, 0.5, 0, 100),
     O_EVOLVE_APP_LOG: userDataDir ? path.join(userDataDir, 'o-actions.jsonl') : '',
   };
 }

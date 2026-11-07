@@ -116,3 +116,59 @@ def test_mounted_in_engine_app(tmp_path, monkeypatch):
     assert st["enabled"] is True and st["github"] is False and st["budget"]["cap_usd"] == 10.0
     assert isinstance(st["missing"], list)
     assert (d / "evolve").is_dir()
+
+
+def test_practice_and_skills_routes(tmp_path):
+    from o_engine.evolve.pipeline import PracticeHost  # noqa: F401
+    from o_engine.evolve.skills import SkillRegistry
+
+    def guard(request: Request) -> None:
+        if request.headers.get("x-o-token") != "t":
+            raise HTTPException(status_code=401)
+
+    class Presence:
+        state = "USER_PRESENT"
+        listeners: list = []
+
+    class Amb:
+        presence = Presence()
+
+    class Cur:
+        def refresh(self): pass
+        def learning_curve(self): return {"calc.add": {"attempts": [{}, {}], "improved": True, "first": {"seconds": 20, "cost_usd": 0.05}, "last": {"seconds": 4, "cost_usd": 0}}}
+        def queue(self, limit=None): return []
+        def gap_report(self): return {}
+
+    class Pr:
+        budget_usd = 0.5
+        class ledger:
+            @staticmethod
+            def spent(): return 0.0
+        def remaining_usd(self): return 0.5
+        def run(self, **kw): return {"attempts": [], "stopped": "presence is USER_PRESENT", "curves": Cur().learning_curve()}
+
+    class Env:
+        is_isolated = False
+        def start(self): pass
+        def stop(self): pass
+
+    reg = SkillRegistry(tmp_path / "skills")
+    ev = make(tmp_path, Fakes(), skills=reg)
+    amb = Amb()
+    app = FastAPI()
+    app.include_router(evolve_router(None, [Depends(guard)], None, evolver_factory=lambda: ev, ambient=amb,
+                                     practice_factory=lambda: (Cur(), Pr(), Env())))
+    c = TestClient(app)
+    assert len(amb.presence.listeners) == 1
+    assert c.get("/evolve/practice").status_code == 401
+    v = c.get("/evolve/practice", headers=H).json()
+    assert v["available"] and v["spend"]["budget_usd"] == 0.5 and "calc.add" in v["curves"] and v["running"] is False
+    amb.presence.listeners[0]({"state": "USER_ABSENT"})
+    for _ in range(50):
+        if not c.get("/evolve/practice", headers=H).json()["running"]:
+            break
+        time.sleep(0.02)
+    assert any(x["event"] == "practiced" for x in c.get("/evolve/feed", headers=H).json()["feed"])
+    sk = c.get("/evolve/skills", headers=H).json()
+    assert sk["pending_approval"] == 0 and sk["candidates"] == [] and "internal" in sk
+    assert c.post("/evolve/skills/nope/approve", headers=H).status_code == 409
