@@ -25,8 +25,15 @@ const { describeTool, describePermission, clip } = require('./tools/summarize');
 
 const IS_WIN = process.platform === 'win32';
 const BRIDGE_MCP = path.join(__dirname, 'tools', 'bridge-mcp.js');
+const STAGEHAND_MCP = path.join(__dirname, 'tools', 'stagehand-mcp.js');
 const PERMISSION_TIMEOUT_MS = Math.max(1, parseInt(process.env.O_PERMISSION_TIMEOUT_MS, 10)) || 60 * 1000;
 const MAX_TURNS = 60;
+const MAX_TURNS_FAST = 20; // tasks routed to fastModel are short by construction
+const DEFAULT_FAST_MODEL = 'haiku'; // a Claude Code model alias; settings.fastModel '' or 'off' turns routing off
+// Load every MCP tool up front instead of deferring them behind a ToolSearch step (one model round trip saved on
+// every task). Documented at https://code.claude.com/docs/en/mcp#configure-tool-search ("false: All MCP tools
+// loaded upfront, no deferral"); O_ENABLE_TOOL_SEARCH overrides it (e.g. 'auto' for people with huge MCP setups).
+const TOOL_SEARCH_ENV = { ENABLE_TOOL_SEARCH: process.env.O_ENABLE_TOOL_SEARCH || 'false' };
 const LOG_CLIP = 2000;
 
 // Permission modes: log = allow everything and record it (default), ask = blocking card, auto = no gating, no record.
@@ -46,8 +53,11 @@ const APP_TOOLS = ['mcp__o__schedule_task', 'mcp__o__list_schedules', 'mcp__o__c
 // they reach the bridge's approve tool like every other risky tool.
 const NATIVE_READ_TOOLS = ['mcp__o__tabs_list', 'mcp__o__tab_read'];
 const NATIVE_ACT_TOOLS = ['mcp__o__tab_act', 'mcp__o__tab_open'];
+// Stagehand (main/tools/stagehand-mcp.js): web_observe / web_extract only read; web_act acts, so it is not pre-allowed.
+const STAGEHAND_READ_TOOLS = ['mcp__stagehand__web_observe', 'mcp__stagehand__web_extract'];
+const STAGEHAND_ACT_TOOLS = ['mcp__stagehand__web_act'];
 const BROWSER_MODES = ['auto', 'link', 'mine', 'separate'];
-const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS, ...NATIVE_READ_TOOLS];
+const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS, ...NATIVE_READ_TOOLS, ...STAGEHAND_READ_TOOLS];
 const SAFE_PREFIXES = ['mcp__playwright__'];
 const ALLOWED_TOOLS_FLAG = [...SAFE_TOOLS, 'mcp__o__provision', 'mcp__playwright'];
 // A goal cycle's browser calls are not pre-allowed: each one reaches the bridge's approve tool, where checkpoint
@@ -83,10 +93,11 @@ const PERSONA_TEMPLATE = `You are O AI, a calm, precise desktop agent that does 
 You help the user get things done on their computer: web research and comparison, shopping comparison (never buying), forms and bookings up to the payment step, email, calendar and documents through the user's connected MCP servers (list them with mcp__o__mcp_tools, call them with mcp__o__mcp_call), files and folders (find, rename, sort, clean up), spreadsheets and documents, code and dev setup, desktop apps through computer use, and scheduled or recurring jobs.
 Style: composed, direct and concise; no theatrics. Short replies (1-4 sentences) unless asked for detail. No walls of text.
 Act first: do not ask clarifying questions when a reasonable default exists. Pick the default, do the task, and state the assumption in one line at the end ("Assumed: ..."). Ask only before irreversible or money actions, before sending messages as the user, and before deleting the user's files. Plan internally and don't narrate the plan. When tool calls are independent of each other, make them in parallel in one turn.
-Preferences: at the start of a task, call mcp__o__recall_preferences once and silently apply whatever fits (formats, places, brands, budgets, naming, tone). When the user tells you how they like something ("always", "I prefer", "next time", or a correction of your result), call mcp__o__remember_preference with one short sentence.
+Preferences: call mcp__o__recall_preferences (at most once) only when the result depends on taste or past choices (formats, places, brands, budgets, naming, tone), and silently apply whatever fits; never for opening, searching or navigating. When the user tells you how they like something ("always", "I prefer", "next time", or a correction of your result), call mcp__o__remember_preference with one short sentence.
 Schedules: when the user asks for something at a time or on repeat ("every Monday at 8", "tomorrow at 9", "every 3 hours"), call mcp__o__schedule_task with the prompt to run and a structured when; mcp__o__list_schedules and mcp__o__cancel_schedule manage them. Confirm the schedule in one line.
 Goals: you can own long-running goals across days and weeks ("grow my channel to monetization", "get me to 10k subscribers"). When the user hands you one, call mcp__o__goal_create with their words; mcp__o__goal_status shows progress and mcp__o__goal_propose suggests goals from what you have learned. Each cycle you measure progress against the goal's metrics from the platform itself, adapt the plan, and end with the cycle record (or mcp__o__goal_record_cycle). You work in sync with the person: show the plan, share real wins, and ask only at checkpoints.
 Checkpoints: publishing or posting publicly, sending messages as the user, spending money or starting paid services, creating accounts, accepting terms and deleting the user's data always wait for the person. Prepare everything (for a video: the finished file, title, description, thumbnail and schedule) and call mcp__o__goal_checkpoint; O shows one Approve / Edit / Skip card. You never create accounts or spend money yourself, never buy views, followers or engagement, never use bots or fake comments, and never work around a platform's rules. Work through the user's own accounts and connectors, and report metrics honestly: no claims of virality or monetization the numbers do not show.
+Speed: act directly; each step costs the user time and money. To reach a site, use the domain they typed ("open myscs.org" means https://myscs.org/); for a bare name with no domain, one WebSearch at most. Never search browser history, list browser profiles or read browser data files to find a site or anything else. Group every action one observation allows into the same turn instead of observing again between them. On web pages, when the mcp__stagehand__ tools are available, prefer one web_act / web_extract call with a plain-language instruction over many low-level snapshot/click/type steps. After an action reports success, don't take a screenshot or peek at the screen to confirm it unless the task needs verification. Budget: opening, searching or one lookup takes 1-3 tool calls; most tasks fit in about 10; past 20, stop and report what is done and what is left.
 {{BROWSER_RULES}}
 Screen: you can see the user's screen with the mcp__o__see_screen tool (a screenshot of the display under their cursor). Use it whenever they mention what's on their screen ("this", "this page", "this question", "can you see my screen?") instead of saying you can't see it, and take a fresh one when you need to see changes. To act on a web page they're looking at, use your browser tools in that tab.
 Desktop apps: you can operate desktop applications yourself through O's computer-use engine on an isolated display: mcp__o__computer_run {goal, app} plans and runs it and stores the result as a procedure, mcp__o__computer_replay replays a stored procedure with no model calls, mcp__o__computer_tree and mcp__o__computer_find read the app's accessibility tree. The user's own mouse and keyboard are never touched. If computer_run fails, read its error and call it again with a corrected goal rather than driving the display yourself.
@@ -177,6 +188,9 @@ function resolveClaude(claudePath) {
   return p;
 }
 
+/** The env of a task's Claude Code process: childEnv plus MCP tools loaded up front (no ToolSearch step). */
+function agentEnv(extra) { return childEnv({ ...TOOL_SEARCH_ENV, ...(extra || {}) }); }
+
 function childEnv(extra) {
   const env = { ...process.env, ...extra };
   for (const k of STRIP_ENV) delete env[k];
@@ -206,7 +220,7 @@ function looksLikeLoginProblem(text) {
 // MCP servers O installed itself (evolve skills: engine/o_engine/evolve/installer.py writes this file under the
 // engine's data dir). Re-checked here: only pinned npx/uvx launches with no env or headers get through, and the
 // reserved `o` / `playwright` names never do.
-const RESERVED_MCP = ['o', 'playwright'];
+const RESERVED_MCP = ['o', 'playwright', 'stagehand'];
 const PINNED_ARG = /^(?:(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|[A-Za-z0-9][A-Za-z0-9._-]*==\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?)$/;
 function installedSkillServers(userDataDir) {
   const out = {};
@@ -223,6 +237,49 @@ function installedSkillServers(userDataDir) {
     out[name] = { type: 'stdio', command: e.command === 'npx' && IS_WIN ? 'npx.cmd' : e.command, args };
   }
   return out;
+}
+
+// ---------------------------------------------------------------- model routing
+
+const SIMPLE_VERB = /^(?:open|go|visit|launch|start|quit|close|search|google|show|check|play|pause|resume|mute|unmute|what|what's|whats|who|when|where|define|translate|convert|calculate|turn|set|read|look)\b/i;
+const MULTI_STEP = /\b(?:and|then|after|afterwards|also|plus|compare|research|analy[sz]e|summari[sz]e|every|each|all|schedule|daily|weekly|monthly|remind|plan|write|draft|reply|email|send|post|publish|book|buy|order|fill|form|apply|install|set ?up|setup|build|code|debug|fix|refactor|deploy|goal|grow|until|while|if|best|cheapest|cheap|list|find|organi[sz]e|clean|sort|rename|delete|move|copy)\b|[,;:\n]/i;
+
+/**
+ * Which model a run uses: settings.fastModel (default 'haiku') for short, single-verb, fresh tasks; the main
+ * settings.model for the rest. A cheap heuristic, no model call. @returns {{model:string, route:'fast'|'main', reason:string}}
+ */
+function routeModel(prompt, s, { resume = false, goal = false } = {}) {
+  const main = String((s && s.model) || '');
+  const raw = s && s.fastModel;
+  const fast = raw == null ? DEFAULT_FAST_MODEL : String(raw).trim();
+  const keep = (reason) => ({ model: main, route: 'main', reason });
+  if (!fast || /^off$/i.test(fast)) return keep('fastModel is off');
+  if (fast === main) return keep('fastModel is the main model');
+  if (goal) return keep('goal cycle');
+  if (resume) return keep('follow-up in an existing session');
+  const p = String(prompt || '').trim();
+  const words = p.split(/\s+/).filter(Boolean);
+  if (!p || p.length > 100 || words.length > 14) return keep('long prompt');
+  if (MULTI_STEP.test(p)) return keep('multi-step or open-ended wording');
+  if (!SIMPLE_VERB.test(p.replace(/^(?:please|pls|can you|could you|hey o,?|o,)\s+/i, ''))) return keep('no simple single verb');
+  return { model: fast, route: 'fast', reason: 'short single-verb task' };
+}
+
+// ---------------------------------------------------------------- Stagehand (optional dependency)
+
+/** The installed @browserbasehq/stagehand package folder, or null (then no stagehand server is wired). */
+function findStagehand() {
+  try { return path.dirname(require.resolve('@browserbasehq/stagehand/package.json')).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`); } catch (_) { return null; }
+}
+
+// Bash commands that read the browser's own data (history, profiles, cookies, saved logins). O never needs them:
+// a site is reached by its domain. Refused in every permission mode.
+const BROWSER_DATA_RE = /(?:Application Support\/(?:Google\/Chrome|Microsoft Edge|BraveSoftware|Arc|Chromium|Firefox)|Library\/Safari|\.mozilla\/firefox|\.config\/(?:google-chrome|chromium|microsoft-edge|BraveSoftware)|AppData[\\/](?:Local|Roaming)[\\/](?:Google[\\/]Chrome|Microsoft[\\/]Edge|BraveSoftware|Mozilla)|\bHistory\.db\b|\bplaces\.sqlite\b|\bLogin Data\b|\bCookies\b.*sqlite|sqlite3?\b[^\n]*\bHistory\b|\bLocal State\b)/i;
+function readsBrowserData(toolName, input) {
+  if (toolName !== 'Bash' && toolName !== 'mcp__o__provision') return false;
+  let text = '';
+  try { text = toolName === 'Bash' ? String((input && input.command) || '') : JSON.stringify(input || {}); } catch (_) { text = ''; }
+  return BROWSER_DATA_RE.test(text);
 }
 
 /** Locate a local @playwright/mcp CLI, so we don't depend on npx + network at runtime. */
@@ -376,8 +433,9 @@ class OAgent extends EventEmitter {
    * @param {() => ({url:string, token:string}|null)} [o.getEngine]  running engine endpoint, if any
    * @param {() => (string|null)} [o.getChatId]  id of the open chat: the bridge's GenUI surface is `chat:<id>` (else `chat:default`)
    */
-  constructor({ userDataDir, getSettings, onPermissionRequest, captureScreen, getLinkEndpoint, actionLog, getEngine, getChatId, taskId, onSchedule, onGoal, goalId } = {}) {
+  constructor({ userDataDir, getSettings, onPermissionRequest, captureScreen, getLinkEndpoint, actionLog, getEngine, getChatId, taskId, onSchedule, onGoal, goalId, findStagehand: findStagehandImpl } = {}) {
     super();
+    this.findStagehand = typeof findStagehandImpl === 'function' ? findStagehandImpl : findStagehand;
     // A task agent (one per task in main/tasks.js) tags every event and log entry with its task id and
     // writes its own MCP config / persona files, so several Claude Code processes never share a file.
     this.taskId = taskId ? String(taskId) : null;
@@ -429,6 +487,11 @@ class OAgent extends EventEmitter {
       extensionToken: s.extensionToken || '',
       browserProfile: s.browserProfile || '', // optional browser profile dir name for 'mine' mode, e.g. 'Profile 1'
       screenAccess: s.screenAccess !== false,
+      fastModel: s.fastModel == null ? DEFAULT_FAST_MODEL : String(s.fastModel).trim(),
+      stagehand: s.stagehand !== false, // wire the Stagehand MCP server when the package is installed
+      proxyEnabled: s.proxyEnabled !== false,
+      proxyPort: Number.isFinite(Number(s.proxyPort)) && s.proxyPort !== '' && s.proxyPort != null ? Number(s.proxyPort) : 8787,
+      proxyToken: String(s.proxyToken || ''),
     };
   }
 
@@ -584,6 +647,10 @@ class OAgent extends EventEmitter {
     const allow = { behavior: 'allow', updatedInput: input };
     const { permissionMode } = this.settings();
     if (this._cancelled) return { behavior: 'deny', message: 'The user stopped this task.' };
+    if (readsBrowserData(toolName, input)) {
+      this._log({ kind: 'policy', summary: `denied ${toolName}: reads browser history/profile data`, detail: { toolName, input, mode: permissionMode, reason: 'browser data' } });
+      return { behavior: 'deny', message: 'O does not read browser history, profiles, cookies or saved logins. Open the site by its domain (or one WebSearch) instead.' };
+    }
     if (permissionMode === 'auto') return allow;
     const summary = describePermission(toolName, input);
     const line = clip(summary.replace(/\n/g, ' '), 160);
@@ -737,6 +804,36 @@ class OAgent extends EventEmitter {
         },
       },
     };
+    // Stagehand: one-call web_act / web_extract / web_observe with a local action cache (repeats replay with no
+    // model call). Only when the package is installed; its uncached steps use the user's Claude login through O's
+    // local API proxy, so it also needs the proxy. Not in 'mine' mode (the Playwright Extension owns that tab).
+    let stagehandDir = null;
+    if (s.stagehand && s.browserMode !== 'mine' && s.proxyEnabled && s.proxyToken) {
+      try { stagehandDir = this.findStagehand(); } catch (_) { stagehandDir = null; }
+    }
+    if (stagehandDir) {
+      const shEnv = {
+        ...nodeEnv,
+        O_STAGEHAND_MODULE: stagehandDir,
+        O_STAGEHAND_CACHE_DIR: path.join(this.userDataDir, 'stagehand-cache'),
+        O_STAGEHAND_LLM_URL: `http://127.0.0.1:${s.proxyPort}/v1`,
+        O_STAGEHAND_LLM_TOKEN: s.proxyToken,
+        O_STAGEHAND_MODEL: 'o-ai-code',
+      };
+      if (linked) shEnv.O_STAGEHAND_CDP_URL = pwArgs[pwArgs.indexOf('--cdp-endpoint') + 1];
+      else {
+        shEnv.O_STAGEHAND_PROFILE = profile;
+        shEnv.O_STAGEHAND_HEADLESS = s.browserHeadless ? '1' : '0';
+        const exe = s.browserPath || findInstalledBrowser();
+        if (exe) shEnv.O_STAGEHAND_EXECUTABLE = exe;
+      }
+      cfg.mcpServers.stagehand = {
+        type: 'stdio',
+        command: process.execPath,
+        args: [STAGEHAND_MCP.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`)],
+        env: shEnv,
+      };
+    }
     const tag = this.fileTag ? '-' + this.fileTag : '';
     const file = path.join(this.userDataDir, `o-mcp${tag}.json`);
     const cfgText = JSON.stringify(cfg, null, 2);
@@ -746,11 +843,11 @@ class OAgent extends EventEmitter {
     fs.writeFileSync(sp, personaText);
     // What a pre-spawned process was started with: if any of it changed, the warm process is stale.
     const fingerprint = crypto.createHash('sha256').update(cfgText + '\0' + personaText + '\0' + JSON.stringify(s)).digest('hex');
-    return { mcpFile: file, personaFile: sp, noBrowser, linked, fingerprint };
+    return { mcpFile: file, personaFile: sp, noBrowser, linked, fingerprint, stagehand: !!stagehandDir };
   }
 
   _spawnChild(s, args) {
-    return spawnClaude(s.claudePath, args, { cwd: s.cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    return spawnClaude(s.claudePath, args, { cwd: s.cwd, env: agentEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
   }
 
   /**
@@ -802,19 +899,20 @@ class OAgent extends EventEmitter {
     }
   }
 
-  _buildArgs(s, files, resume) {
+  _buildArgs(s, files, resume, route) {
+    const model = route ? route.model : s.model;
     const args = [
       '-p',
       '--output-format', 'stream-json',
       '--verbose',
-      '--max-turns', String(MAX_TURNS),
+      '--max-turns', String(route && route.route === 'fast' ? MAX_TURNS_FAST : MAX_TURNS),
       '--append-system-prompt-file', files.personaFile,
       '--permission-prompt-tool', 'mcp__o__approve',
       '--strict-mcp-config',
       '--mcp-config', files.mcpFile,
       '--allowedTools', (this.goalId ? GOAL_ALLOWED_TOOLS_FLAG : ALLOWED_TOOLS_FLAG).join(','),
     ];
-    if (s.model) args.push('--model', s.model);
+    if (model) args.push('--model', model);
     if (resume) args.push('--resume', resume);
     // The prompt itself goes in on stdin (avoids quoting issues and variadic-flag swallowing).
     return args;
@@ -857,7 +955,12 @@ class OAgent extends EventEmitter {
     const s = this.settings();
     this._lastSettings = s;
     const files = this._writeMcpConfig(s);
-    const args = this._buildArgs(s, files, resume);
+    const route = routeModel(prompt, s, { resume: !!resume, goal: !!this.goalId });
+    this.lastRoute = route;
+    this._log({ kind: 'note', summary: `Model: ${route.model || 'default'} (${route.route}: ${route.reason})`, detail: { route: route.route, model: route.model || null, reason: route.reason, mainModel: s.model || null, fastModel: s.fastModel || null, stagehand: !!files.stagehand } });
+    const args = this._buildArgs(s, files, resume, route);
+    // A pre-spawned process runs the main model: a fast-routed run starts its own.
+    const warmKey = route.model === (s.model || '') ? files.fingerprint : files.fingerprint + ':' + route.model;
 
     return new Promise((resolve) => {
       let finished = false;
@@ -879,7 +982,7 @@ class OAgent extends EventEmitter {
         this._emit({ type: 'done', result: '(stopped)', sessionId: this.sessionId, stopped: true });
         return finish({ ok: false, cancelled: true });
       }
-      let child = resume ? null : this._takeWarm(files.fingerprint);
+      let child = resume ? null : this._takeWarm(warmKey);
       this.lastRunWarm = !!child;
       try {
         if (!child) {
@@ -1063,4 +1166,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { routeModel, findStagehand, readsBrowserData, agentEnv, TOOL_SEARCH_ENV, DEFAULT_FAST_MODEL, MAX_TURNS_FAST, STAGEHAND_READ_TOOLS, STAGEHAND_ACT_TOOLS, STAGEHAND_MCP, browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };

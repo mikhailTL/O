@@ -24,7 +24,6 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
   color: var(--text);
   overflow: hidden;
 }
-.ncard::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--text); }
 :root[data-theme="light"] .ncard { background: #FFFFFF; box-shadow: var(--highlight); }
 .nslot.out { animation: nout 220ms var(--ease-io) forwards; }
 @keyframes nout { to { transform: translateX(110%); opacity: 0; } }

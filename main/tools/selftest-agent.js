@@ -283,6 +283,38 @@ function ok(cond, label) {
     ba.dispose();
   }
 
+  {
+    // Stagehand MCP wiring: only with the package present (mocked here), the proxy on and a non-'mine' mode
+    const { STAGEHAND_READ_TOOLS, ALLOWED_TOOLS_FLAG, RESERVED_MCP } = require('../agent');
+    let shDir = '/fake/node_modules/@browserbasehq/stagehand';
+    let sset = { browserMode: 'auto', proxyToken: 'ptok', proxyPort: 8799 };
+    let ep = null;
+    const sa = new OAgent({ userDataDir, getSettings: () => sset, findStagehand: () => shDir, getLinkEndpoint: () => ep });
+    await sa.ensureServer();
+    const cfgOf = () => JSON.parse(fs.readFileSync(sa._writeMcpConfig(sa.settings()).mcpFile, 'utf8'));
+    let c = cfgOf();
+    const st = c.mcpServers.stagehand;
+    ok(st && /stagehand-mcp\.js$/.test(st.args[0]) && st.env.O_STAGEHAND_MODULE === shDir, 'stagehand present: the stagehand server is wired');
+    ok(st.env.O_STAGEHAND_LLM_URL === 'http://127.0.0.1:8799/v1' && st.env.O_STAGEHAND_LLM_TOKEN === 'ptok' && st.env.O_STAGEHAND_MODEL === 'o-ai-code', 'stagehand: LLM steps go to O\'s local API proxy (no API key)');
+    ok(st.env.O_STAGEHAND_CACHE_DIR === path.join(userDataDir, 'stagehand-cache'), 'stagehand: action cache under the user data dir');
+    ok(st.env.O_STAGEHAND_PROFILE === path.join(userDataDir, 'o-browser') && !st.env.O_STAGEHAND_CDP_URL, 'stagehand without O Link: O\'s own browser profile');
+    ep = 'ws://127.0.0.1:47615/cdp/tok';
+    c = cfgOf();
+    ok(c.mcpServers.stagehand.env.O_STAGEHAND_CDP_URL === ep && !c.mcpServers.stagehand.env.O_STAGEHAND_PROFILE, 'stagehand with O Link: connects to O Link\'s CDP endpoint');
+    sset = { browserMode: 'mine', proxyToken: 'ptok' };
+    ok(!cfgOf().mcpServers.stagehand, 'stagehand: not wired in mine mode');
+    sset = { browserMode: 'auto', proxyToken: '' };
+    ok(!cfgOf().mcpServers.stagehand, 'stagehand: not wired without the proxy token');
+    sset = { browserMode: 'separate', proxyToken: 'ptok', stagehand: false };
+    ok(!cfgOf().mcpServers.stagehand, 'stagehand: settings.stagehand false turns it off');
+    sset = { browserMode: 'separate', proxyToken: 'ptok' };
+    shDir = null;
+    ok(!cfgOf().mcpServers.stagehand && cfgOf().mcpServers.o && cfgOf().mcpServers.playwright, 'stagehand absent: no stagehand server, the rest unchanged');
+    ok(STAGEHAND_READ_TOOLS.every((t) => ALLOWED_TOOLS_FLAG.includes(t)) && !ALLOWED_TOOLS_FLAG.includes('mcp__stagehand__web_act'), 'stagehand: observe/extract pre-allowed, web_act goes through approve');
+    ok(RESERVED_MCP.includes('stagehand'), 'stagehand: reserved MCP name (user servers cannot replace it)');
+    sa.dispose();
+  }
+
   agent.dispose();
   bare.dispose();
   try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}

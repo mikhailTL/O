@@ -62,8 +62,11 @@ button:focus { outline: none; }
   height: var(--island-h);
   margin-left: calc(var(--w) * -0.5px);
   border-radius: var(--ol-r-island);
-  /* the hit area only; the visuals are the absolutely positioned parts inside */
+  /* the hit area, plus the island's soft white bloom; the glass is the absolutely positioned parts inside */
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.07);
+  transition: box-shadow 160ms linear;
 }
+body.open #island { box-shadow: none; }
 #island > .rim { top: 0; left: calc(var(--w) * 0.5px); }
 #island:active .island-row { opacity: 0.8; transition: opacity var(--ol-press) linear; }
 #island:focus-visible > .rim { box-shadow: var(--ol-highlight), var(--ol-glow); }
