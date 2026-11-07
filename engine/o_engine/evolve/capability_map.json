@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "updated": "2026-11-06",
+  "note": "O's subsystems as implemented on 2026-11-06, built from engine/o_engine, main/*.js, docs/plans/2026-11-04-o-ai.md and docs/research/2026-11-05-frontier-agents.md. Metrics are what the repo can measure; no benchmark number is claimed (docs/research/2026-11-05-frontier-agents.md section 3).",
+  "subsystems": {
+    "cu_grounding": {
+      "description": "Resolving a target (role/name text) to a screen element: accessibility tree first, cached locator second, vision grounder third.",
+      "current": "executor resolution order a11y -> LocatorCache (append-only, keyed by app+target+screen sha) -> Grounder (primary OpenAI-compatible VLM, Claude Code CLI fallback once). ZoomGrounder does two-step zoom-in with a zoom-consistency confidence; answers below cuGroundConfidence (default 0.3) are discarded and the fallback runs. MultiCropVote takes the mode of shifted crops.",
+      "files": ["engine/o_engine/cu/ground.py", "engine/o_engine/cu/executor.py", "engine/o_engine/cu/backends/base.py", "main/settings.js"],
+      "metrics": ["offline grounding hit rate (engine/eval/osworld/offline.py, box contains recorded click)", "vision fallback rate per run (resolved_by in run records)", "ScreenSpot-Pro slice hit rate with/without zoom"],
+      "limits": ["single generalist VLM slot (vllmVisionModel, empty by default -> Claude fallback)", "no specialist/generalist routing cascade (GroundCascade-style)", "zoom consistency is a weak confidence signal (AUC 0.60 per arXiv 2604.15376)", "no candidate-box verifier (GUI-Actor style)"],
+      "watch_topics": ["gui-grounding", "screen-parsing", "screenspot", "gui-agent", "visual-grounding", "ui-grounding"]
+    },
+    "cu_planning": {
+      "description": "Turning a goal into OScript steps: milestone planning, per-observation next steps, best-of-N, heal/replan.",
+      "current": "Planner.plan_milestones once per task then next_steps per observation (<= cuStepsPerTurn, default 5); replan_step heals one failed step (cuMaxHeals default 3); BestOfN ranks N candidate runs comparatively from behaviour narratives; FeasibilityGate runs read-only probes and one model question before planning. ModelClient: local vLLM first, `claude -p` fallback; JobMeter caps paid calls per job.",
+      "files": ["engine/o_engine/cu/planner.py", "engine/o_engine/cu/graph.py", "engine/o_engine/cu/feasibility.py", "engine/o_engine/cu/schema.py", "engine/o_engine/cu/meter.py", "engine/eval/osworld/run_o.py"],
+      "metrics": ["OSWorld task success (engine/eval/osworld/run_o.py + summarize.py; no number recorded yet)", "paid model calls and cost_usd per job (cu/meter.py)", "heal count per job"],
+      "limits": ["fixed graph topology: context->plan->ground->execute->judge->store->report with heal as the only cycle", "no context compaction beyond token-budgeted tree summaries", "no search agent for unfamiliar workflows (VLAA-GUI)", "no prompt-prefix cache measurement"],
+      "watch_topics": ["computer-use", "computer-use-agent", "gui-agent", "osworld", "agent-planning", "desktop-agent"]
+    },
+    "cu_verification": {
+      "description": "Judging whether a step / goal succeeded.",
+      "current": "a11y_assert on the tree (no model call) -> StateJudge for state_assert checks (file_exists/file_contains/file_sha_changed/tree/shell_true via the read-only probe allow-list) -> VLM/Claude screenshot judge only when the first two cannot decide. ScriptRunner loop breaker: >=3 identical (screen sha, step) pairs -> 'loop' heal reason.",
+      "files": ["engine/o_engine/cu/judge.py", "engine/o_engine/cu/probes.py", "engine/o_engine/cu/executor.py", "engine/o_engine/cu/graph.py"],
+      "metrics": ["judge agreement with recorded results (engine/eval/osworld/offline.py)", "VLM judge calls per job", "false-done rate"],
+      "limits": ["no trajectory-level judge (SeekJudge)", "no generated app-specific state verifiers (OpenComputer)", "probe allow-list is fixed and small (cu/probes.py)"],
+      "watch_topics": ["agent-evaluation", "reward-model", "gui-verifier", "llm-judge"]
+    },
+    "cu_backends": {
+      "description": "Platform accessibility backends that expose the tree and act through accessibility APIs, never the host mouse.",
+      "current": "AT-SPI2 (Linux, xdotool pixels only on the isolated display), AX via atomacos (macOS), UI Automation (Windows), FakeBackend for tests; allow_pixels only on isolated displays.",
+      "files": ["engine/o_engine/cu/backends/base.py", "engine/o_engine/cu/backends/atspi.py", "engine/o_engine/cu/backends/ax.py", "engine/o_engine/cu/backends/uia.py", "engine/o_engine/cu/backends/fake.py", "engine/o_engine/display.py"],
+      "metrics": ["a11y resolution rate (resolved_by=a11y share)", "tests/test_cu_real_atspi.py"],
+      "limits": ["macOS and Windows have no isolated display, so pixel fallback is off there", "Electron/web apps often expose sparse trees"],
+      "watch_topics": ["accessibility-api", "at-spi", "ui-automation", "pywinauto"]
+    },
+    "cu_memory": {
+      "description": "Task working memory, append-only procedures with replay, and per-app interfaces (notes + executable APIs).",
+      "current": "WorkingMemory{facts,state,todos,risks} bounded, rendered after the static persona; ProcedureStore procedures/<app>/<key>/v<N>.json append-only with lineage, replay with zero model calls and HealLoop; InterfaceNotes markdown (400-line cap) and InterfaceStore/InterfaceBuilder versioned api.py with AST checks, fitness = replay pass rate.",
+      "files": ["engine/o_engine/cu/memory.py", "engine/o_engine/cu/procedures.py", "engine/o_engine/cu/interfaces.py"],
+      "metrics": ["procedure replay pass rate", "interface fitness passed/replayed (GET /computer/interfaces)", "memory items retained across replans"],
+      "limits": ["no cross-task semantic retrieval (embeddings) over procedures", "interfaces built only from passing procedures, no exploration/practice (SkillWeaver)"],
+      "watch_topics": ["agent-memory", "procedural-memory", "skill-library", "long-term-memory", "memory"]
+    },
+    "learning": {
+      "description": "What O learns from the user and itself: preferences, schedules, per-app skill.",
+      "current": "observations.jsonl append-only record, profile.json derived cache with preference/schedule/app_skill items, scrub() strips secrets, LearnedNotes rendered into prompts.",
+      "files": ["engine/o_engine/learning.py", "main/agent.js"],
+      "metrics": ["corrections per task", "profile items with confidence", "app_skill success ratio"],
+      "limits": ["frequency/heuristic based, no learned ranking model", "no evaluation of whether injected notes improve outcomes"],
+      "watch_topics": ["personalization", "user-modeling", "agent-memory"]
+    },
+    "parallel_tasks": {
+      "description": "Many tasks at once and role-partitioned planning.",
+      "current": "main/tasks.js TaskManager: one Claude Code process + session per task, maxParallelTasks 1..8 (default 3), queue; swarm.py SimpleCrew (stdlib threads) or CrewAICrew over telemetry_auditor -> subprocess_compiler -> environment_inspector.",
+      "files": ["main/tasks.js", "main/agent.js", "engine/o_engine/swarm.py", "main/tools/selftest-tasks.js"],
+      "metrics": ["tasks completed per hour", "queue wait time", "node main/tools/selftest-tasks.js"],
+      "limits": ["no shared scratchpad or dependency graph between tasks", "crew roles are fixed"],
+      "watch_topics": ["multi-agent", "agent-orchestration", "crewai", "agent-swarm"]
+    },
+    "goals": {
+      "description": "Long-term objectives O works on daily with journals, metrics and checkpoints.",
+      "current": "engine goals.py GoalStore journal.jsonl append-only (created/cycle records), next_cycle_prompt, targets_met/claims_success; main/goals.js schedules cycles via scheduler.js and gates checkpoint acts via main/tools/checkpoints.js.",
+      "files": ["engine/o_engine/goals.py", "main/goals.js", "main/scheduler.js", "main/tools/checkpoints.js"],
+      "metrics": ["cycles with metric progress", "claims_success vs targets_met mismatch rate", "node main/tools/selftest-goals.js"],
+      "limits": ["one cycle per cadence, no adaptive replanning between cycles", "metrics are self-reported readings"],
+      "watch_topics": ["autonomous-agents", "long-horizon", "agent-planning"]
+    },
+    "ambient": {
+      "description": "Opt-in on-device presence sensing, milestones, wake brief, TTS, child-process supervision.",
+      "current": "PresenceMachine over CSI/sonar/rPPG/face/OS idle; in-process bus (MQTT/Redis optional); MilestoneStore SQLite; Briefer (local-only model, 3 sentences, template fallback); PauseGate pauses low-priority jobs on return; Supervisor restarts vLLM/screenpipe with backoff.",
+      "files": ["engine/o_engine/ambient/presence.py", "engine/o_engine/ambient/bus.py", "engine/o_engine/ambient/brief.py", "engine/o_engine/ambient/pause.py", "engine/o_engine/ambient/supervisor.py", "engine/o_engine/ambient/sensors/", "main/ambient.js"],
+      "metrics": ["presence transition latency", "false ABSENT rate", "node main/tools/selftest-ambient.js"],
+      "limits": ["every sensor off by default and gated by an explicit consent sheet (protected)", "presence thresholds are hand-set"],
+      "watch_topics": ["presence-detection", "wifi-sensing", "rppg", "on-device"]
+    },
+    "genui": {
+      "description": "Declarative streaming GenUI frames rendered by the panel.",
+      "current": "A2UI-style Begin/Update/Data/End frames over a closed component set (Column, Row, Card, Text, Step, Tree, Progress, KeyValue, Button, Preview), parse_frame validation, Sandbox frames rendered in a sandboxed iframe; renderer/genui.js maps frames to DOM.",
+      "files": ["engine/o_engine/genui.py", "renderer/genui.js", "renderer/genui.css"],
+      "metrics": ["frames rejected by parse_frame", "bytes per surface", "tests/test_genui.py"],
+      "limits": ["closed component set; no A2UI spec version negotiation", "no streaming partial-JSON repair"],
+      "watch_topics": ["generative-ui", "a2ui", "mcp-ui", "streaming-ui"]
+    },
+    "sandboxing": {
+      "description": "Disposable and isolated execution for high-risk and headless work.",
+      "current": "containment.py select_sandbox: E2B cloud or one-shot Docker, /work only survivor; ambient/isolation.py select_isolated: microsandbox (libkrun) -> Firecracker (Linux+KVM, no network) -> Docker -> local path sandbox; runners.py NativeRunner / OpenInterpreterRunner.",
+      "files": ["engine/o_engine/containment.py", "engine/o_engine/ambient/isolation.py", "engine/o_engine/ambient/microsandbox.py", "engine/o_engine/ambient/firecracker.py", "engine/o_engine/runners.py", "engine/o_engine/executor.py"],
+      "metrics": ["sandbox start latency", "fallback count per selection", "tests/test_containment.py"],
+      "limits": ["microsandbox pinned to SDK 0.7.13 API", "no gVisor/WASM option"],
+      "watch_topics": ["sandbox", "microvm", "code-sandbox", "firecracker", "agent-sandbox"]
+    },
+    "browser": {
+      "description": "Web automation in the user's browser and headless.",
+      "current": "main/agent.js drives Playwright MCP (@playwright/mcp) in the user's tabs through main/link.js (O Link extension CDP relay, payment sites refused); engine web.py BrowserUseRunner (browser_use.Agent on local vLLM, headless Chromium) and PlaywrightDomRunner for scripted DOM actions.",
+      "files": ["main/link.js", "main/agent.js", "engine/o_engine/web.py", "extension/"],
+      "metrics": ["web task success", "tests/test_web.py", "node main/tools/selftest-bridge.js"],
+      "limits": ["browser-use pinned >=0.1.40 API", "no WebArena/WebVoyager eval in repo"],
+      "watch_topics": ["browser-agent", "browser-automation", "web-agent", "playwright-mcp", "browser-use"]
+    },
+    "mcp": {
+      "description": "Calling the user's MCP servers and exposing O's own tools to Claude Code.",
+      "current": "mcp_router.MCPRouter: stdio/SSE servers via the mcp SDK, tool listing with JSON schemas, args validated with jsonschema 2020-12 before sending; tools exposed as mcp__o__<name> (plan 'MCP tools exposed to Claude Code').",
+      "files": ["engine/o_engine/mcp_router.py", "main/tools/bridge-mcp.js", "engine/o_engine/server.py"],
+      "metrics": ["schema-rejected calls", "tests/test_mcp_router.py"],
+      "limits": ["no streamable-HTTP transport noted", "no registry discovery of new servers"],
+      "watch_topics": ["mcp", "mcp-server", "model-context-protocol"]
+    },
+    "model_routing": {
+      "description": "Which model answers: local vLLM first, Claude Code CLI fallback; the OpenAI-compatible API proxy.",
+      "current": "cu/planner.py ModelClient (LocalModelClient then ClaudeCodeClient `claude -p --output-format json`, cost from total_cost_usd); parser.py; main/proxy.js turns OpenAI-style requests into `claude -p` runs with stream-json normalisation; tokenfilter keeps the first balanced JSON value.",
+      "files": ["engine/o_engine/cu/planner.py", "engine/o_engine/parser.py", "main/proxy.js", "main/agent.js", "engine/o_engine/tokenfilter.py"],
+      "metrics": ["paid calls and cost_usd per job", "local-answer share", "node main/tools/selftest-proxy.js"],
+      "limits": ["default local model meta-llama/Meta-Llama-3-8B-Instruct (main/settings.js)", "no structured-output / JSON-schema mode on the local endpoint"],
+      "watch_topics": ["vllm", "local-llm", "structured-output", "claude-code"]
+    },
+    "voice": {
+      "description": "Speech output (and future input).",
+      "current": "ambient/tts.py and main/ambient.js: macOS say, Windows SAPI, Linux espeak-ng/spd-say; no speech input.",
+      "files": ["engine/o_engine/ambient/tts.py", "main/ambient.js"],
+      "metrics": ["tts availability per platform"],
+      "limits": ["no local STT", "robotic OS voices"],
+      "watch_topics": ["text-to-speech", "speech-recognition", "whisper", "voice-agent"]
+    }
+  },
+  "protected": {
+    "note": "Areas evolve must never modify (plan L step 5). Mirrored as PROTECTED_* constants in engine/o_engine/evolve/triage.py.",
+    "paths": ["main/agent.js (onPermissionRequest / approval prompts, Money rules)", "main/link.js (payment guard)", "main/tools/checkpoints.js", "main/actionlog.js", "engine/o_engine/actionlog.py", "engine/o_engine/gate.py", "main/ambient.js (consentFilter)", "engine/o_engine/ambient/sensors/", "engine/o_engine/evolve/"]
+  },
+  "watch_repos": [
+    "simular-ai/Agent-S",
+    "UCSC-VLAA/VLAA-GUI",
+    "xlang-ai/OpenCUA",
+    "wadang/muscle-mem-agent",
+    "omxyz/zoom-consistency-routing",
+    "microsoft/GUI-Actor",
+    "laiye-ai/open-apa",
+    "intelligence-indeed/intelligence-indeed",
+    "intelligence-indeed/Indeed-UI",
+    "bytedance/UI-TARS",
+    "SalesforceAIResearch/Beagle",
+    "Pointer-so/OSWorld",
+    "OSU-NLP-Group/SkillWeaver",
+    "thudm/ComputerRL",
+    "xlang-ai/OSWorld",
+    "samuelsortland-cmyk/opia",
+    "anthropics/claude-code",
+    "anthropics/anthropic-sdk-python",
+    "modelcontextprotocol/registry",
+    "superradcompany/microsandbox",
+    "firecracker-microvm/firecracker",
+    "vllm-project/vllm"
+  ],
+  "search_topics": ["computer-use", "gui-agent", "mcp-server", "browser-agent", "agent-memory", "screen-parsing", "computer-use-agent", "gui-grounding"],
+  "arxiv": {
+    "categories": ["cs.AI", "cs.CL", "cs.HC", "cs.RO"],
+    "terms": ["GUI agent", "computer use", "computer-use agent", "web agent", "tool use", "OSWorld", "GUI grounding", "agent memory"]
+  }
+}
