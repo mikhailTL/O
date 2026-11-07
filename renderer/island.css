@@ -1,0 +1,306 @@
+/* O: the Island (status capsule) and the Command bar. Tokens come from liquid.css.
+   Geometry: everything hangs from the horizontal centre of the window and a shared top edge, so the
+   main process can swap the window between its compact and expanded bounds without moving anything.
+   --w is the island width in px (unitless, set by app.js); --bsx is the bar's closed scale. */
+:root {
+  --top: 12px;
+  --island-h: 36px;
+  --bar-w: 640px;
+  --bar-h: 56px;
+  --side: 56px;
+  --side-gap: 16px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--ol-text);
+  font-family: var(--ol-font);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+*, *::before, *::after { box-sizing: border-box; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
+button:focus { outline: none; }
+
+#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; }
+#goo { position: absolute; inset: 0; }
+
+/* ------------------------------------------------------------------ island: three parts, so its width
+   morphs with transforms only (caps translate, the middle scales on X) */
+.g-cap, .g-mid, .rim, .sheen {
+  position: absolute;
+  top: var(--top);
+  left: 50%;
+  height: var(--island-h);
+  transition: transform var(--ol-morph) var(--ol-ease-out), opacity 160ms linear;
+}
+/* Goo blobs with straight edges sit 2px inside the crisp rims: the threshold grows them by about that much.
+   Round caps are not inset: at that curvature the blur erodes about as much as the threshold grows. */
+.g-mid { top: calc(var(--top) + 2px); height: calc(var(--island-h) - 4px); }
+.g-cap { width: 36px; border-radius: 18px; }
+.g-cap-l { transform: translateX(calc(var(--w) * -0.5px)); }
+.g-cap-r { margin-left: -36px; transform: translateX(calc(var(--w) * 0.5px)); }
+.g-mid { width: 100px; margin-left: -50px; transform: scaleX(calc((var(--w) - 30) / 100)); }
+
+.rim { border: 1px solid var(--ol-line); box-shadow: var(--ol-highlight); pointer-events: none; }
+.rim-l { width: 18px; border-right: 0; border-radius: 18px 0 0 18px; transform: translateX(calc(var(--w) * -0.5px)); }
+.rim-r { width: 18px; margin-left: -18px; border-left: 0; border-radius: 0 18px 18px 0; transform: translateX(calc(var(--w) * 0.5px)); }
+.rim-m { width: 100px; margin-left: -50px; border-left: 0; border-right: 0; transform: scaleX(calc((var(--w) - 36) / 100)); }
+.sheen {
+  width: 160px;
+  border-radius: 18px 0 0 18px;
+  background: radial-gradient(90% 120% at 0% 0%, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 60%);
+  transform: translateX(calc(var(--w) * -0.5px));
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+#island {
+  position: absolute;
+  top: var(--top);
+  left: 50%;
+  width: calc(var(--w) * 1px);
+  height: var(--island-h);
+  margin-left: calc(var(--w) * -0.5px);
+  border-radius: var(--ol-r-island);
+  /* the hit area only; the visuals are the absolutely positioned parts inside */
+}
+#island > .rim, #island > .sheen { top: 0; left: calc(var(--w) * 0.5px); }
+#island:hover > .sheen { opacity: 1; transition: opacity var(--ol-hover) linear; }
+#island:active .island-row { opacity: 0.8; transition: opacity var(--ol-press) linear; }
+#island:focus-visible > .rim { box-shadow: var(--ol-highlight), var(--ol-glow); }
+
+.island-row {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: var(--island-h);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  transition: opacity 160ms linear;
+}
+.line { display: inline-flex; align-items: baseline; gap: 6px; max-width: 330px; overflow: hidden; line-height: 1; letter-spacing: -0.003em; }
+.line .k { font-weight: 600; color: var(--ol-text); flex: none; }
+.line .sep { color: var(--ol-text-3); flex: none; }
+.line .v { color: var(--ol-text-2); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.line.swap { animation: o-swap 220ms var(--ol-ease-out) both; }
+@keyframes o-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.meta { font-size: 12px; color: var(--ol-text-3); font-variant-numeric: tabular-nums; line-height: 1; }
+.meta:empty { display: none; }
+
+#measure { position: absolute; left: -9999px; top: -9999px; visibility: hidden; white-space: nowrap; font-size: 13px; letter-spacing: -0.003em; }
+#measure .k { font-weight: 600; }
+
+/* ------------------------------------------------------------------ the ring glyph */
+.ring { position: relative; width: 14px; height: 14px; flex: none; }
+.ring svg { position: absolute; inset: 0; overflow: visible; filter: drop-shadow(0 0 3px rgba(76, 141, 255, 0.75)); }
+.ring circle { fill: none; stroke-width: 1.75; }
+.ring-base { stroke: url(#o-ring-grad); transition: opacity 200ms linear; }
+.ring-arc { stroke: var(--ol-accent-bright); stroke-linecap: round; stroke-dasharray: 8 25; opacity: 0; }
+.ring-halo {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(76, 141, 255, 0.55), rgba(76, 141, 255, 0) 100%);
+  opacity: 0.5;
+}
+.ring.is-idle .ring-halo { animation: o-breathe 5.2s ease-in-out infinite; }
+@keyframes o-breathe { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 0.85; transform: scale(1.08); } }
+.ring.is-working .ring-base { opacity: 0.35; }
+.ring.is-working .ring-arc { opacity: 1; }
+.ring.is-working svg { animation: o-spin 1.15s linear infinite; }
+@keyframes o-spin { to { transform: rotate(360deg); } }
+.ring.is-attention .ring-base { stroke: var(--ol-accent-bright); }
+.ring.is-attention .ring-halo { opacity: 0.95; }
+.ring.is-success .ring-base { stroke: var(--ol-success); }
+.ring.is-success svg { filter: drop-shadow(0 0 3px rgba(91, 224, 166, 0.7)); }
+.ring.is-success .ring-halo { background: radial-gradient(closest-side, rgba(91, 224, 166, 0.45), rgba(91, 224, 166, 0)); opacity: 0.8; }
+.ring.is-danger .ring-base { stroke: var(--ol-danger); }
+.ring.is-danger svg { filter: drop-shadow(0 0 3px rgba(255, 107, 107, 0.7)); }
+.ring.is-danger .ring-halo { background: radial-gradient(closest-side, rgba(255, 107, 107, 0.45), rgba(255, 107, 107, 0)); opacity: 0.8; }
+
+/* ------------------------------------------------------------------ the bar */
+.g-bar, #bar {
+  position: absolute;
+  top: var(--top);
+  left: 50%;
+  width: var(--bar-w);
+  height: var(--bar-h);
+  margin-left: calc(var(--bar-w) / -2);
+  border-radius: var(--ol-r-bar);
+  transform-origin: 50% 0;
+  transform: scale(var(--bsx), 0.62);
+  transition: transform var(--ol-morph) var(--ol-ease-out), opacity 120ms linear;
+}
+.g-bar { opacity: 0; top: calc(var(--top) + 2px); width: calc(var(--bar-w) - 4px); height: calc(var(--bar-h) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); border-radius: 20px; }
+#bar { pointer-events: none; display: flex; align-items: center; padding: 0 18px 0 20px; gap: 14px; }
+.bar-rim { position: absolute; inset: 0; border-radius: inherit; opacity: 0; transition: opacity 160ms linear; }
+.bar-rim::after {
+  /* the focus glow: an accent halo, not an outline */
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: var(--ol-glow), inset 0 0 0 1px rgba(124, 196, 255, 0.16);
+  opacity: 0;
+  transition: opacity var(--ol-hover) linear;
+}
+#bar:focus-within .bar-rim::after { opacity: 1; }
+.bar-ring, #input, .keys { position: relative; opacity: 0; transition: opacity 160ms linear; }
+.bar-ring { width: 16px; height: 16px; flex: none; }
+.bar-ring svg { display: block; overflow: visible; filter: drop-shadow(0 0 4px rgba(76, 141, 255, 0.8)); }
+.bar-ring circle { fill: none; stroke: url(#o-ring-grad); stroke-width: 1.75; }
+#input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ol-text);
+  caret-color: var(--ol-accent-bright);
+  font: 600 20px/1 var(--ol-font);
+  letter-spacing: -0.01em;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#input::placeholder { color: var(--ol-text-3); font-weight: 500; }
+#input::selection { background: rgba(76, 141, 255, 0.35); }
+.keys { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ol-text-3); flex: none; }
+.keys { gap: 14px; }
+.kg { display: inline-flex; align-items: center; gap: 6px; transition: opacity var(--ol-hover) linear; }
+#bar.has-text .kg-run { opacity: 0; }
+.bubble.k-run:not(.dim)::after { opacity: 1; }
+kbd {
+  font: 500 11px/1 var(--ol-font);
+  color: var(--ol-text-2);
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ol-r-control);
+  border: 1px solid var(--ol-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+body.open .g-bar, body.open #bar { transform: none; }
+body.open .g-bar { opacity: 1; transition: transform var(--ol-morph) var(--ol-ease-out), opacity 60ms linear; }
+body.open #bar { pointer-events: auto; }
+body.open .bar-rim { opacity: 1; transition-delay: 70ms; }
+body.open .bar-ring, body.open #input, body.open .keys { opacity: 1; transition-delay: 130ms; }
+
+/* open: the island stretches into the bar and its rim and text go */
+body.open .g-cap-l { transform: translateX(calc(var(--bar-w) / -2 + 4px)); }
+body.open .g-cap-r { transform: translateX(calc(var(--bar-w) / 2 - 4px)); }
+body.open .g-mid { transform: scaleX(5.9); }
+body.open .rim, body.open .sheen { opacity: 0; transition-duration: var(--ol-morph), 100ms; }
+body.open .island-row { opacity: 0; transition: opacity 90ms linear; }
+body.open #island { pointer-events: none; }
+
+/* ------------------------------------------------------------------ the side bud (open the panel) */
+.g-side, #side {
+  position: absolute;
+  top: var(--top);
+  left: 50%;
+  width: var(--side);
+  height: var(--side);
+  margin-left: calc(var(--bar-w) / 2 + var(--side-gap));
+  border-radius: 28px;
+  visibility: hidden;
+}
+body.ext .g-side, body.ext #side { visibility: visible; }
+.g-side { top: calc(var(--top) + 2px); width: calc(var(--side) - 4px); height: calc(var(--side) - 4px); margin-left: calc(var(--bar-w) / 2 + var(--side-gap) + 2px); border-radius: 26px; }
+#side { display: flex; align-items: center; justify-content: center; color: var(--ol-text-2); isolation: isolate; }
+#side svg { position: relative; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; transition: opacity var(--ol-hover) linear; }
+.side-rim { position: absolute; inset: 0; border-radius: inherit; }
+.side-rim::after, .bubble::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: var(--ol-raised);
+  box-shadow: var(--ol-glow);
+  opacity: 0;
+  transition: opacity var(--ol-hover) linear;
+  pointer-events: none;
+  z-index: -1;
+}
+#side:hover .side-rim::after { opacity: 0.6; }
+#side:hover { color: var(--ol-text); }
+#side:active svg { opacity: 0.7; transition-duration: var(--ol-press); }
+
+/* ------------------------------------------------------------------ bubbles */
+#bubbles { position: absolute; top: 0; left: 50%; width: var(--bar-w); margin-left: calc(var(--bar-w) / -2); height: 100%; pointer-events: none; }
+.g-bub { position: absolute; left: 50%; width: calc(var(--bar-w) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); height: 44px; border-radius: 16px; }
+.bubble {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 48px;
+  border-radius: var(--ol-r-bubble);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 0 16px;
+  pointer-events: auto;
+  isolation: isolate;
+}
+.bubble.passive { pointer-events: none; }
+.bubble:hover::after { opacity: 0.55; box-shadow: none; }
+.bubble.sel::after { opacity: 1; }
+.bubble .ic { width: 18px; height: 18px; flex: none; color: var(--ol-text-2); display: flex; align-items: center; justify-content: center; }
+.bubble .ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+.bubble.k-run .ic, .bubble.k-perm .ic, .bubble.k-checkpoint .ic { color: var(--ol-accent-bright); }
+.bubble.k-run .ic svg { filter: drop-shadow(0 0 4px rgba(76, 141, 255, 0.7)); }
+.bubble.k-task.running .ic svg { animation: o-spin 1.15s linear infinite; }
+.bubble.k-setup .ic, .bubble.tone-danger .ic { color: var(--ol-danger); }
+.bubble .tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.bubble .t1 { color: var(--ol-text); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.bubble .t2 { color: var(--ol-text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+.bubble.passive .t1 { color: var(--ol-text-2); }
+.bubble .tag { font-size: 12px; color: var(--ol-text-3); flex: none; display: flex; align-items: center; gap: 6px; padding-right: 8px; }
+.bubble .acts { display: flex; gap: 6px; flex: none; }
+.act {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--ol-r-control);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ol-text);
+  border: 1px solid var(--ol-line);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: var(--ol-highlight);
+  transition: opacity var(--ol-press) linear;
+  font-variant-numeric: tabular-nums;
+}
+.act:hover { background: rgba(255, 255, 255, 0.09); }
+.act:active { opacity: 0.75; }
+.act:focus-visible { box-shadow: var(--ol-highlight), var(--ol-glow); }
+.act.primary { color: #07101F; border-color: transparent; background: var(--ol-accent-gradient); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 0 16px rgba(76, 141, 255, 0.28); }
+.act.primary:hover { background: var(--ol-accent-gradient); opacity: 0.92; }
+.act.danger { color: var(--ol-danger); }
+
+/* ------------------------------------------------------------------ reduced motion: crossfades only */
+@media (prefers-reduced-motion: reduce) {
+  .g-cap, .g-mid, .rim, .sheen, .g-bar, #bar { transition: opacity 180ms linear !important; }
+  .ring.is-idle .ring-halo, .ring.is-working svg, .bubble.k-task.running .ic svg { animation: none; }
+  .ring.is-working .ring-base { opacity: 1; }
+  .ring.is-working .ring-arc { opacity: 0; }
+  .line.swap { animation: o-fade 180ms linear both; }
+  @keyframes o-fade { from { opacity: 0; } to { opacity: 1; } }
+  .g-bar, #bar { transform: none; }
+  body:not(.open) .g-bar { opacity: 0; top: calc(var(--top) + 2px); width: calc(var(--bar-w) - 4px); height: calc(var(--bar-h) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); border-radius: 20px; }
+  body.open .g-cap, body.open .g-mid { opacity: 0; }
+}

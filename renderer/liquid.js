@@ -88,10 +88,6 @@
     if (reduced()) {
       // Crossfade only: nothing travels.
       for (const el of list(targets).concat(fades)) {
-        if (fades.indexOf(el) < 0 && list(targets).indexOf(el) >= 0 && el.closest && el.closest('.ol-goo')) {
-          anims.push(el.animate([{ opacity: out ? 1 : 0 }, { opacity: out ? 0 : 1 }], { duration: 180, delay: o.delay, easing: 'linear', fill: 'both' }));
-          continue;
-        }
         anims.push(el.animate([{ opacity: out ? 1 : 0 }, { opacity: out ? 0 : 1 }], { duration: 180, delay: o.delay, easing: 'linear', fill: 'both' }));
       }
       return Promise.all(anims.map((a) => a.finished.catch(() => {})));

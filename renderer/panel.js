@@ -36,7 +36,7 @@
 
   const MOOD_LABEL = {
     idle: 'idle', listening: 'listening…', thinking: 'thinking…', working: 'working…',
-    browsing: 'browsing…', success: 'done ✓', error: 'hit a snag', sleeping: 'napping 💤',
+    browsing: 'browsing…', success: 'done', error: 'hit a snag', sleeping: 'resting',
   };
 
   // ------------------------------------------------------------ rendering
@@ -147,6 +147,7 @@
   }
 
   function addPermissionCard(p) {
+    if (p && p.id) { pendingPerms.set(p.id, p); renderHome(); }
     if (p.taskId) { pendingFor.add(p.taskId); renderStrip(); renderTaskbar(); }
     if (p.taskId && p.taskId !== viewId) return; // shown when that task is opened (the strip says it needs an OK)
     if (document.querySelector(`.perm[data-id="${CSS.escape(p.id)}"]`)) return;
@@ -171,13 +172,14 @@
   function respond(id, allow) {
     o.respondPermission(id, allow);
     markPermission(id, allow);
+    if (pendingPerms.delete(id)) renderHome();
   }
 
   function markPermission(id, allow) {
     const el = document.querySelector(`.perm[data-id="${CSS.escape(id)}"]`);
     if (!el || el.classList.contains('resolved')) return;
     el.classList.add('resolved', allow ? 'allowed' : 'denied');
-    el.querySelector('.perm-actions').innerHTML = `<span class="verdict">${allow ? '✓ Allowed' : '✕ Denied'}</span>`;
+    el.querySelector('.perm-actions').innerHTML = `<span class="verdict">${allow ? 'Allowed' : 'Denied'}</span>`;
   }
 
   // The composer is always enabled: while the viewed task runs, sending starts another task.
@@ -189,7 +191,7 @@
     sendBtn.hidden = running && !hasText;
     sendBtn.disabled = !hasText;
     sendBtn.title = running ? 'Start another task (Enter)' : t ? 'Follow up on this task (Enter)' : 'Start task (Enter)';
-    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up, or press + for a new task…' : 'Give O a task…';
+    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up on this task…' : 'Hand O a complex task…';
   }
 
   // ------------------------------------------------------------ agent events
@@ -199,8 +201,9 @@
   o.onAgentEvent((ev) => {
     if (ev && ev.taskId && TASK_EVENTS.includes(ev.type)) {
       if (ev.type === 'permission') { addPermissionCard(ev); return; }
-      if (ev.type === 'permission-resolved') { pendingFor.delete(ev.taskId); markPermission(ev.id, ev.allow); renderStrip(); renderTaskbar(); return; }
-      if (ev.type === 'done' || ev.type === 'error') { pendingFor.delete(ev.taskId); }
+      if (ev.type === 'permission-resolved') { pendingFor.delete(ev.taskId); pendingPerms.delete(ev.id); markPermission(ev.id, ev.allow); renderStrip(); renderTaskbar(); renderHome(); return; }
+      if (ev.type === 'permission-timeout') { pendingPerms.delete(ev.id); renderHome(); }
+      if (ev.type === 'done' || ev.type === 'error') { pendingFor.delete(ev.taskId); dropPermsFor(ev.taskId); }
       const t = tasksById.get(ev.taskId);
       if (t && ev.type === 'status' && ev.text) { t.statusLine = String(ev.text).slice(0, 80); t.mood = ev.mood; renderStrip(); renderTaskbar(); }
       if (t && ev.type === 'tool' && ev.summary) { t.statusLine = String(ev.summary).slice(0, 80); renderStrip(); renderTaskbar(); }
@@ -231,16 +234,18 @@
         addPermissionCard(ev);
         break;
       case 'permission-resolved':
+        pendingPerms.delete(ev.id);
         markPermission(ev.id, ev.allow);
+        renderHome();
         break;
       case 'done': {
         endAssistantBubble();
         finishSteps();
-        if (ev.stopped || ev.result === '(stopped)') { addMsg('meta', '■ stopped'); stateLine.textContent = 'stopped'; setTimeout(refreshTasks, 200); break; }
+        if (ev.stopped || ev.result === '(stopped)') { addMsg('meta', 'Stopped'); stateLine.textContent = 'stopped'; setTimeout(refreshTasks, 200); break; }
         const bits = [];
         if (ev.durationMs) bits.push(`${(ev.durationMs / 1000).toFixed(1)}s`);
         if (typeof ev.costUsd === 'number' && ev.costUsd > 0) bits.push(`~$${ev.costUsd.toFixed(3)}`);
-        addMsg('meta', `✓ done${bits.length ? ' · ' + bits.join(' · ') : ''}`);
+        addMsg('meta', `Done${bits.length ? ' · ' + bits.join(' · ') : ''}`);
         stateLine.textContent = MOOD_LABEL.success;
         if (ev.taskId) seen.add(ev.taskId);
         setTimeout(refreshTasks, 200);
@@ -249,7 +254,7 @@
       case 'error':
         endAssistantBubble();
         finishSteps();
-        addMsg('error', `⚠ ${escapeHtml(ev.message || 'Something went wrong')}`);
+        addMsg('error', `${escapeHtml(ev.message || 'Something went wrong')}`);
         stateLine.textContent = MOOD_LABEL.error;
         setTimeout(refreshTasks, 200);
         break;
@@ -299,7 +304,9 @@
       const st = await o.getState();
       if (Array.isArray(st.tasks)) setTasks(st.tasks, st.schedules);
       pendingFor.clear();
+      pendingPerms.clear();
       (st.pendingPermissions || []).forEach(addPermissionCard);
+      renderHome();
       renderStrip(); renderTaskbar();
     } catch (_) {}
   }
@@ -327,7 +334,7 @@
     try { res = await o.sendPrompt(text, followUp ? { taskId: viewId } : {}); } catch (err) { res = { ok: false, error: err && err.message }; }
     awaitingTask--;
     if (res && res.ok === false) {
-      addMsg('error', `⚠ ${escapeHtml(res.error || 'Could not send')}`);
+      addMsg('error', `${escapeHtml(res.error || 'Could not send')}`);
       refreshState();
       return;
     }
@@ -377,7 +384,7 @@
   });
   // ------------------------------------------------------------ chat history
 
-  const drawer = $('drawer'), scrim = $('scrim'), chatList = $('chat-list');
+  const drawer = $('drawer'), chatList = $('chat-list');
   const PENCIL = '<svg viewBox="0 0 20 20"><path d="M13.6 3.9a1.6 1.6 0 0 1 2.3 2.3L7.5 14.6l-3 .8.8-3z"/></svg>';
   const TRASH = '<svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4.5h4V6M6 6l.7 9.5a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L14 6"/></svg>';
 
@@ -387,7 +394,7 @@
     log.querySelectorAll('.msg').forEach((m) => m.remove());
     for (const s of surfaces.values()) if (s.kind === 'chat' && s.host) { s.surface.unmount(); s.host = null; } // kept: shown again when its task is
     document.body.classList.remove('chatting');
-    setGreeting();
+    renderHome();
   }
 
   /** Show a saved chat's messages. */
@@ -398,7 +405,7 @@
       if (m.role === 'user') { startChat(); addMsg('user', md(m.text)); }
       else if (m.role === 'assistant') { appendAssistant(m.text, false); }
       else if (m.role === 'steps') { for (const st of m.steps || []) addStep(st.name, st.summary); finishSteps(); }
-      else if (m.role === 'error') { addMsg('error', `⚠ ${escapeHtml(m.text)}`); }
+      else if (m.role === 'error') { addMsg('error', `${escapeHtml(m.text)}`); }
       else if (m.role === 'meta') { addMsg('meta', escapeHtml(m.text)); }
     }
     endAssistantBubble();
@@ -407,18 +414,18 @@
   }
 
   function showErr(res) {
-    if (res && res.ok === false) { addMsg('error', `⚠ ${escapeHtml(res.error || 'Could not do that')}`); return true; }
+    if (res && res.ok === false) { addMsg('error', `${escapeHtml(res.error || 'Could not do that')}`); return true; }
     return false;
   }
 
-  $('btn-new').addEventListener('click', newTaskView);
-  $('btn-drawer-new').addEventListener('click', newTaskView);
+  $('btn-new').addEventListener('click', goHome);
+  $('btn-drawer-new').addEventListener('click', goHome);
+  $('btn-home').addEventListener('click', goHome);
 
-  function openDrawer() { drawer.hidden = false; scrim.hidden = false; closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true; refreshChatList(); }
-  function closeDrawer() { drawer.hidden = true; scrim.hidden = true; }
+  function openDrawer() { closeSettings(); actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true; drawer.hidden = false; refreshChatList(); }
+  function closeDrawer() { drawer.hidden = true; }
   $('btn-all-tasks').addEventListener('click', () => { closeRuns(); openDrawer(); });
-  $('btn-drawer-close').addEventListener('click', closeDrawer);
-  scrim.addEventListener('click', closeDrawer);
+  $('btn-chats').addEventListener('click', openDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden) { e.stopPropagation(); closeDrawer(); } }, true);
 
   function groupOf(ts) {
@@ -538,6 +545,7 @@
   }
 
   const pendingFor = new Set(); // task ids with an approval waiting
+  const pendingPerms = new Map(); // permission id -> request, every task (Home → Needs you)
 
   /** One task row (strip and Tasks sheet): open button + stop button for an active task. */
   function taskRow(t, { compact } = {}) {
@@ -613,7 +621,6 @@
       strip.appendChild(b);
     }
     strip.hidden = !strip.children.length;
-    document.body.classList.toggle('has-strip', !strip.hidden);
     const running = active.filter((t) => t.status === 'running').length;
     const badge = $('tasks-badge');
     badge.hidden = !active.length;
@@ -665,6 +672,7 @@
     renderTaskbar();
     syncButtons();
     renderStateLine();
+    renderHome();
   }
 
   function renderStateLine() {
@@ -767,7 +775,7 @@
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',
     'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder',
     'ambientEnabled', 'absentAfterMin', 'briefSpeak', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate',
-    'evolveAskBeforeInstall'];
+    'evolveAskBeforeInstall', 'evolveBudgetUsd'];
 
   if ($('set-theme')) $('set-theme').addEventListener('change', () => applyTheme($('set-theme').value)); // live preview; Save persists it
 
@@ -783,7 +791,7 @@
       else el.value = s[k] == null ? '' : s[k];
       // Ask before installing applies at once (no Save needed); the Evolution view follows.
       if (k === 'evolveAskBeforeInstall' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ evolveAskBeforeInstall: el.checked }); if (window.__oEvolve) window.__oEvolve.refresh(); }); }
-      if (k === 'browserMode' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ browserMode: el.value }); refreshExtension({ card: true }); }); }
+      if (k === 'browserMode' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ browserMode: el.value }); refreshExtension(); }); }
     }
   }
 
@@ -833,6 +841,7 @@
 
   function openAmbient() {
     openSettings();
+    const grp = $('ambient-group'); if (grp) grp.open = true;
     requestAnimationFrame(() => { const h = $('ambient-h'); if (h) h.scrollIntoView({ block: 'start' }); });
   }
 
@@ -939,28 +948,21 @@
     settingsEl.hidden = true;
     revertThemePreview();
   }
-  $('btn-settings-close').addEventListener('click', closeSettings);
   $('mode-chip').addEventListener('click', openSettings);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !settingsEl.hidden && document.activeElement !== promptEl) closeSettings(); });
 
-  // Greeting by time of day, and the composer chip showing where O browses.
-  // The empty state is one quiet line; it does not change with the time of day.
-  function setGreeting() { $('hero-greeting').textContent = 'What should we get done?'; }
-  const MODE_LABEL = { link: 'All my tabs', mine: 'Picked tabs', separate: 'Own browser' };
+  // The composer chip is quiet and optional: it shows only while the O Link add-on is connected.
   async function refreshModeChip() {
-    let st, ln;
-    try { st = await o.getSettings(); } catch (_) { return; }
     const chip = $('mode-chip');
-    chip.classList.remove('ok', 'warn');
-    let label = MODE_LABEL[st.browserMode] || 'Browser';
-    if (st.browserMode === 'link') {
-      try { ln = await o.linkStatus(); } catch (_) { ln = null; }
-      if (ln && ln.connected) { chip.classList.add('ok'); label += ` · ${ln.tabs}`; } else { chip.classList.add('warn'); label = 'O Link: not connected'; }
-    } else if (st.browserMode === 'separate') chip.classList.add('ok');
-    $('mode-label').textContent = label;
+    let ln = null;
+    try { ln = await o.linkStatus(); } catch (_) { ln = null; }
+    const on = !!(ln && ln.connected);
+    chip.hidden = !on;
+    chip.classList.toggle('ok', on);
+    if (on) $('mode-label').textContent = `O Link · ${ln.tabs} tab${ln.tabs === 1 ? '' : 's'}`;
   }
 
-  $('btn-settings').addEventListener('click', () => (settingsEl.hidden ? openSettings() : closeSettings()));
+  $('btn-settings').addEventListener('click', openSettings);
 
   // Engine requirements: one line per item, green or red, with the fix under red ones.
   async function checkRequirements() {
@@ -980,7 +982,7 @@
     }
     box.hidden = !items.length;
     const bad = items.filter((it) => !(it.ok != null ? it.ok : it.installed)).length;
-    status.textContent = !items.length ? 'Nothing to check.' : bad ? `${bad} of ${items.length} requirement${items.length === 1 ? '' : 's'} missing` : `✓ All ${items.length} requirements met`;
+    status.textContent = !items.length ? 'Nothing to check.' : bad ? `${bad} of ${items.length} requirement${items.length === 1 ? '' : 's'} missing` : `All ${items.length} requirements met`;
   }
   $('btn-check-requirements').addEventListener('click', checkRequirements);
 
@@ -1108,6 +1110,7 @@
     if (!entry || typeof entry !== 'object') return;
     alEntries.push(entry);
     if (alEntries.length > AL_CAP) alEntries.splice(0, alEntries.length - AL_CAP);
+    pushLive(entry);
     if (actionlogEl.hidden) return;
     if (!matchesFilter(entry)) return;
     const stick = alAtBottom();
@@ -1161,9 +1164,9 @@
     if (!has('logVerifyChain')) { alChain.textContent = 'Not available'; alChain.className = ''; return; }
     alChain.textContent = 'Verifying…'; alChain.className = '';
     let r;
-    try { r = await o.logVerifyChain(); } catch (err) { alChain.textContent = `✗ ${err && err.message ? err.message : 'Could not verify'}`; alChain.className = 'bad'; return; }
-    if (r && r.ok) { alChain.textContent = `✓ Chain intact (${r.count || 0} entries)`; alChain.className = 'ok'; }
-    else { alChain.textContent = `✗ Broken at #${r && typeof r.brokenAt === 'number' ? r.brokenAt : '?'}`; alChain.className = 'bad'; }
+    try { r = await o.logVerifyChain(); } catch (err) { alChain.textContent = `${err && err.message ? err.message : 'Could not verify'}`; alChain.className = 'bad'; return; }
+    if (r && r.ok) { alChain.textContent = `Chain intact (${r.count || 0} entries)`; alChain.className = 'ok'; }
+    else { alChain.textContent = `Broken at #${r && typeof r.brokenAt === 'number' ? r.brokenAt : '?'}`; alChain.className = 'bad'; }
   });
   subscribeLog();
 
@@ -1204,91 +1207,66 @@
     }
     await o.setSettings(partial);
     if (partial.theme) { savedTheme = THEMES.includes(partial.theme) ? partial.theme : 'glass'; applyTheme(savedTheme); }
-    $('settings-saved').textContent = mcpOk ? 'Saved ✓ (applies to the next task)' : 'Saved ✓ except MCP servers (fix the JSON)';
+    $('settings-saved').textContent = mcpOk ? 'Saved. Applies to the next task.' : 'Saved, except MCP servers (fix the JSON)';
     setTimeout(() => { $('settings-saved').textContent = ''; }, 2500);
     checkClaude();
-    refreshExtension({ card: true });
+    refreshExtension();
     refreshProxy();
     if (GenUI) syncGenuiSettings();
   }
   $('btn-settings-save').addEventListener('click', saveSettings);
 
-  // ------------------------------------------------------------ "my browser" extension setup
+  // ------------------------------------------------------------ browsing add-ons (Settings → Browsing and add-ons)
+  // O works in any browser and app on its own ('auto'). O Link and the Playwright Extension are optional add-ons:
+  // nothing here nags. Status shows in Settings, and the composer chip appears only while O Link is connected.
 
   const BROWSER_NAME = { msedge: 'Edge', chrome: 'Chrome' };
-  let extCard = null;
-  let linkCard = null;
   function showLinkSteps(res) {
+    const box = $('link-steps');
     const where = res && res.browser ? res.browser : 'Edge';
-    addMsg('meta setup-card', `I opened ${where}'s Extensions page and the O Link folder (its path is copied). In ${where}:
+    box.innerHTML = `${escapeHtml(where)}'s Extensions page and the O Link folder are open (the path is copied). In ${escapeHtml(where)}:
       <ol class="steps">
-        <li>Turn on <b>Developer mode</b> (a switch on the Extensions page).</li>
+        <li>Turn on <b>Developer mode</b>.</li>
         <li>Click <b>Load unpacked</b>.</li>
-        <li>Paste the path (<b>Ctrl+V</b>) into the folder box, or pick the <b>o-link</b> folder, then click <b>Select Folder</b>.</li>
-      </ol>I'll say "O Link connected!" when it works.${res && res.dir ? `<div class="path">${escapeHtml(res.dir)}</div>` : ''}`);
+        <li>Paste the path (<b>Ctrl+V</b>) or pick the <b>o-link</b> folder, then <b>Select Folder</b>.</li>
+      </ol>${res && res.dir ? `<div class="path">${escapeHtml(res.dir)}</div>` : ''}`;
+    box.hidden = false;
   }
-  async function refreshLink({ card = false } = {}) {
+  async function refreshLink() {
     let st;
-    try { st = await o.linkStatus(); } catch (_) { return; }
-    $('ext-status').textContent = st.connected ? `✓ O Link connected (${st.tabs} tab${st.tabs === 1 ? '' : 's'})` : '✗ O Link not connected yet';
-    $('btn-ext-install').hidden = true;
+    try { st = await o.linkStatus(); } catch (_) { return null; }
+    st = st || {};
+    $('link-status').textContent = st.connected
+      ? `Connected · ${st.tabs} tab${st.tabs === 1 ? '' : 's'}`
+      : 'Optional. Lets O work in every Edge tab you have open, faster than Automatic.';
+    $('link-status').classList.toggle('ok', !!st.connected);
     $('btn-link-connect').hidden = !!st.connected;
-    $('btn-link-connect').textContent = 'Connect my Edge';
-    if (st.connected && linkCard) { linkCard.remove(); linkCard = null; addMsg('meta', '✓ O Link connected! I can work in all your tabs now.'); }
-    if (card && !st.connected && !linkCard) {
-      linkCard = addMsg('meta setup-card', `To work in <b>all your Edge tabs</b>, connect O Link, the O browser extension (one-time, about 30 seconds).
-        <div class="setup-actions">
-          <button class="link-connect">Connect my Edge</button>
-          <button class="ext-separate">Use my own invisible browser instead</button>
-        </div>`);
-      linkCard.querySelector('.link-connect').addEventListener('click', async () => showLinkSteps(await o.connectLink()));
-      linkCard.querySelector('.ext-separate').addEventListener('click', async () => {
-        await o.setSettings({ browserMode: 'separate' });
-        linkCard.remove(); linkCard = null;
-        addMsg('meta', 'OK, I\'ll browse in my own invisible browser. Change it any time in Settings.');
-      });
-    }
+    if (st.connected) $('link-steps').hidden = true;
+    return st;
   }
-  $('btn-link-connect').addEventListener('click', async () => showLinkSteps(await o.connectLink()));
+  $('btn-link-connect').addEventListener('click', async () => { let r = null; try { r = await o.connectLink(); } catch (_) {} showLinkSteps(r); });
 
-  async function refreshExtension({ card = false } = {}) {
+  async function refreshExtension() {
     refreshModeChip();
     let ext, st;
     try { st = await o.getSettings(); } catch (_) { return; }
-    $('btn-link-connect').hidden = true;
-    if (st.browserMode === 'link') return refreshLink({ card });
-    if (linkCard) { linkCard.remove(); linkCard = null; }
-    if (st.browserMode === 'separate') {
-      $('ext-status').textContent = 'O uses its own invisible browser.';
+    refreshLink();
+    if (st.browserMode !== 'mine') {
+      $('ext-status').textContent = 'Only used in Picked tabs mode.';
       $('btn-ext-install').hidden = true;
       return;
     }
     try { ext = await o.checkExtension(); } catch (_) { return; }
     const where = ext.installed ? `${BROWSER_NAME[ext.browser] || ext.browser}${ext.profile && ext.profile !== 'Default' ? ' (' + ext.profile + ')' : ''}` : '';
-    $('ext-status').textContent = ext.installed ? `✓ Playwright Extension found in ${where}` : '✗ Playwright Extension not installed yet';
+    $('ext-status').textContent = ext.installed ? `Found in ${where}` : 'Not installed yet';
+    $('ext-status').classList.toggle('ok', !!ext.installed);
     $('btn-ext-install').hidden = !!ext.installed;
-    if (ext.installed && extCard) { extCard.remove(); extCard = null; addMsg('meta', `✓ Extension found in ${where}. I'll work in your own tabs now.`); }
-    if (card && !ext.installed && st.browserMode === 'mine' && !extCard) {
-      extCard = addMsg('meta setup-card', `To work in <b>your own Edge tabs</b>, O needs the free Playwright Extension (one-time, about a minute).
-        <div class="setup-actions">
-          <button class="ext-install">Install in Edge</button>
-          <button class="ext-recheck">I installed it</button>
-          <button class="ext-separate">Use my own invisible browser instead</button>
-        </div>`);
-      extCard.querySelector('.ext-install').addEventListener('click', () => o.installExtension());
-      extCard.querySelector('.ext-recheck').addEventListener('click', () => refreshExtension());
-      extCard.querySelector('.ext-separate').addEventListener('click', async () => {
-        await o.setSettings({ browserMode: 'separate' });
-        extCard.remove(); extCard = null;
-        addMsg('meta', 'OK, I\'ll browse in my own invisible browser. Change it any time in Settings.');
-      });
-    }
   }
   $('btn-ext-install').addEventListener('click', () => o.installExtension());
 
   $('btn-shortcuts').addEventListener('click', async () => {
     const r = await o.createShortcuts();
-    $('shortcut-status').textContent = r.ok ? '✓ Shortcut on your Desktop and in the Start menu.' : (r.error || 'Could not create the shortcut.');
+    $('shortcut-status').textContent = r.ok ? 'Shortcut on your Desktop and in the Start menu.' : (r.error || 'Could not create the shortcut.');
   });
 
   // ------------------------------------------------------------ updates
@@ -1309,7 +1287,7 @@
       updateBanner.append(' ' + (u.message || ''));
       if (['error', 'manual', 'restarting', 'current'].includes(u.state)) updateBanner = null;
     }
-    if (u.state === 'error' || u.state === 'manual') addMsg('error', `⚠ ${escapeHtml(u.message || 'Update failed')}`);
+    if (u.state === 'error' || u.state === 'manual') addMsg('error', `${escapeHtml(u.message || 'Update failed')}`);
   }
   $('btn-update-check').addEventListener('click', async () => {
     if (!settingsEl.hidden) await saveSettings(); // use the source/token currently typed in
@@ -1510,8 +1488,7 @@
     if (!runsEl.hidden) renderRuns();
   }
   function closeRuns() { runsEl.hidden = true; }
-  $('btn-runs').addEventListener('click', () => (runsEl.hidden ? openRuns() : closeRuns()));
-  $('btn-runs-close').addEventListener('click', closeRuns);
+  $('btn-runs').addEventListener('click', openRuns);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !runsEl.hidden && settingsEl.hidden && actionlogEl.hidden && document.activeElement !== promptEl) closeRuns(); });
 
   // Button actions are a closed set (the validator drops anything else). Every one goes through main's
@@ -1551,9 +1528,7 @@
   let checkpointCards = [];
   let openGoalId = null;
   let goalDetail = null;
-  const goalsRow = $('goals-row');
   const goalOffer = $('goal-offer');
-  const GOALS_ROW_MAX = 2;
   const PAUSE_ICON = '<svg viewBox="0 0 20 20"><path d="M7.5 5.5v9M12.5 5.5v9"/></svg>';
   const PLAY_ICON = '<svg viewBox="0 0 20 20"><path d="M7 5.2v9.6l7.5-4.8z"/></svg>';
   const CHECK_KINDS = [['publish', 'Publish or post publicly'], ['send_message', 'Send messages as you'], ['accept_terms', 'Accept terms'], ['delete_data', 'Delete your data']];
@@ -1612,9 +1587,9 @@
     open.type = 'button';
     open.className = 'goal-open';
     // Compact rows mark a waiting approval with a bright dot (the count is in the label and the header badge).
-    open.innerHTML = `<span class="gtext"><span class="gttl">${waiting && compact ? '<span class="gwait" aria-hidden="true"></span>' : ''}${escapeHtml(g.title)}</span><span class="gsub"><span class="gline">${escapeHtml(goalLine(g, { short: true }))}${waiting && !compact ? ` · <b>${waiting} to approve</b>` : ''}</span>${primaryHtml(g)}</span></span>`;
+    open.innerHTML = `<span class="gtext"><span class="gttl">${waiting && compact ? '<span class="gwait" aria-hidden="true"></span>' : ''}${g.origin === 'agent' ? '<span class="tag self">Self-set</span>' : ''}${escapeHtml(g.title)}</span><span class="gsub"><span class="gline">${escapeHtml(goalLine(g, { short: true }))}${waiting && !compact ? ` · <b>${waiting} to approve</b>` : ''}</span>${primaryHtml(g)}</span></span>`;
     const p = g.primary;
-    open.setAttribute('aria-label', `${g.title}. ${goalLine(g)}.${p ? ` ${metricWord(p.name)} ${p.latest == null ? 'not measured yet' : fmtNum(p.latest)}.` : ''}${waiting ? ` ${waiting} waiting for your approval.` : ''}`);
+    open.setAttribute('aria-label', `${g.title}.${g.origin === 'agent' ? ' Set by O itself.' : ''} ${goalLine(g)}.${p ? ` ${metricWord(p.name)} ${p.latest == null ? 'not measured yet' : fmtNum(p.latest)}.` : ''}${waiting ? ` ${waiting} waiting for your approval.` : ''}`);
     open.addEventListener('click', () => openGoal(g.id));
     row.appendChild(open);
     const pause = document.createElement('button');
@@ -1630,23 +1605,11 @@
   }
 
   function renderGoalsRow() {
-    const live = goalsList.filter((g) => g.status !== 'archived');
-    goalsRow.innerHTML = '';
-    live.slice(0, GOALS_ROW_MAX).forEach((g) => goalsRow.appendChild(goalRowEl(g, { compact: true })));
-    if (live.length > GOALS_ROW_MAX) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'strip-more';
-      b.textContent = `${live.length - GOALS_ROW_MAX} more goal${live.length - GOALS_ROW_MAX === 1 ? '' : 's'}`;
-      b.addEventListener('click', () => openGoals());
-      goalsRow.appendChild(b);
-    }
-    goalsRow.hidden = !live.length;
-    document.body.classList.toggle('has-goals', !goalsRow.hidden);
     const badge = $('goals-badge');
     badge.hidden = !checkpointCards.length;
     badge.textContent = String(checkpointCards.length);
     $('btn-goals').setAttribute('aria-label', checkpointCards.length ? `Goals, ${checkpointCards.length} waiting for your approval` : 'Goals');
+    renderHome();
   }
 
   function setGoals(list, cps) {
@@ -1667,7 +1630,7 @@
   async function setGoalStatus(id, op) {
     if (!has('setGoalStatus')) return;
     const r = await o.setGoalStatus(id, op);
-    if (r && r.ok === false) { addMsg('error', `⚠ ${escapeHtml(r.error || 'Could not change the goal')}`); return; }
+    if (r && r.ok === false) { addMsg('error', `${escapeHtml(r.error || 'Could not change the goal')}`); return; }
     refreshGoals();
   }
 
@@ -1736,44 +1699,81 @@
     refreshGoals();
   }
   function closeGoals() { goalsEl.hidden = true; openGoalId = null; }
-  $('btn-goals').addEventListener('click', () => (goalsEl.hidden ? openGoals() : closeGoals()));
-  $('btn-goals-close').addEventListener('click', closeGoals);
+  $('btn-goals').addEventListener('click', openGoals);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !goalsEl.hidden && document.activeElement !== promptEl && !(e.target && e.target.closest && e.target.closest('textarea'))) { if (openGoalId) openGoals(); else closeGoals(); } });
+
+  // Proposals: goals O would set itself (main/goals.js propose(); not stored until accepted). Home and the Goals
+  // sheet show the same list, each with one-click Accept or Dismiss. Dismissed ones stay dismissed on this computer.
+  let proposals = [];
+  let proposalsAt = 0;
+  let proposalsNote = '';
+  const DISMISSED_KEY = 'o.dismissedProposals';
+  function dismissedSet() { try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]')); } catch (_) { return new Set(); } }
+  function propKey(p) { return String(p.proposal_id || p.title || ''); }
+  function liveProposals() { const d = dismissedSet(); return proposals.filter((p) => !d.has(propKey(p))); }
+
+  async function loadProposals(force) {
+    if (!has('proposeGoals')) return;
+    if (!force && Date.now() - proposalsAt < 30 * 60 * 1000) return;
+    proposalsAt = Date.now();
+    let r;
+    try { r = await o.proposeGoals(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    if (!r || r.ok === false) { proposalsNote = (r && r.error) || 'O could not propose goals right now.'; proposals = []; }
+    else { proposals = Array.isArray(r.proposals) ? r.proposals : []; proposalsNote = proposals.length ? '' : 'O needs a few more days of working with you before it can propose goals worth owning.'; }
+    renderProposalsSheet();
+    renderHome();
+  }
+
+  function proposalEl(p) {
+    const row = document.createElement('div');
+    row.className = 'goal-row proposal';
+    row.setAttribute('role', 'listitem');
+    row.dataset.key = 'p:' + propKey(p);
+    row.innerHTML = `<div class="goal-open static"><span class="gtext"><span class="gttl"><span class="tag prop">Proposed by O</span>${escapeHtml(p.title)}</span><span class="gline">${escapeHtml(p.objective || '')}</span></span></div>`;
+    const acts = document.createElement('div');
+    acts.className = 'p-acts';
+    const no = document.createElement('button');
+    no.type = 'button'; no.className = 'p-dismiss'; no.textContent = 'Dismiss';
+    no.setAttribute('aria-label', `Dismiss proposed goal: ${p.title}`);
+    no.addEventListener('click', () => {
+      const d = dismissedSet(); d.add(propKey(p));
+      try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...d].slice(-200))); } catch (_) {}
+      renderProposalsSheet(); renderHome();
+    });
+    const yes = document.createElement('button');
+    yes.type = 'button'; yes.className = 'learn-accept p-accept'; yes.textContent = 'Accept';
+    yes.setAttribute('aria-label', `Accept goal: ${p.title}`);
+    yes.addEventListener('click', async () => {
+      yes.disabled = true; no.disabled = true;
+      let a;
+      try { a = await o.acceptGoal(p); } catch (err) { a = { ok: false, error: err && err.message }; }
+      if (a && a.ok === false) { yes.disabled = false; no.disabled = false; row.insertAdjacentHTML('beforeend', `<p class="cp-note">${escapeHtml(a.error || 'Could not accept')}</p>`); return; }
+      proposals = proposals.filter((x) => x !== p);
+      renderProposalsSheet();
+      await refreshGoals();
+    });
+    acts.appendChild(no); acts.appendChild(yes);
+    row.appendChild(acts);
+    return row;
+  }
+
+  function renderProposalsSheet() {
+    const box = $('goals-proposals');
+    box.innerHTML = '';
+    const live = liveProposals();
+    if (!live.length) { if (proposalsNote) box.innerHTML = `<p class="goals-empty">${escapeHtml(proposalsNote)}</p>`; return; }
+    const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'O could own'; box.appendChild(h);
+    live.forEach((p) => box.appendChild(proposalEl(p)));
+  }
 
   $('btn-propose').addEventListener('click', async () => {
     const btn = $('btn-propose');
-    const box = $('goals-proposals');
     if (!has('proposeGoals')) return;
     btn.disabled = true;
-    btn.textContent = 'Thinking about what you do…';
-    let r;
-    try { r = await o.proposeGoals(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    btn.textContent = 'Looking at what you do…';
+    await loadProposals(true);
     btn.disabled = false;
     btn.textContent = 'Let O propose goals';
-    box.innerHTML = '';
-    if (!r || r.ok === false) { box.innerHTML = `<p class="goals-empty">${escapeHtml((r && r.error) || 'O could not propose goals right now.')}</p>`; return; }
-    if (!r.proposals.length) { box.innerHTML = '<p class="goals-empty">O needs a few more days of working with you before it can propose goals worth owning.</p>'; return; }
-    const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'O could own'; box.appendChild(h);
-    for (const p of r.proposals) {
-      const row = document.createElement('div');
-      row.className = 'proposal';
-      row.innerHTML = `<div class="ptext"><span class="gttl">${escapeHtml(p.title)}</span><span class="gline">${escapeHtml(p.objective)}</span></div>`;
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'learn-accept';
-      b.textContent = 'Accept';
-      b.setAttribute('aria-label', `Accept goal: ${p.title}`);
-      b.addEventListener('click', async () => {
-        b.disabled = true;
-        const a = await o.acceptGoal(p);
-        if (a && a.ok === false) { b.disabled = false; row.insertAdjacentHTML('beforeend', `<p class="cp-note">${escapeHtml(a.error || 'Could not accept')}</p>`); return; }
-        row.remove();
-        await refreshGoals();
-        if (a && a.goal) openGoal(a.goal.id);
-      });
-      row.appendChild(b);
-      box.appendChild(row);
-    }
   });
 
   // ---------- one goal
@@ -1913,7 +1913,7 @@
     try { r = await o.createGoal(text); } catch (err) { r = { ok: false, error: err && err.message }; }
     btn.disabled = false;
     btn.textContent = 'Make this a goal';
-    if (!r || r.ok === false) { addMsg('error', `⚠ ${escapeHtml((r && r.error) || 'Could not set the goal')}`); startChat(); return; }
+    if (!r || r.ok === false) { addMsg('error', `${escapeHtml((r && r.error) || 'Could not set the goal')}`); startChat(); return; }
     promptEl.value = '';
     autosize();
     syncGoalOffer();
@@ -1921,17 +1921,222 @@
     if (r.goal) openGoal(r.goal.id);
   });
 
+  // ------------------------------------------------------------ Home
+  // Where the panel lands. O works on its own; Home reports it: what needs the person (only when something does),
+  // what runs now, the goals O pursues (its own included), and what it learned lately (evolve.js fills Learning).
+  // Cards that arrive after a section first painted bud in once with the goo effect (#o-goo, #goo-layer).
+
+  function dropPermsFor(taskId) {
+    if (!taskId) return;
+    let changed = false;
+    for (const [id, p] of pendingPerms) if (p.taskId === taskId) { pendingPerms.delete(id); changed = true; }
+    if (changed) renderHome();
+  }
+
+  const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)';
+  const painted = new Set();   // sections rendered at least once (their first cards do not bud)
+  const shownKeys = new Map(); // section -> Set of card keys already on screen
+
+  /** A new card buds off the card (or heading) above it: a blob on the goo layer slides out of the parent's
+   *  edge, the threshold draws the neck, then the real glass card fades in over it. Transform/opacity only. */
+  function bud(el) {
+    if (reduceMotion() || typeof el.animate !== 'function') {
+      if (typeof el.animate === 'function') el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear' });
+      return;
+    }
+    const layer = $('goo-layer');
+    const r = el.getBoundingClientRect();
+    const parent = el.previousElementSibling || (el.closest('.hsec') && el.closest('.hsec').querySelector('.hsec-h'));
+    if (!layer || !r.width || !parent) return;
+    const a = parent.getBoundingClientRect();
+    const group = document.createElement('div');
+    group.className = 'goo-group';
+    const blob = (x, y, w, h, rad) => {
+      const d = document.createElement('div');
+      d.className = 'goo-blob';
+      d.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px;border-radius:${rad}px`;
+      group.appendChild(d);
+      return d;
+    };
+    blob(r.left + 12, a.bottom - 10, r.width - 24, 10, 10); // the parent's lower edge
+    const child = blob(r.left, r.top, r.width, r.height, 14);
+    layer.appendChild(group);
+    const dy = Math.max(12, r.top - a.bottom + r.height * 0.55);
+    child.animate([{ transform: `translateY(${-dy}px) scale(0.92, 0.4)` }, { transform: 'none' }], { duration: 340, easing: EASE_OUT, fill: 'both' });
+    const g = group.animate([{ opacity: 1 }, { opacity: 1, offset: 0.62 }, { opacity: 0 }], { duration: 440, easing: 'linear', fill: 'both' });
+    el.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], { duration: 440, easing: EASE_OUT });
+    const done = () => group.remove();
+    g.onfinish = done; g.oncancel = done;
+  }
+
+  /** Put `items` (each {key, el}) into `box`; cards new since the last paint bud in. */
+  function fillSection(name, box, items) {
+    const before = shownKeys.get(name) || new Set();
+    const now = new Set();
+    box.innerHTML = '';
+    const fresh = [];
+    for (const it of items) {
+      if (it.key) { now.add(it.key); it.el.dataset.key = it.key; if (painted.has(name) && !before.has(it.key)) fresh.push(it.el); }
+      box.appendChild(it.el);
+    }
+    shownKeys.set(name, now);
+    painted.add(name);
+    if (fresh.length) requestAnimationFrame(() => fresh.forEach(bud));
+  }
+
+  function emptyLine(text, btn) {
+    const d = document.createElement('div');
+    d.className = 'hempty';
+    d.textContent = text;
+    if (btn) d.appendChild(btn);
+    return { key: '', el: d };
+  }
+
+  function permNeedEl(p) {
+    const el = document.createElement('div');
+    el.className = 'need perm-need';
+    const t = p.taskId ? tasksById.get(p.taskId) : null;
+    const detail = prettyInput(p.input).split('\n').slice(0, 3).join('\n');
+    el.innerHTML = `<div class="need-kind">Approval${t ? ` · ${escapeHtml(t.title)}` : ''}</div>
+      <div class="need-head">${escapeHtml(String(p.summary || '').split('\n')[0] || `Use ${p.toolName || 'a tool'}`)}</div>
+      <div class="need-tool">wants to use <b>${escapeHtml(p.toolName || 'a tool')}</b></div>
+      ${detail ? `<pre class="need-detail">${escapeHtml(detail)}</pre>` : ''}
+      <div class="need-acts">${p.taskId ? '<button type="button" class="link-btn need-open">Open task</button>' : ''}<span class="spacer"></span><button type="button" class="deny">Deny</button><button type="button" class="allow">Allow</button></div>`;
+    el.querySelector('.allow').addEventListener('click', () => respond(p.id, true));
+    el.querySelector('.deny').addEventListener('click', () => respond(p.id, false));
+    const op = el.querySelector('.need-open');
+    if (op) op.addEventListener('click', () => viewTask(p.taskId));
+    return el;
+  }
+
+  function syncNeeds() {
+    const sec = $('home-needs');
+    const n = sec.querySelectorAll('.need').length;
+    sec.hidden = !n;
+    $('home-needs-count').textContent = n ? String(n) : '';
+  }
+  new MutationObserver(syncNeeds).observe($('home-evolve-needs'), { childList: true });
+
+  function renderNeeds() {
+    const items = [];
+    for (const p of pendingPerms.values()) items.push({ key: 'perm:' + p.id, el: permNeedEl(p) });
+    for (const c of checkpointCards) { const el = checkpointEl(c); el.classList.add('need'); items.push({ key: 'cp:' + c.id, el }); }
+    fillSection('needs', $('home-needs-list'), items);
+    syncNeeds();
+  }
+
+  function renderNow() {
+    const all = [...tasksById.values()];
+    const active = all.filter(isActive).sort((a, b) => (a.status === b.status ? 0 : a.status === 'running' ? -1 : 1));
+    const fresh = all.filter((t) => !isActive(t) && !seen.has(t.id) && t.endedAt && Date.now() - t.endedAt < 30 * 60 * 1000 && t.status !== 'stopped');
+    const items = [...active, ...fresh].slice(0, 5).map((t) => ({ key: 't:' + t.id, el: taskRow(t) }));
+    if (!items.length) {
+      const next = schedules[0];
+      items.push(emptyLine(next ? `Idle. Next: ${next.title}, ${relTime(next.nextRun)}.` : 'Idle. Goal cycles and schedules start on their own.'));
+    }
+    fillSection('now', $('home-now-list'), items);
+    renderActivity();
+  }
+
+  const liveEntries = [];
+  function pushLive(e) {
+    if (!e || !e.summary) return;
+    liveEntries.push(e);
+    if (liveEntries.length > 12) liveEntries.splice(0, liveEntries.length - 12);
+    renderActivity();
+  }
+  function renderActivity() {
+    const ol = $('home-activity');
+    const shown = liveEntries.slice(-3).reverse();
+    ol.innerHTML = shown.map((e) => `<li data-kind="${escapeHtml(e.kind || '')}"><time>${escapeHtml(entryTime(e).slice(0, 5))}</time><span>${escapeHtml(String(e.summary).split('\n')[0].slice(0, 120))}</span></li>`).join('');
+    ol.hidden = !shown.length;
+  }
+
+  const HOME_GOALS_MAX = 4;
+  function renderHomeGoals() {
+    const live = goalsList.filter((g) => g.status !== 'archived');
+    const items = live.slice(0, HOME_GOALS_MAX).map((g) => ({ key: 'g:' + g.id, el: goalRowEl(g, { compact: true }) }));
+    for (const p of liveProposals()) items.push({ key: 'p:' + propKey(p), el: proposalEl(p) });
+    if (live.length > HOME_GOALS_MAX) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'strip-more';
+      b.textContent = `${live.length - HOME_GOALS_MAX} more goal${live.length - HOME_GOALS_MAX === 1 ? '' : 's'}`;
+      b.addEventListener('click', openGoals);
+      items.push({ key: '', el: b });
+    }
+    if (!items.length) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'link-btn'; b.textContent = 'Propose goals now';
+      b.addEventListener('click', () => loadProposals(true));
+      items.push(emptyLine(proposalsNote || 'No goals yet. O proposes its own as it learns how you work. ', has('proposeGoals') ? b : null));
+    }
+    fillSection('goals', $('home-goals-list'), items);
+  }
+
+  function renderHomeHead() {
+    const all = [...tasksById.values()];
+    const running = all.filter((t) => t.status === 'running').length;
+    const queued = all.filter((t) => t.status === 'queued').length;
+    const live = goalsList.filter((g) => g.status === 'active');
+    const self = live.filter((g) => g.origin === 'agent').length;
+    $('hero-greeting').textContent = running ? `Working on ${running} task${running === 1 ? '' : 's'}` : queued ? `${queued} task${queued === 1 ? '' : 's'} waiting` : 'Idle';
+    const bits = [];
+    if (live.length) bits.push(`${live.length} goal${live.length === 1 ? '' : 's'} active${self ? `, ${self} self-set` : ''}`);
+    const nextGoal = live.filter((g) => g.nextRun && !g.runningTaskId).sort((a, b) => a.nextRun - b.nextRun)[0];
+    if (nextGoal) bits.push(`next cycle ${shortNext(nextGoal.nextRun)}`);
+    $('home-sub').textContent = bits.join(' · ');
+  }
+
+  let homeQueued = false;
+  function renderHome() {
+    if (homeQueued) return;
+    homeQueued = true;
+    requestAnimationFrame(() => {
+      homeQueued = false;
+      renderHomeHead();
+      renderNeeds();
+      renderNow();
+      renderHomeGoals();
+    });
+  }
+
+  // ------------------------------------------------------------ navigation (slim segmented bar)
+  const NAV = [['settings', 'btn-settings'], ['runs', 'btn-runs'], ['goals', 'btn-goals'], ['evolve', 'btn-evolve'], ['drawer', 'btn-chats']];
+  function closeSheets() {
+    closeSettings(); closeActionLog(); closeRuns(); closeGoals(); closeDrawer();
+    const ev = $('evolve'); if (ev) ev.hidden = true;
+  }
+  function goHome() { closeSheets(); newTaskView(); }
+  function syncNav() {
+    let cur = null;
+    for (const [sid, bid] of NAV) { const el = $(sid); if (el && !el.hidden) { cur = bid; break; } }
+    if (!cur && actionlogEl.hidden) cur = viewId || document.body.classList.contains('chatting') ? 'btn-chats' : 'btn-home';
+    document.querySelectorAll('#nav .seg-item, #btn-settings').forEach((b) => { if (b.id === cur) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+  }
+  {
+    const mo = new MutationObserver(syncNav);
+    for (const [sid] of NAV.concat([['actionlog']])) { const el = $(sid); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden'] }); }
+    mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+  $('home-now-all').addEventListener('click', openRuns);
+  $('home-goals-all').addEventListener('click', openGoals);
+  $('home-learning-all').addEventListener('click', () => { if (window.__oEvolve) window.__oEvolve.openSheet(); });
+
   // ------------------------------------------------------------ init
 
   window.addEventListener('focus', () => promptEl.focus());
   if (!hasInitialTheme) o.getSettings().then((s) => { savedTheme = s && THEMES.includes(s.theme) ? s.theme : 'glass'; applyTheme(savedTheme); }).catch(() => {});
-  setGreeting();
+  renderHome();
   syncButtons();
   checkClaude();
-  refreshExtension({ card: true });
-  window.addEventListener('focus', () => { if (extCard) refreshExtension(); });
+  refreshExtension();
+  window.addEventListener('focus', () => { if (!settingsEl.hidden) refreshExtension(); else refreshModeChip(); });
   refreshState();
   refreshTasks();
   refreshGoals();
+  setTimeout(() => loadProposals(false), 1200);
+  if (has('logTail')) o.logTail(20).then((t) => { (Array.isArray(t) ? t : (t && t.entries) || []).slice(-6).forEach(pushLive); }).catch(() => {});
+  syncNav();
   autosize();
 })();

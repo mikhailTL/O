@@ -43,7 +43,7 @@
   }
 
   function checksHtml(p) {
-    const rows = (p.checks || []).map((c) => `<div class="ev-check" data-ok="${c.passed ? 'true' : 'false'}"><span class="mk" aria-hidden="true">${c.passed ? '✓' : '–'}</span><span>${esc(words(c.name))}${c.passed ? '' : ' <span class="sr">did not pass</span>'}</span><span class="ba">${c.metric_before != null || c.metric_after != null ? `${num(c.metric_before)} → ${num(c.metric_after)}` : ''}</span></div>`).join('');
+    const rows = (p.checks || []).map((c) => `<div class="ev-check" data-ok="${c.passed ? 'true' : 'false'}"><span class="mk" aria-hidden="true"></span><span>${esc(words(c.name))}${c.passed ? '' : ' <span class="sr">did not pass</span>'}</span><span class="ba">${c.metric_before != null || c.metric_after != null ? `${num(c.metric_before)} → ${num(c.metric_after)}` : ''}</span></div>`).join('');
     return rows ? `<div class="ev-checks" role="list" aria-label="Checks">${rows}</div>` : '';
   }
 
@@ -195,6 +195,36 @@
       : 'O installs tools it finds and ships its own upgrades without asking; each one is listed above with Undo. Upgrades install while you are away.';
     $('evolve-foot').textContent = [mode, st.enabled !== false ? 'Safety checks, sandbox testing and automatic rollback always apply; approvals, payments, the action log and consent rules are never changed by an upgrade.' : ''].filter(Boolean).join(' ');
     badge(ups.length + skills.length);
+    renderHome();
+  }
+
+  // ---------- Home: the Learning section (latest feed lines, with Undo) and the Needs you rows for anything that
+  // waits for an approval here. Full cards stay in the Evolution view; Home links to it.
+  function needRow(kind, title, id) {
+    const el = document.createElement('div');
+    el.className = 'need ev-need';
+    el.dataset.key = id;
+    el.innerHTML = `<div class="need-kind">${esc(kind)}</div><div class="need-head">${esc(title)}</div><div class="need-acts"><span class="spacer"></span><button type="button" class="allow ev-review">Review</button></div>`;
+    el.querySelector('.ev-review').addEventListener('click', openSheet);
+    return el;
+  }
+  function renderHome() {
+    const feed = $('home-learn-feed');
+    if (!feed) return;
+    const st = data.status || {};
+    const ask = asks(st);
+    const needs = $('home-evolve-needs');
+    needs.innerHTML = '';
+    if (ask) {
+      (data.proposals || []).filter((p) => WAITS.has(p.status)).forEach((p) => needs.appendChild(needRow(`Upgrade · ${words(p.subsystem)}`, p.title, 'u:' + p.id)));
+      (data.skills || []).forEach((k) => needs.appendChild(needRow('New skill · installs third-party code', k.name || k.title || k.id, 'k:' + k.id)));
+    }
+    feed.innerHTML = '';
+    const items = (data.feed || []).slice(0, 4);
+    if (items.length) items.forEach((f) => feed.appendChild(feedItem(f)));
+    else feed.innerHTML = '<li class="ev-empty">Nothing new yet. O looks for new releases and research on its own and tries what fits.</li>';
+    const foot = $('home-learn-foot');
+    if (foot) foot.textContent = st.enabled === false ? 'Self-improvement is off.' : subline(st);
   }
 
   function badge(n) {
@@ -218,6 +248,7 @@
     }
     data = r;
     if (!sheet.hidden) render(); else badge(asks(r.status) ? (r.proposals || []).filter((p) => WAITS.has(p.status)).length + (r.skills || []).length : 0);
+    renderHome();
   }
 
   function openSheet() {
@@ -229,13 +260,13 @@
   }
   function closeSheet() { sheet.hidden = true; }
 
-  $('btn-evolve').addEventListener('click', () => (sheet.hidden ? openSheet() : closeSheet()));
-  $('btn-evolve-close').addEventListener('click', closeSheet);
+  $('btn-evolve').addEventListener('click', openSheet);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) { e.stopPropagation(); closeSheet(); } }, true);
   // Another sheet opening closes this one (panel.js owns those and does not know about this view).
   const mo = new MutationObserver(() => { if (!sheet.hidden && OTHER_SHEETS.some((id) => { const el = $(id); return el && !el.hidden; })) closeSheet(); });
   for (const id of OTHER_SHEETS) { const el = $(id); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden'] }); }
   if (has('onAgentEvent')) o.onAgentEvent((ev) => { if (ev && ev.type === 'evolve') { data.status = ev.status || data.status; refresh(); } });
   setTimeout(refresh, 1500);
+  setTimeout(renderHome, 0);
   window.__oEvolve = { refresh, render, openSheet }; // tests and screenshots
 })();
