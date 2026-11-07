@@ -13,19 +13,18 @@ try {
 contextBridge.exposeInMainWorld('o', {
   initialTheme,
   // Island window (status capsule + command bar). getBounds/getWorkArea refer to the Island window.
-  getBounds: () => ipcRenderer.invoke('pet:getBounds'),
-  getWorkArea: () => ipcRenderer.invoke('pet:getWorkArea'),
-  getCursor: () => ipcRenderer.invoke('pet:getCursor'),
+  getBounds: () => ipcRenderer.invoke('island:getBounds'),
+  getWorkArea: () => ipcRenderer.invoke('island:getWorkArea'),
+  getCursor: () => ipcRenderer.invoke('island:getCursor'),
   togglePanel: () => ipcRenderer.send('panel:toggle'),
   showPanel: () => ipcRenderer.send('panel:show'),
-  setIgnoreMouse: (ignore) => ipcRenderer.send('pet:setIgnoreMouse', !!ignore),
+  setIgnoreMouse: (ignore) => ipcRenderer.send('island:setIgnoreMouse', !!ignore),
+  // Linux: the capsule rect (window px) that takes clicks while the Island is compact.
+  setIslandShape: (r) => ipcRenderer.send('island:shape', r && typeof r === 'object'
+    ? { x: Number(r.x) || 0, y: Number(r.y) || 0, width: Number(r.width) || 0, height: Number(r.height) || 0 } : null),
   // The command bar: expand (bounds + keyboard focus) and collapse back to the capsule.
   islandOpen: () => ipcRenderer.send('island:open'),
   islandClose: () => ipcRenderer.send('island:close'),
-  // The desktop pet is gone: these stay as harmless no-ops so older callers keep working.
-  moveBy: () => {},
-  fling: () => {},
-  grab: () => {},
 
   // both windows
   onAgentEvent: (cb) => {
@@ -79,7 +78,7 @@ contextBridge.exposeInMainWorld('o', {
   // extras (panel)
   hidePanel: () => ipcRenderer.send('panel:hide'),
   turnOff: () => ipcRenderer.send('app:quit'),
-  petMenu: () => ipcRenderer.send('pet:menu'), // the Island's right-click menu
+  petMenu: () => ipcRenderer.send('island:menu'), // the Island's right-click menu (name kept for callers)
   // permission sidebar
   onTheme: (cb) => {
     const handler = (_e, ev) => { if (ev && ev.type === 'theme') cb(ev.theme); };

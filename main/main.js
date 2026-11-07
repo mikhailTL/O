@@ -62,6 +62,7 @@ let quitting = false;
 let commandBarOpen = false; // the Island is showing the command bar (expanded bounds, focused)
 let islandShrinkTimer = null;
 let islandScreenHooked = false;
+let islandShape = null; // Linux: the capsule rect (window px) that takes clicks while the Island is compact
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
 let updater = null;
@@ -360,9 +361,20 @@ function islandBounds(expanded) {
   };
 }
 
+// macOS focus return, Spotlight style: the Island is created as an NSPanel-like window (type: 'panel',
+// supported since Electron 21; package.json pins ^33). That adds NSWindowStyleMaskNonactivatingPanel, so the
+// command bar becomes the key window and takes typing WITHOUT activating O. The app the user was in stays the
+// active app, and when the bar closes and resigns key, keyboard focus is simply back in that app. This is
+// chosen over the fallback (record whether O was frontmost when the bar opened, then app.hide() on close only
+// if it was not) because app.hide() also hides the panel and would flicker the Island itself, and it cannot
+// tell "O was frontmost" apart from "the user clicked the Island while in another app". For the same reason
+// openCommandBar no longer calls app.focus({ steal: true }) on macOS: activating O is what the panel avoids.
+const ISLAND_IS_PANEL = process.platform === 'darwin';
+
 function createIslandWindow() {
   islandWin = new BrowserWindow({
     ...islandBounds(false),
+    ...(ISLAND_IS_PANEL ? { type: 'panel' } : {}),
     transparent: true,
     frame: false,
     resizable: false,
@@ -390,6 +402,7 @@ function createIslandWindow() {
   islandWin.setAlwaysOnTop(true, 'screen-saver');
   try { islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
   islandWin.loadFile(path.join(RENDERER, 'index.html'));
+  applyIslandShape();
   // Spotlight behaviour: clicking anywhere else collapses the command bar.
   islandWin.on('blur', () => { if (commandBarOpen) closeCommandBar({ notify: true }); });
   islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; });
@@ -408,8 +421,9 @@ function openCommandBar({ notify = false } = {}) {
   clearTimeout(islandShrinkTimer);
   commandBarOpen = true;
   islandWin.setBounds(islandBounds(true));
+  applyIslandShape(); // Linux: the whole bar takes clicks while open
   if (!islandWin.isVisible()) islandWin.showInactive();
-  if (process.platform === 'darwin') { try { app.focus({ steal: true }); } catch (_) {} }
+  // macOS: no app.focus() here, see ISLAND_IS_PANEL. Focusing a non-activating panel makes it key only.
   islandWin.focus();
   if (notify) sendToIsland({ type: 'island', open: true });
 }
@@ -422,8 +436,30 @@ function closeCommandBar({ notify = false } = {}) {
   if (islandWin && !islandWin.isDestroyed() && islandWin.isFocused()) islandWin.blur();
   clearTimeout(islandShrinkTimer);
   islandShrinkTimer = setTimeout(() => {
-    if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) islandWin.setBounds(islandBounds(false));
+    if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) { islandWin.setBounds(islandBounds(false)); applyIslandShape(); }
   }, ISLAND_SHRINK_MS);
+}
+
+// Linux has no click-through with forwarded mouse moves, so the transparent strip of the compact window
+// around the capsule (448x60 window, 220-420x36 capsule) would swallow clicks. There the window is shaped to
+// the capsule rect the renderer reports (island:shape); while the bar is open the shape is the whole window.
+// "Cleared" is a full-window rect rather than [], since an empty list can mean "no region" on X11.
+// macOS and Windows keep setIgnoreMouseEvents with forwarding instead.
+function applyIslandShape() {
+  if (process.platform !== 'linux' || !islandWin || islandWin.isDestroyed() || typeof islandWin.setShape !== 'function') return;
+  const full = { x: 0, y: 0, width: ISLAND_EXPANDED.width, height: ISLAND_EXPANDED.height };
+  try { islandWin.setShape([commandBarOpen || !islandShape ? full : islandShape]); } catch (_) {}
+}
+
+/** Validate a capsule rect from the renderer against the compact window. */
+function cleanIslandShape(r) {
+  if (!r || typeof r !== 'object') return null;
+  const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : NaN);
+  const x = n(r.x), y = n(r.y), width = n(r.width), height = n(r.height);
+  if ([x, y, width, height].some(Number.isNaN) || width <= 0 || height <= 0) return null;
+  const cx = Math.max(0, Math.min(ISLAND_COMPACT.width - 1, x));
+  const cy = Math.max(0, Math.min(ISLAND_COMPACT.height - 1, y));
+  return { x: cx, y: cy, width: Math.min(width, ISLAND_COMPACT.width - cx), height: Math.min(height, ISLAND_COMPACT.height - cy) };
 }
 
 function toggleCommandBar() {
@@ -490,8 +526,10 @@ function positionPanel() {
   const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
   const [w, h0] = panelWin.getSize();
   const top = wa.y + ISLAND_TOP + ISLAND_COMPACT.height; // below the capsule
-  const h = Math.min(h0, wa.y + wa.height - top - 12);
-  if (h !== h0) panelWin.setSize(w, Math.max(380, h));
+  // On a short screen the height is clamped; place the panel by the height it ends up with (never below the
+  // 380 px minimum), so it is centred and its top stays clear of the Island.
+  const h = Math.max(380, Math.min(h0, wa.y + wa.height - top - 12));
+  if (h !== h0) panelWin.setSize(w, h);
   const x = wa.x + wa.width - w - 16;
   const y = Math.max(top, wa.y + Math.round((wa.height - h) / 2));
   panelWin.setPosition(Math.round(x), Math.round(y));
@@ -816,6 +854,7 @@ function loadAgent() {
 
   tasks = new TaskManager({
     getSettings: () => settings.get(),
+    actionLog,
     createAgent: (taskId, opts) => new mod.OAgent({
       ...common, taskId, getChatId: () => taskId, onSchedule: handleSchedule, onGoal: handleGoal,
       goalId: (opts && opts.goalId) || (goals && goals.goalForTask(taskId)) || null,
@@ -961,12 +1000,18 @@ function enqueuePrompt(text, opts) {
 // ---------------------------------------------------------------- IPC
 
 function registerIpc() {
-  // Island window. The pet-era channels moveBy/fling/grab are gone (the preload keeps them as no-ops).
-  ipcMain.handle('pet:getBounds', () => (islandWin ? islandWin.getBounds() : islandBounds(false)));
-  ipcMain.handle('pet:getWorkArea', () => workAreaFor(islandWin ? islandWin.getBounds() : null));
-  ipcMain.handle('pet:getCursor', () => screen.getCursorScreenPoint());
-  ipcMain.on('pet:setIgnoreMouse', (_e, ignore) => {
+  // Island window (status capsule + command bar).
+  ipcMain.handle('island:getBounds', () => (islandWin ? islandWin.getBounds() : islandBounds(false)));
+  ipcMain.handle('island:getWorkArea', () => workAreaFor(islandWin ? islandWin.getBounds() : null));
+  ipcMain.handle('island:getCursor', () => screen.getCursorScreenPoint());
+  ipcMain.on('island:setIgnoreMouse', (_e, ignore) => {
     if (islandWin && !islandWin.isDestroyed()) islandWin.setIgnoreMouseEvents(!!ignore, { forward: true });
+  });
+  ipcMain.on('island:shape', (_e, rect) => {
+    const r = cleanIslandShape(rect);
+    if (!r) return;
+    islandShape = r;
+    applyIslandShape();
   });
   ipcMain.on('island:open', () => openCommandBar());
   ipcMain.on('island:close', () => closeCommandBar());
@@ -975,7 +1020,7 @@ function registerIpc() {
   ipcMain.on('panel:show', () => showPanel());
   ipcMain.on('panel:hide', hidePanel);
   ipcMain.on('app:quit', () => turnOff());
-  ipcMain.on('pet:menu', () => {
+  ipcMain.on('island:menu', () => {
     if (!islandWin || islandWin.isDestroyed()) return;
     Menu.buildFromTemplate([
       { label: 'Open panel', click: () => showPanel() },
