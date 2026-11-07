@@ -158,7 +158,7 @@ function browserFor(app) {
   const a = String(app || '').trim().toLowerCase();
   if (!a) return null;
   return BROWSERS.find((b) => b.app.toLowerCase() === a || b.process.toLowerCase() === a) ||
-    BROWSERS.find((b) => b.app.toLowerCase().startsWith(a) || a.startsWith(b.app.toLowerCase().split(' ')[0])) || null;
+    BROWSERS.find((b) => b.app.toLowerCase().split(' ').includes(a)) || null;
 }
 
 /** Title -> an fnmatch pattern for the engine's window filter, with the glob characters neutralised. */
@@ -376,7 +376,7 @@ function createNative(deps = {}) {
     return { error: 'action must be navigate, click or type' };
   }
 
-  return { platform, listTabs, readTab, navigateTab, openUrl, tabInfo, actGoal, urlProblem, isPaymentUrl, wrapUntrusted, treeText, windowGlob, browserFor };
+  return { platform, unsupported: notMac, listTabs, readTab, navigateTab, openUrl, tabInfo, actGoal, urlProblem, isPaymentUrl, wrapUntrusted, treeText, windowGlob, browserFor };
 }
 
 module.exports = { createNative, loadPaymentGuard, BROWSERS, BROWSER_APPS, LIST_SCRIPT, TAB_SCRIPT, READ_JS, UNTRUSTED_NOTE, wrapUntrusted, treeText, windowGlob };

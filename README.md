@@ -38,7 +38,7 @@ Needs Node.js 18+, Python 3.10+ and a Claude subscription (run `claude` once to 
 
 ## How it works
 
-O is an Electron app with a chat panel. Its brain is the **Claude Code CLI** (`claude -p`) with your own Claude login; no API key. It works **inside your own Edge or Chrome tabs** through **O Link**, its own small extension, and in desktop apps through their accessibility tree. Underneath sits a Python **engine** that runs commands in a **sandbox**, replays saved scripts from a **script cache**, drives desktop apps, and repairs failures by bounded **remediation**. Everything either side does is written to one append-only **action log**.
+O is an Electron app with a chat panel. Its brain is the **Claude Code CLI** (`claude -p`) with your own Claude login; no API key. It works **in your own browsers and tabs** (Safari, Chrome, Edge, Brave, Arc and others) and in desktop apps directly, through the OS (AppleScript on macOS) and their accessibility tree; no extension needed. **O Link**, its own small extension, is an optional add-on that makes heavy web work in Edge/Chrome faster. Underneath sits a Python **engine** that runs commands in a **sandbox**, replays saved scripts from a **script cache**, drives desktop apps, and repairs failures by bounded **remediation**. Everything either side does is written to one append-only **action log**.
 
 ### Requirements
 
@@ -63,7 +63,21 @@ Both installers are idempotent and end with `o-engine check`. Every step is requ
 | Linux / macOS | `bash install/install.sh [--dry-run] [--vllm-url URL]` | Node deps, Claude Code CLI, Python venv + `pip install -e engine` (includes `mcp`, `e2b`, `crewai`, `browser-use`, each then checked by import), `playwright install chromium`, `open-interpreter` (its own step, see `engine/README.md`: its pins conflict with `browser-use`), vLLM (`pip install vllm` on Linux with an NVIDIA GPU; elsewhere the installer asks for the URL of a remote or Docker vLLM, or takes `--vllm-url`, saves it as `vllmUrl` and checks `<url>/models`), screenpipe (official installer), Xvfb via `apt`/`dnf` on Linux, Docker presence check (reports only; never installs Docker) |
 | Windows | `powershell -ExecutionPolicy Bypass -File install\install.ps1 [-DryRun] [-VllmUrl URL]` | same, minus Xvfb; vLLM always uses the remote URL (prompt or `-VllmUrl`) |
 
-First run: open Settings → Engine → **Check requirements** and fix anything red. Connect your browser with **Connect my Edge** (one-time, Developer mode → Load unpacked → the `extension` folder).
+First run: open Settings → Engine → **Check requirements** and fix anything red. O already works in your open browsers and apps. Optional: add O Link with **Connect my Edge** (one-time, Developer mode → Load unpacked → the `extension` folder) for faster work in Edge/Chrome.
+
+#### Browsers and O Link
+
+| Mode (`browserMode`) | What O uses |
+|---|---|
+| `auto` (default) | Your own browsers and apps natively: `mcp__o__tabs_list` (every tab of every running browser), `tab_read` (page text), `tab_act` (navigate / click / type in a tab), `tab_open` (open a URL in the default browser, in the background), plus `computer_*` for any app. When O Link is connected, the Playwright tools on your Edge/Chrome are added and preferred for heavy web work. O never asks you to install anything. |
+| `link` | O Link first, exactly as before; when it is not connected, the same native tools as `auto`. |
+| `mine` | Playwright Extension on the tabs you put in its group. |
+| `separate` | O's own invisible browser. |
+
+- **macOS** (first): `osascript` (JXA) asks only browsers that are already running, so nothing is launched. Reading prefers the accessibility tree of the front tab through the engine, then JavaScript from Apple Events, which needs the browser's **Allow JavaScript from Apple Events** option (Safari: Develop menu; Chrome-family: View → Developer); when it is off, `tab_read` says so and still returns the title and URL. The first use asks for macOS Automation permission (System Settings → Privacy & Security → Automation). Clicks and typing go through computer use (`computer_run` with the browser as the app), navigation sets the tab's URL; your mouse and keyboard are never used.
+- **Windows**: `tabs_list` reads tab titles through UI Automation when the engine runs; reading and acting go through `computer_*`. **Linux**: a clean "not available natively" error that points to `computer_*`.
+- **Safety:** `tabs_list` and `tab_read` are read-only and pre-allowed; `tab_act` and `tab_open` go through the normal permission path (asked in `ask` mode, recorded in `log` mode) and goal checkpoints, and each one is noted in the action log. Every URL they would open passes O Link's payment-site block (`isPaymentUrl` from `main/link.js`), and only http(s) is allowed. Page text comes back marked as untrusted data. Values reach AppleScript only as `argv`, never inside script source.
+- Settings files from before v7 on the old `link` default move to `auto`; `mine` and `separate` stay.
 
 ### Using O
 
@@ -159,7 +173,7 @@ Security and safety in O come from recording, not from asking. Every entry has a
 | `ask` | Shell commands, file changes and engine gates show a blocking card (Allow / Deny) that never takes focus. No answer within **60 s** denies it **and destroys the task queue**. |
 | `auto` | No gating, no cards. Still logged. |
 
-Payment blocking in O Link applies in every mode: while O works in a tab, card and bank fields, payment pages and pay / buy / checkout buttons are locked and the page shows "Blocked by O". The guard is unchanged from opia.
+Payment blocking in O Link applies in every mode (the native tab tools refuse payment sites too): while O works in a tab, card and bank fields, payment pages and pay / buy / checkout buttons are locked and the page shows "Blocked by O". The guard is unchanged from opia.
 
 ### API proxy
 
@@ -312,7 +326,7 @@ Ruled out: rendering model-produced HTML or markdown outside the sandbox; `allow
 | `sandboxRoot` | engine command tree, default `<home>/o-sandbox` |
 | `maxRemediationAttempts` | default 3 (1..10) |
 | `logUnreadBadge` | badge + away notification, default on |
-| `browserMode` | `link` (all tabs via O Link, default) / `mine` (Playwright Extension, picked tabs) / `separate` (O's own invisible browser) |
+| `browserMode` | `auto` (default: your own browsers and apps natively, plus O Link's tools when it is connected) / `link` (O Link first, native fallback) / `mine` (Playwright Extension, picked tabs) / `separate` (O's own invisible browser) |
 | `extensionToken` | `mine` mode only: `PLAYWRIGHT_MCP_EXTENSION_TOKEN` |
 | `browserProfile` | `mine` mode only: Chrome profile folder name |
 | `browserHeadless` | O's own browser runs invisibly (default on) |
@@ -401,7 +415,8 @@ O/
   main/proxy.js            API proxy: OpenAI-compatible HTTP on 127.0.0.1, claude -p per request, SSE/JSON normalizer
   main/promptmod.js        buildSystemPrompt (code | chat), stripPersona rules
   main/tokenfilter.js      node port of TokenFilter (first balanced JSON)
-  main/tools/bridge-mcp.js MCP server `o`: approve, see_screen, log_note, provision, cache_lookup, diagnose, verify_port, workspace_context, computer_run, computer_replay, computer_find, computer_tree, mcp_tools, mcp_call, script_run, swarm_run, web_run, ui_emit, schedule_task, list_schedules, cancel_schedule, recall_preferences, remember_preference
+  main/tools/bridge-mcp.js MCP server `o`: approve, see_screen, log_note, provision, cache_lookup, diagnose, verify_port, workspace_context, computer_run, computer_replay, computer_find, computer_tree, mcp_tools, mcp_call, script_run, swarm_run, web_run, ui_emit, schedule_task, list_schedules, cancel_schedule, recall_preferences, remember_preference, tabs_list, tab_read, tab_act, tab_open
+  main/tools/native-tabs.js native tab control without O Link (osascript/JXA on macOS, UI Automation titles on Windows)
   main/tools/selftest-proxy.js  proxy selftest against main/tools/fake-claude.js
   extension/               O Link browser extension + payment guard
   renderer/                pet window, panel, log sheet, Runs sheet, sprite

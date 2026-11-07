@@ -88,7 +88,7 @@ function fakeGitHub(state) {
     const dirOld = tmp();
     fs.writeFileSync(path.join(dirOld, 'o-settings.json'), JSON.stringify({ settingsVersion: 5, evolveAutoShip: 'low_risk', proxyToken: 'x' }));
     const mig = new Settings(dirOld).get();
-    check(mig.evolveAskBeforeInstall === true && mig.evolveAutoShip === 'never' && mig.settingsVersion === 6, 'migration: old low_risk files move to asking (v6)');
+    check(mig.evolveAskBeforeInstall === true && mig.evolveAutoShip === 'never' && mig.settingsVersion >= 6, 'migration: old low_risk files move to asking (v6)');
     const dirOff = tmp();
     fs.writeFileSync(path.join(dirOff, 'o-settings.json'), JSON.stringify({ settingsVersion: 6, evolveAskBeforeInstall: false, proxyToken: 'x' }));
     check(new Settings(dirOff).get().evolveAutoShip === 'all', 'a saved off stays off across restarts');

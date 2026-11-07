@@ -6,8 +6,10 @@
 //   const agent = new OAgent({ userDataDir, getSettings, onPermissionRequest, actionLog, getEngine });
 //   agent.on('event', ev => ...);  await agent.run('find me a cheap flight');
 //
-// Browser work goes through the Playwright MCP server with its own profile
-// (<userDataDir>/o-browser), so it never touches the user's own browser.
+// Browser work: in the default 'auto' mode the agent works in the user's own browsers through the bridge's
+// native tab tools (mcp__o__tabs_list / tab_read / tab_act / tab_open, tools/native-tabs.js) and in apps through
+// computer use; when the O Link extension is connected (an add-on), Playwright MCP is wired to it as well.
+// 'separate' uses Playwright MCP with O's own profile (<userDataDir>/o-browser).
 // Permission prompts, screenshots, engine log entries and GenUI frames come back through
 // tools/bridge-mcp.js -> our localhost HTTP server (/approve, /screen, /log, /ui).
 // Every tool call, result and policy decision is written to the action log.
@@ -40,7 +42,12 @@ const ENGINE_TOOLS = ['mcp__o__log_note', 'mcp__o__provision', 'mcp__o__cache_lo
 // Goal tools only touch O's own goals; goal_checkpoint files a card the person approves (it never performs the action).
 const APP_TOOLS = ['mcp__o__schedule_task', 'mcp__o__list_schedules', 'mcp__o__cancel_schedule', 'mcp__o__recall_preferences', 'mcp__o__remember_preference',
   'mcp__o__goal_create', 'mcp__o__goal_status', 'mcp__o__goal_record_cycle', 'mcp__o__goal_propose', 'mcp__o__goal_checkpoint'];
-const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS];
+// Native tab tools that only read (tabs_list, tab_read). tab_act and tab_open act, so they are not pre-allowed:
+// they reach the bridge's approve tool like every other risky tool.
+const NATIVE_READ_TOOLS = ['mcp__o__tabs_list', 'mcp__o__tab_read'];
+const NATIVE_ACT_TOOLS = ['mcp__o__tab_act', 'mcp__o__tab_open'];
+const BROWSER_MODES = ['auto', 'link', 'mine', 'separate'];
+const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS, ...NATIVE_READ_TOOLS];
 const SAFE_PREFIXES = ['mcp__playwright__'];
 const ALLOWED_TOOLS_FLAG = [...SAFE_TOOLS, 'mcp__o__provision', 'mcp__playwright'];
 // A goal cycle's browser calls are not pre-allowed: each one reaches the bridge's approve tool, where checkpoint
@@ -91,8 +98,17 @@ Log: everything you do is recorded in the action log the user can open (tool cal
 UI: when you report plans, progress or results, prefer mcp__o__ui_emit frames over prose; the panel renders them. Never put raw HTML or markdown in frames — use the component set (Column, Row, Card, Text, Step, Tree, Progress, KeyValue, Button, Preview).
 When you finish, say in one or two sentences what you did and what you found, then the one-line assumption if you made one.`;
 
+// Native browser control (no extension): the user's own tabs in any browser, apps through computer use.
+const NATIVE_BROWSER = `Browser: you work in the user's OWN browsers and apps directly; no extension is needed. mcp__o__tabs_list lists every open tab in every running browser (Safari, Chrome, Edge, Brave, Arc and others) with app, window, tab, title and URL; mcp__o__tab_read reads a tab's page text; mcp__o__tab_act navigates, clicks or types in a tab; mcp__o__tab_open opens a page in the user's default browser in the background. For any other app, use the mcp__o__computer_* tools. For quick facts, WebSearch and WebFetch are fine.
+When the user talks about "my tab", "this page", "this quiz" or what's on their screen, find THAT tab with tabs_list (if unsure which one they mean, look with mcp__o__see_screen), read it with tab_read and act IN it with tab_act, so the result shows in their browser. Don't open new tabs unless the user asks or the task really needs it.
+Your clicks and typing never go through the user's real mouse or keyboard, and the browser is not brought to the front. If tab_read says a browser option such as "Allow JavaScript from Apple Events" is off, tell the user in one line which option to turn on (and that it is optional), then carry on with mcp__o__computer_tree or mcp__o__see_screen. Never ask the user to install O Link or any extension. If a site needs a login, ask the user to sign in themselves in their browser.`;
+
 const BROWSER_RULES = {
-  // Default: the user's own Edge/Chrome through O's own extension (O Link): every open tab.
+  // Default: the user's own browsers natively; O Link (an add-on) adds the Playwright tools when it is connected.
+  auto: NATIVE_BROWSER,
+  autoLinked: `${NATIVE_BROWSER}
+O Link is connected right now, so you also have the mcp__playwright__ tools on the user's own Edge/Chrome, with every tab they have open (browser_tabs lists and selects them). Prefer them for heavy web work in Edge/Chrome (long pages, forms, many steps): read with browser_snapshot and click/type there. New tabs open in the background. Use the native tab tools for other browsers.`,
+  // The user's own Edge/Chrome through O's own extension (O Link): every open tab.
   link: `Browser: for anything on the web, use the mcp__playwright__ tools. They drive the user's OWN browser (Edge/Chrome) through O Link, with their normal logins, and EVERY tab they have open is available: browser_tabs lists them and selects one.
 When the user talks about "my tab", "this page", "this quiz", "this form" or what's on their screen, find THAT tab (list tabs with browser_tabs; if unsure which one they mean, look with mcp__o__see_screen), select it, and work IN it: read it with browser_snapshot and click/type there, so the result shows in their browser. Never redo the work in a new tab. Don't open new tabs unless the user asks or the task really needs it (new tabs open in the background).
 The user may be busy with something else (e.g. playing a game): your clicks and typing go straight into the page, never through their real mouse or keyboard, and the browser is never brought to the front. Prefer browser_snapshot over screenshots (the tab may be in the background).`,
@@ -106,14 +122,24 @@ If the browser tools say the extension is not connected, tell the user: open Edg
 Logins are remembered in O's browser profile. If a site needs a login, don't type credentials: ask the user to switch off "Hide O's browser" in O's Settings, sign in once in that window, and switch it back on.`,
 };
 
-const NO_LINK_NOTE = `
-IMPORTANT: right now you have NO browser tools, because O Link (O's browser extension) isn't connected. If the task needs a web page, don't pretend: say in one or two sentences that they should click "Connect my Edge" in O's panel and follow the steps (or make sure Edge is open, if they already set it up), then ask again. You can still look at their screen and do non-browser tasks.`;
-
 const NO_EXTENSION_NOTE = `
 IMPORTANT: right now you have NO browser tools, because the Playwright Extension is not installed in the user's Edge/Chrome yet. If the task needs a web page, don't pretend: say in one or two sentences that they should click "Install in Edge" in O's panel (or Settings), add the extension, then ask again. Or they can switch "Where O browses" to O's own invisible browser. You can still look at their screen and do non-browser tasks.`;
 
-function buildPersona(s) {
-  return PERSONA_TEMPLATE.replace('{{BROWSER_RULES}}', BROWSER_RULES[BROWSER_RULES[s.browserMode] ? s.browserMode : 'link']);
+/**
+ * Which browser rules a task gets. 'auto' (default) and 'link' use the Playwright rules only while O Link is
+ * connected; without it they work natively (never "install O Link"). 'mine' and 'separate' are unchanged.
+ * @param {object} s  settings ({browserMode})
+ * @param {{linked?: boolean}} [o]  whether O Link is connected (getLinkEndpoint() returned an endpoint)
+ */
+function browserRulesKey(s, { linked = false } = {}) {
+  const mode = BROWSER_MODES.includes(s && s.browserMode) ? s.browserMode : 'auto';
+  if (mode === 'auto') return linked ? 'autoLinked' : 'auto';
+  if (mode === 'link') return linked ? 'link' : 'auto';
+  return mode;
+}
+
+function buildPersona(s, o = {}) {
+  return PERSONA_TEMPLATE.replace('{{BROWSER_RULES}}', BROWSER_RULES[browserRulesKey(s || {}, o)]);
 }
 
 // Env vars that would make a child `claude` think it is nested inside another session.
@@ -399,7 +425,7 @@ class OAgent extends EventEmitter {
       model: s.model || '',
       browser: s.browser || '',
       browserPath: s.browserPath || '',
-      browserMode: ['link', 'mine', 'separate'].includes(s.browserMode) ? s.browserMode : 'link',
+      browserMode: BROWSER_MODES.includes(s.browserMode) ? s.browserMode : 'auto',
       extensionToken: s.extensionToken || '',
       browserProfile: s.browserProfile || '', // optional browser profile dir name for 'mine' mode, e.g. 'Profile 1'
       screenAccess: s.screenAccess !== false,
@@ -607,12 +633,16 @@ class OAgent extends EventEmitter {
     let pwArgs;
     let noBrowser = false;
     let noBrowserNote = NO_EXTENSION_NOTE;
+    let linked = false;
     const pwEnv = {};
-    if (s.browserMode === 'link') {
-      // O Link: Playwright MCP talks to O's local relay as if it were the browser.
-      const endpoint = this.getLinkEndpoint();
-      if (endpoint) pwArgs = ['--cdp-endpoint', endpoint];
-      else { pwArgs = []; noBrowser = true; noBrowserNote = NO_LINK_NOTE; }
+    if (s.browserMode === 'auto' || s.browserMode === 'link') {
+      // O Link is an add-on: when it is connected, Playwright MCP talks to O's local relay as if it were the
+      // browser. Without it the agent still works in the user's browsers and apps through the bridge's native
+      // tab tools and computer use, so there is no Playwright server and nothing to install.
+      let endpoint = null;
+      try { endpoint = this.getLinkEndpoint(); } catch { endpoint = null; }
+      if (endpoint) { pwArgs = ['--cdp-endpoint', endpoint]; linked = true; }
+      else { pwArgs = []; noBrowser = true; noBrowserNote = ''; }
     } else if (s.browserMode === 'mine') {
       // Work in the user's own, already-open browser (existing tab, their logins) via the
       // Playwright Extension. Input goes through the browser's debugger channel, not the OS
@@ -712,11 +742,11 @@ class OAgent extends EventEmitter {
     const cfgText = JSON.stringify(cfg, null, 2);
     fs.writeFileSync(file, cfgText, { mode: 0o600 });
     const sp = path.join(this.userDataDir, `o-persona${tag}.md`);
-    const personaText = buildPersona(s) + (noBrowser ? noBrowserNote : '');
+    const personaText = buildPersona(s, { linked }) + (noBrowser ? noBrowserNote : '');
     fs.writeFileSync(sp, personaText);
     // What a pre-spawned process was started with: if any of it changed, the warm process is stale.
     const fingerprint = crypto.createHash('sha256').update(cfgText + '\0' + personaText + '\0' + JSON.stringify(s)).digest('hex');
-    return { mcpFile: file, personaFile: sp, noBrowser, fingerprint };
+    return { mcpFile: file, personaFile: sp, noBrowser, linked, fingerprint };
   }
 
   _spawnChild(s, args) {
@@ -889,9 +919,12 @@ class OAgent extends EventEmitter {
             this.sessionId = msg.session_id || this.sessionId;
             const pw = (msg.mcp_servers || []).find((m) => m.name === 'playwright');
             if (pw && pw.status === 'failed') {
-              this._emit({ type: 'assistant', text: this._lastSettings && this._lastSettings.browserMode === 'mine'
+              const bm = this._lastSettings && this._lastSettings.browserMode;
+              this._emit({ type: 'assistant', text: bm === 'mine'
                 ? '(I couldn’t reach your browser this time. Make sure Chrome or Edge is open with the Playwright Extension installed — see Settings.)'
-                : '(My browser didn’t start, so I’ll have to manage without it this time. Check that Edge or Chrome is installed, or pick a browser in Settings.)' });
+                : bm === 'auto' || bm === 'link'
+                  ? '(O Link didn’t answer this time, so I’ll work in your browsers directly.)'
+                  : '(My browser didn’t start, so I’ll have to manage without it this time. Check that Edge or Chrome is installed, or pick a browser in Settings.)' });
             }
           } else if (msg.subtype === 'api_retry') {
             this._status('thinking', msg.error === 'rate_limit' ? 'Catching my breath (rate limit)…' : 'Reconnecting…');
@@ -1030,4 +1063,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };

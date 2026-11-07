@@ -209,6 +209,80 @@ function ok(cond, label) {
   ok(/prefer mcp__o__ui_emit frames over prose/.test(persona) && /Never put raw HTML or markdown in frames/.test(persona), 'persona has the GenUI line');
   ok(bare._sessionSurface() === 'chat:default', 'surface falls back to chat:default without a chat id');
 
+  // ---- browser modes: 'auto' default, O Link is an add-on (settings migration v7, persona, MCP wiring)
+  {
+    const { Settings, DEFAULTS } = require('../settings');
+    ok(DEFAULTS.browserMode === 'auto' && DEFAULTS.settingsVersion >= 7, 'settings: default browserMode is auto (v7)');
+    const sdir = fs.mkdtempSync(path.join(os.tmpdir(), 'o-selftest-settings-'));
+    const load = (raw) => { fs.writeFileSync(path.join(sdir, 'o-settings.json'), JSON.stringify(raw)); return new Settings(sdir).data; };
+    let m = load({ settingsVersion: 6, browserMode: 'link', proxyToken: 'x' });
+    ok(m.browserMode === 'auto' && m.settingsVersion === 7, 'settings migration: v6 link -> auto (v7)');
+    m = load({ settingsVersion: 2, browserMode: 'separate', proxyToken: 'x' });
+    ok(m.browserMode === 'auto' && m.settingsVersion === 7, 'settings migration: pre-v3 files end on auto (v3 link, then v7 auto)');
+    m = load({ settingsVersion: 6, browserMode: 'mine', proxyToken: 'x' });
+    ok(m.browserMode === 'mine', 'settings migration: mine stays mine');
+    m = load({ settingsVersion: 6, browserMode: 'separate', proxyToken: 'x' });
+    ok(m.browserMode === 'separate', 'settings migration: separate stays separate');
+    m = load({ settingsVersion: 7, browserMode: 'link', proxyToken: 'x' });
+    ok(m.browserMode === 'link', 'settings: an explicit link choice at v7 is kept');
+    const st = new Settings(sdir);
+    ok(st.set({ browserMode: 'auto' }).browserMode === 'auto' && st.set({ browserMode: 'bogus' }).browserMode === 'auto', 'settings sanitizer accepts auto, ignores unknown modes');
+    fs.writeFileSync(path.join(sdir, 'o-settings.json'), JSON.stringify({ settingsVersion: 7, browserMode: 'link' }));
+    const fresh = new Settings(sdir);
+    fresh.get(); // makes a proxy token and saves
+    ok(JSON.parse(fs.readFileSync(path.join(sdir, 'o-settings.json'), 'utf8')).settingsVersion === 7, 'settings: minting the proxy token never lowers settingsVersion');
+    try { fs.rmSync(sdir, { recursive: true, force: true }); } catch {}
+
+    const { browserRulesKey, BROWSER_RULES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, ALLOWED_TOOLS_FLAG } = require('../agent');
+    ok(browserRulesKey({}) === 'auto' && browserRulesKey({ browserMode: 'auto' }, { linked: true }) === 'autoLinked' &&
+      browserRulesKey({ browserMode: 'link' }) === 'auto' && browserRulesKey({ browserMode: 'link' }, { linked: true }) === 'link' &&
+      browserRulesKey({ browserMode: 'mine' }) === 'mine' && browserRulesKey({ browserMode: 'separate' }, { linked: true }) === 'separate', 'browserRulesKey picks rules by mode and O Link connection');
+    ok(NATIVE_READ_TOOLS.every((t) => SAFE_TOOLS.includes(t) && ALLOWED_TOOLS_FLAG.includes(t)) && NATIVE_ACT_TOOLS.every((t) => !SAFE_TOOLS.includes(t) && !ALLOWED_TOOLS_FLAG.includes(t)),
+      'tabs_list/tab_read are pre-allowed; tab_act/tab_open are not (they reach approve)');
+
+    let endpoint = null;
+    let bmode = 'auto';
+    const ba = new OAgent({ userDataDir, getSettings: () => ({ permissionMode: 'log', browserMode: bmode }), getLinkEndpoint: () => endpoint });
+    await ba.ensureServer();
+    const wire = () => { const f = ba._writeMcpConfig(ba.settings()); return { f, cfg: JSON.parse(fs.readFileSync(f.mcpFile, 'utf8')), persona: fs.readFileSync(f.personaFile, 'utf8') }; };
+    ok(ba.settings().browserMode === 'auto' && new OAgent({ userDataDir, getSettings: () => ({}) }).settings().browserMode === 'auto', 'agent settings(): browserMode defaults to auto');
+
+    let w = wire();
+    ok(!w.cfg.mcpServers.playwright && w.cfg.mcpServers.o && w.f.linked === false, 'auto without O Link: no Playwright server, bridge still wired');
+    ok(/mcp__o__tabs_list/.test(w.persona) && /mcp__o__tab_read/.test(w.persona) && /mcp__o__tab_act/.test(w.persona) && /mcp__o__computer_\*/.test(w.persona), 'auto without O Link: persona names the native tab tools and computer_*');
+    ok(!/Connect my Edge/.test(w.persona) && !/NO browser tools/.test(w.persona) && /Never ask the user to install O Link/.test(w.persona) && /sign in themselves/.test(w.persona), 'auto without O Link: never told to install anything; logins are the user\'s');
+    ok(!/mcp__playwright__/.test(w.persona), 'auto without O Link: persona does not mention Playwright tools');
+
+    endpoint = 'ws://127.0.0.1:47615/cdp/tok';
+    w = wire();
+    const pw = w.cfg.mcpServers.playwright;
+    ok(pw && pw.args.includes('--cdp-endpoint') && pw.args[pw.args.indexOf('--cdp-endpoint') + 1] === endpoint && w.f.linked === true, 'auto with O Link: Playwright MCP wired to the link endpoint');
+    ok(/mcp__o__tabs_list/.test(w.persona) && /O Link is connected right now/.test(w.persona) && /Prefer them for heavy web work/.test(w.persona) && !/Connect my Edge/.test(w.persona), 'auto with O Link: persona keeps native tools and prefers Playwright for heavy web work');
+
+    bmode = 'link';
+    w = wire();
+    ok(pw && w.cfg.mcpServers.playwright.args.includes(endpoint) && w.persona.includes(BROWSER_RULES.link), 'link mode with O Link: unchanged link rules and wiring');
+    endpoint = null;
+    w = wire();
+    ok(!w.cfg.mcpServers.playwright && /mcp__o__tabs_list/.test(w.persona) && !/Connect my Edge/.test(w.persona) && !/NO browser tools/.test(w.persona), 'link mode without O Link: falls back to native tools (no "Connect my Edge")');
+
+    bmode = 'separate';
+    w = wire();
+    ok(w.cfg.mcpServers.playwright && w.cfg.mcpServers.playwright.args.includes('--user-data-dir') && w.persona.includes(BROWSER_RULES.separate), 'separate mode unchanged');
+    ok(buildPersona({ browserMode: 'mine' }).includes(BROWSER_RULES.mine), 'mine mode persona unchanged');
+
+    // ask mode: tab_act / tab_open go to the approver, tabs_list / tab_read do not
+    mode = 'ask';
+    const asked = [];
+    agent.onPermissionRequest = (req) => { asked.push(req.toolName); return Promise.resolve({ allow: false, message: 'no' }); };
+    d = await agent.decide('mcp__o__tab_act', { app: 'Safari', tab: 1, action: 'click', target: 'Next' });
+    const d2 = await agent.decide('mcp__o__tab_open', { url: 'https://example.com' });
+    const d3 = await agent.decide('mcp__o__tabs_list', {});
+    const d4 = await agent.decide('mcp__o__tab_read', { app: 'Safari', tab: 1 });
+    ok(d.behavior === 'deny' && d2.behavior === 'deny' && asked.join() === 'mcp__o__tab_act,mcp__o__tab_open' && d3.behavior === 'allow' && d4.behavior === 'allow', 'ask mode: tab_act/tab_open need approval, tabs_list/tab_read do not');
+    ba.dispose();
+  }
+
   agent.dispose();
   bare.dispose();
   try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}

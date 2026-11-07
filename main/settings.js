@@ -13,7 +13,7 @@ const DEFAULTS = Object.freeze({
   model: '',
   browser: '', // '' = auto-detect installed Edge/Chrome/Brave/Chromium (Edge first) | 'chrome' | 'msedge' | 'chromium' | 'firefox'
   browserPath: '', // optional explicit browser executable; overrides `browser`
-  browserMode: 'link', // 'link' = every tab of your own Edge/Chrome via O Link | 'mine' = Playwright Extension (tab group) | 'separate' = O's own invisible browser
+  browserMode: 'auto', // 'auto' = your own browsers and apps natively, plus O Link's tools when it is connected (add-on) | 'link' = O Link first (falls back to native) | 'mine' = Playwright Extension (tab group) | 'separate' = O's own invisible browser
   extensionToken: '', // PLAYWRIGHT_MCP_EXTENSION_TOKEN from the Playwright Extension (skips the connect dialog)
   browserProfile: '', // optional Chrome profile dir name for extension mode, e.g. "Profile 1"
   maxParallelTasks: 3, // 1..8 tasks run at once (each its own Claude Code process); more wait in a queue
@@ -92,8 +92,10 @@ const DEFAULTS = Object.freeze({
   // The engine's dev-only host mode is deliberately not a value this file accepts.
   evolveSandbox: 'auto',
   practiceBudgetUsd: 0.5, // rolling 24 h cap on practice spend (O rehearses its own tasks on an isolated display while you are away)
-  settingsVersion: 6,
+  settingsVersion: 7,
 });
+
+const BROWSER_MODES = ['auto', 'link', 'mine', 'separate'];
 
 /** evolveAutoShip follows evolveAskBeforeInstall; nothing else can set it. */
 function deriveEvolve(d) {
@@ -131,6 +133,12 @@ class Settings {
         if (typeof raw.evolveAskBeforeInstall !== 'boolean') this.data.evolveAskBeforeInstall = true;
         this.data.settingsVersion = 6;
       }
+      // v7: O Link is an add-on. 'auto' works in your own browsers and apps without it and uses O Link when it is
+      // connected, so files on the old 'link' default move to 'auto'; 'mine' and 'separate' stay as chosen.
+      if (!(raw.settingsVersion >= 7)) {
+        if (this.data.browserMode === 'link') this.data.browserMode = 'auto';
+        this.data.settingsVersion = 7;
+      }
       // O moved from the claude-team repo to its own repo: follow it.
       if (this.data.updateRepo === 'samuelsortland-cmyk/claude-team') {
         Object.assign(this.data, { updateRepo: DEFAULTS.updateRepo, updateBranch: DEFAULTS.updateBranch, updatePath: DEFAULTS.updatePath });
@@ -142,7 +150,8 @@ class Settings {
   get() {
     if (!this.data.proxyToken) {
       // v5: the API proxy refuses to listen without a token; make one once and persist it.
-      this.set({ proxyToken: require('crypto').randomBytes(24).toString('hex'), settingsVersion: 5 });
+      // (never lowers the version: a lower one would re-run later migrations, e.g. undo an explicit 'link').
+      this.set({ proxyToken: require('crypto').randomBytes(24).toString('hex'), settingsVersion: Math.max(5, this.data.settingsVersion || 0) });
     }
     return { ...this.data };
   }
@@ -169,7 +178,7 @@ function sanitize(obj) {
   if (typeof obj.model === 'string') out.model = obj.model.trim();
   if (['', 'chrome', 'msedge', 'chromium', 'firefox'].includes(obj.browser)) out.browser = obj.browser;
   if (typeof obj.browserPath === 'string') out.browserPath = obj.browserPath.trim();
-  if (['link', 'mine', 'separate'].includes(obj.browserMode)) out.browserMode = obj.browserMode;
+  if (BROWSER_MODES.includes(obj.browserMode)) out.browserMode = obj.browserMode;
   if (typeof obj.extensionToken === 'string') out.extensionToken = obj.extensionToken.trim();
   if (typeof obj.browserProfile === 'string') out.browserProfile = obj.browserProfile.trim();
   if (typeof obj.quiet === 'boolean') out.quiet = obj.quiet;
@@ -242,4 +251,4 @@ function sanitize(obj) {
   return out;
 }
 
-module.exports = { Settings, DEFAULTS, deriveEvolve };
+module.exports = { Settings, DEFAULTS, deriveEvolve, BROWSER_MODES };
