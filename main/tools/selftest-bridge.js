@@ -130,8 +130,8 @@ function text(res) {
   return res && res.result && res.result.content && res.result.content[0] && res.result.content[0].text;
 }
 
-async function runWith(env, fn) {
-  const child = spawn(process.execPath, [BRIDGE], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+async function runWith(env, fn, nodeArgs = []) {
+  const child = spawn(process.execPath, [...nodeArgs, BRIDGE], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (d) => process.stderr.write('  [bridge stderr] ' + d));
   try { await fn(rpcClient(child)); } finally { child.stdin.end(); await new Promise((r) => child.on('exit', r)); }
@@ -309,6 +309,8 @@ async function main() {
     const before = stub.log.length;
     const op = await rpc('tools/call', { name: 'tab_open', arguments: { url: 'https://www.paypal.com/checkoutnow' } });
     check(op.result.isError === true && /Blocked by O/.test(text(op)) && /"blocked": true/.test(text(op)), 'tab_open refuses a payment site (main/link.js isPaymentUrl)');
+    const opDot = await rpc('tools/call', { name: 'tab_open', arguments: { url: 'https://paypal.com./x' } });
+    check(opDot.result.isError === true && /Blocked by O/.test(text(opDot)), 'tab_open refuses a trailing-dot payment host (https://paypal.com./x)');
     const op2 = await rpc('tools/call', { name: 'tab_open', arguments: { url: 'file:///etc/passwd' } });
     check(op2.result.isError === true && /only http/.test(text(op2)), 'tab_open refuses non-http(s) URLs');
     const nav = await rpc('tools/call', { name: 'tab_act', arguments: { app: 'Safari', tab: 1, action: 'navigate', url: 'https://checkout.stripe.com/pay/x' } });
@@ -328,6 +330,51 @@ async function main() {
     }
   });
 
+  // ---- tab_act click/type payment guard, bridge on a mocked macOS (process.platform + osascript)
+  console.log('bridge tab_act payment guard (mocked darwin, mode=log, no goal)');
+  {
+    const fs = require('fs');
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'o-selftest-'));
+    const preload = path.join(dir, 'mock-darwin.js');
+    fs.writeFileSync(preload, [
+      "'use strict';",
+      "Object.defineProperty(process, 'platform', { value: 'darwin' });",
+      "const cp = require('child_process');",
+      "cp.execFile = function (file, args, opts, cb) {",
+      "  const out = file === 'osascript' && args[5] === 'info'",
+      "    ? JSON.stringify({ ok: true, app: args[6], title: 'Shop', url: 'https://shop.example/cart', active: true })",
+      "    : JSON.stringify({ ok: false, error: 'mock: unexpected ' + file });",
+      "  setImmediate(() => cb(null, out, ''));",
+      "};",
+    ].join('\n'));
+    try {
+      await runWith({ ...env, O_PERMISSION_MODE: 'log', O_GOAL_ID: '', O_GOAL_URL: '' }, async (rpc) => {
+        await rpc('initialize', { protocolVersion: '2024-11-05' });
+        const jobsBefore = stub.computerBodies.length;
+        const logBefore = stub.log.length;
+        const act = (args) => rpc('tools/call', { name: 'tab_act', arguments: { app: 'Safari', tab: 1, ...args } }, 15000);
+        const blocked = (res) => { let j = {}; try { j = JSON.parse(text(res)); } catch (_) {} return res.result.isError === true && j.blocked === true && /Blocked by O: O never makes payments/.test(j.error); };
+        check(blocked(await act({ action: 'click', target: 'the Buy now button' })), 'tab_act click "the Buy now button" → blocked (log mode, no goal)');
+        check(blocked(await act({ action: 'click', target: 'Place your order' })), 'tab_act click "Place your order" → blocked');
+        check(blocked(await act({ action: 'click', target: 'Checkout' })), 'tab_act click "Checkout" → blocked');
+        check(blocked(await act({ action: 'type', text: '4242 4242 4242 4242', target: 'the box' })), "tab_act type '4242 4242 4242 4242' → blocked (Luhn-valid card number)");
+        check(blocked(await act({ action: 'type', text: '4242-4242-4242-4242' })), 'tab_act type a dashed card number → blocked');
+        check(blocked(await act({ action: 'type', text: '123', target: 'the CVV field' })), 'tab_act type into a CVV field → blocked');
+        check(stub.computerBodies.length === jobsBefore, 'blocked tab_act posts no /computer/run job');
+        await new Promise((r) => setTimeout(r, 150));
+        const pol = stub.log.slice(logBefore).filter((e) => e.kind === 'policy' && /refused tab_act/.test(e.summary));
+        check(pol.length === 6, 'each blocked tab_act is logged as a policy refusal (' + pol.length + ')');
+        check(!JSON.stringify(stub.log.slice(logBefore)).includes('4242'), 'the typed card number never reaches the action log');
+        const pass = await act({ action: 'type', text: '4242 4242 4242 4241', target: 'the Quantity box' });
+        check(!/Blocked by O/.test(text(pass)), 'a non-Luhn number is not taken for a card');
+        const nx = await act({ action: 'click', target: 'the Next button' });
+        const last = stub.computerBodies[stub.computerBodies.length - 1];
+        check(!/Blocked by O/.test(text(nx)) && stub.computerBodies.length === jobsBefore + 2 && last && /click the Next button\.$/.test(last.goal) && last.app === 'Safari', 'a normal click ("the Next button") still goes through to /computer/run');
+      }, ['--require', preload]);
+    } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} }
+  }
+
   // ---- tools/native-tabs.js with osascript / child_process mocked
   console.log('native-tabs with a mocked execFile');
   {
@@ -337,6 +384,27 @@ async function main() {
     const execFile = (file, args, opts, cb) => { calls.push({ file, args }); const a = answer(file, args) || {}; setImmediate(() => cb(a.err || null, a.stdout || '', a.stderr || '')); };
     const guard = loadPaymentGuard();
     check(typeof guard === 'function' && guard('https://www.paypal.com/x') === true && guard('https://example.com/') === false, 'isPaymentUrl is loaded from main/link.js');
+    check(guard('https://paypal.com./x') === true && guard('https://checkout.stripe.com../p') === true && guard('https://WWW.PAYPAL.COM./') === true &&
+      guard('https://www.roblox.com./robux') === true && guard('https://example.com./') === false && guard('https://roblox.com./games') === false, 'isPaymentUrl: trailing dots and case are normalized (paypal.com., stripe.., roblox.com.)');
+
+    // JXA scripts drop a leading '--' that osascript may pass through in argv
+    {
+      const vm = require('vm');
+      const runScript = (src, argv, ctx) => { const c = vm.createContext({ JSON, parseInt, ...ctx }); vm.runInContext(src, c); return JSON.parse(c.run(argv)); };
+      const sysEvents = { processes: { name: () => ['Finder'] } };
+      const listCtx = { Application: (n) => { if (n === 'System Events') return sysEvents; throw new Error('not here'); } };
+      let lr;
+      try { lr = runScript(LIST_SCRIPT, ['--', JSON.stringify([{ app: 'Safari', process: 'Safari', kind: 'safari' }])], listCtx); } catch (e) { lr = { ok: false, error: String(e) }; }
+      check(lr.ok === true && Array.isArray(lr.browsers) && lr.browsers.length === 0, "LIST_SCRIPT: run(['--', json]) skips the '--'");
+      const lr2 = runScript(LIST_SCRIPT, [JSON.stringify([])], listCtx);
+      check(lr2.ok === true, 'LIST_SCRIPT: run([json]) without the separator still works');
+      const tabCtx = { Application: (n) => ({ running: () => false, _n: n }) };
+      const tr1 = runScript(TAB_SCRIPT, ['--', 'info', 'Safari', 'safari', '', '1', '1', ''], tabCtx);
+      const tr2 = runScript(TAB_SCRIPT, ['info', 'Safari', 'safari', '', '1', '1', ''], tabCtx);
+      check(tr1.error === 'Safari is not running' && tr2.error === 'Safari is not running', "TAB_SCRIPT: argv read the same with and without a leading '--'");
+      check(/^function run\(argv\) \{\n  if \(argv\.length && argv\[0\] === '--'\) argv = argv\.slice\(1\);/m.test(LIST_SCRIPT) && /^function run\(argv\) \{\n  if \(argv\.length && argv\[0\] === '--'\) argv = argv\.slice\(1\);/m.test(TAB_SCRIPT), "both JXA scripts start run(argv) with the '--' hedge");
+    }
+
     const mac = createNative({ platform: 'darwin', execFile, engineGet: null });
     check(mac.isPaymentUrl === guard || (typeof mac.isPaymentUrl === 'function' && mac.isPaymentUrl('https://www.paypal.com/')), 'native module uses the link.js payment guard');
 

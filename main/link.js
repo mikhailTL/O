@@ -28,7 +28,9 @@ const PAY_HOST = /(^|\.)(paypal\.com|paypal\.me|venmo\.com|cash\.app|pay\.google
 function isPaymentUrl(url) {
   try {
     const u = new URL(String(url || ''));
-    return PAY_HOST.test(u.hostname) || /(^|\.)roblox\.com$/i.test(u.hostname) && /^\/(upgrades|premium|robux|giftcards)/i.test(u.pathname);
+    // 'paypal.com.' and 'PAYPAL.COM..' are the same site: lowercase and strip trailing dots before matching
+    const host = u.hostname.toLowerCase().replace(/\.+$/, '');
+    return PAY_HOST.test(host) || /(^|\.)roblox\.com$/i.test(host) && /^\/(upgrades|premium|robux|giftcards)/i.test(u.pathname);
   } catch { return false; }
 }
 

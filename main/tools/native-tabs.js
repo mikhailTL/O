@@ -80,6 +80,7 @@ function loadPaymentGuard() {
 // argv[0]: JSON [{app, process, kind}] of the browsers to ask.
 const LIST_SCRIPT = `
 function run(argv) {
+  if (argv.length && argv[0] === '--') argv = argv.slice(1); // some osascript versions pass the '--' separator through
   var wanted = JSON.parse(argv[0] || '[]');
   var running;
   try { running = Application('System Events').processes.name(); }
@@ -126,6 +127,7 @@ const READ_JS = '(function(){var b=document.body;var t=b?(b.innerText||b.textCon
 const TAB_SCRIPT = `
 var READ_JS = ${JSON.stringify(READ_JS)};
 function run(argv) {
+  if (argv.length && argv[0] === '--') argv = argv.slice(1); // some osascript versions pass the '--' separator through
   var op = argv[0], appName = argv[1], kind = argv[2], wid = argv[3], widx = parseInt(argv[4], 10), tidx = parseInt(argv[5], 10), value = argv[6] || '';
   var app;
   try { app = Application(appName); } catch (e) { return JSON.stringify({ ok: false, error: appName + ' is not installed' }); }

@@ -1013,11 +1013,66 @@ async function tabOpen(args) {
   return nativeResult(r);
 }
 
+// Payment words on a button or in typed text (word-boundary: "payment", "buyer" do not match).
+const PAY_WORDS = /\b(pay|buy|check\s?out|place\s+(?:your\s+|an?\s+|the\s+|my\s+)?order|purchase|subscribe|donate)\b/i;
+// A card security-code field.
+const CVV_TARGET = /\b(cvv2?|cvc2?|cvn|csc|security\s*code|card\s*(?:verification|security)\s*(?:code|value|number)?)\b/i;
+
+function luhnOk(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = digits.charCodeAt(digits.length - 1 - i) - 48;
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/** True when the text holds a 13–19 digit Luhn-valid number (spaces and dashes allowed between digits). */
+function hasCardNumber(text) {
+  const runs = String(text || '').match(/\d(?:[ -]*\d)*/g) || [];
+  for (const run of runs) {
+    const d = run.replace(/[^\d]/g, '').slice(0, 64);
+    for (let len = 13; len <= 19 && len <= d.length; len++) {
+      for (let s = 0; s + len <= d.length; s++) if (luhnOk(d.slice(s, s + len))) return true;
+    }
+  }
+  return false;
+}
+
+/** '' when a native tab_act click/type may go on, else why it is a payment step. Every permission mode. */
+function tabPaymentReason(action, a) {
+  const target = String(a.target || '');
+  const text = action === 'type' ? String(a.text == null ? '' : a.text) : '';
+  let c = null;
+  try {
+    c = action === 'click'
+      ? classifyAction('mcp__playwright__browser_click', { element: target })
+      : classifyAction('mcp__playwright__browser_type', { element: target, text, submit: !!a.submit });
+  } catch (e) { log('classify failed:', e.message); }
+  if (c && c.kind === 'spend') return 'classified as spend: ' + c.reason;
+  if (PAY_WORDS.test(target)) return 'payment words in the target';
+  if (action === 'type') {
+    if (PAY_WORDS.test(text)) return 'payment words in the text';
+    if (hasCardNumber(text)) return 'a card number in the text';
+    if (CVV_TARGET.test(target)) return 'a card security-code field';
+  }
+  return '';
+}
+
 async function tabAct(args) {
   const a = args && typeof args === 'object' ? args : {};
   const action = a.action;
   if (!['navigate', 'click', 'type'].includes(action)) return textResult('tab_act needs action: navigate, click or type.', true);
   const note = (summary, detail) => fireAndForgetLog({ kind: 'note', summary: summary.slice(0, 240), detail: { tool: 'tab_act', action, app: a.app, window: a.window, window_id: a.window_id, tab: a.tab, ...detail } });
+  if (action === 'click' || action === 'type') {
+    const why = tabPaymentReason(action, a);
+    if (why) {
+      // never write typed text to the log: it may be a card number
+      fireAndForgetLog({ kind: 'policy', summary: `refused tab_act ${action}: payment step (${why})`.slice(0, 240), detail: { toolName: 'mcp__o__tab_act', action, app: a.app, tab: a.tab, target: String(a.target || '').slice(0, 200), reason: why } });
+      return textResult(pretty({ ok: false, blocked: true, error: 'Blocked by O: O never makes payments. The user can do that part themselves.' }), true);
+    }
+  }
   if (action === 'navigate') {
     const problem = native.urlProblem(a.url);
     if (problem) return textResult(pretty({ ok: false, blocked: /^Blocked by O/.test(problem), error: problem }), true);
