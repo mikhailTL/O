@@ -11,6 +11,9 @@ const DEFAULTS = Object.freeze({
   cwd: os.homedir(),
   claudePath: 'claude',
   model: '',
+  fastModel: 'haiku', // model for short single-verb tasks (main/agent.js routeModel); '' = always use `model`
+  fastPath: true, // zero-LLM fast path for "open <site>", "launch <app>", "search <query>" (main/fastpath.js)
+  stagehand: true, // wire the Stagehand MCP server (web_act / web_extract / web_observe) when the package is installed
   browser: '', // '' = auto-detect installed Edge/Chrome/Brave/Chromium (Edge first) | 'chrome' | 'msedge' | 'chromium' | 'firefox'
   browserPath: '', // optional explicit browser executable; overrides `browser`
   browserMode: 'auto', // 'auto' = your own browsers and apps natively, plus O Link's tools when it is connected (add-on) | 'link' = O Link first (falls back to native) | 'mine' = Playwright Extension (tab group) | 'separate' = O's own invisible browser
@@ -176,6 +179,9 @@ function sanitize(obj) {
   if (typeof obj.cwd === 'string' && obj.cwd.trim()) out.cwd = obj.cwd.trim();
   if (typeof obj.claudePath === 'string' && obj.claudePath.trim()) out.claudePath = obj.claudePath.trim();
   if (typeof obj.model === 'string') out.model = obj.model.trim();
+  if (typeof obj.fastModel === 'string' && /^[A-Za-z0-9._:\[\]-]{0,80}$/.test(obj.fastModel.trim())) out.fastModel = obj.fastModel.trim();
+  if (typeof obj.fastPath === 'boolean') out.fastPath = obj.fastPath;
+  if (typeof obj.stagehand === 'boolean') out.stagehand = obj.stagehand;
   if (['', 'chrome', 'msedge', 'chromium', 'firefox'].includes(obj.browser)) out.browser = obj.browser;
   if (typeof obj.browserPath === 'string') out.browserPath = obj.browserPath.trim();
   if (BROWSER_MODES.includes(obj.browserMode)) out.browserMode = obj.browserMode;

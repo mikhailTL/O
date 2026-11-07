@@ -50,6 +50,7 @@
       "main/tools/**",
       "engine/**",
       "node_modules/@playwright/**",
+      "node_modules/@browserbasehq/**",
       "node_modules/playwright*/**"
     ]
   }

@@ -132,6 +132,12 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
     fs.writeFileSync(sp, sys, { mode: 0o600 });
     return { ...files, systemFile: sp };
   }
+  async function systemOnlyFile(system, id) {
+    const sp = path.join(dataDir, `o-proxy-system-${id}.md`);
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(sp, buildSystemPrompt({ mode: 'code', extra: system, settings: {} }), { mode: 0o600 });
+    return sp;
+  }
   const unlinkQuiet = (f) => { try { if (f) fs.unlinkSync(f); } catch (_) {} };
 
   /**
@@ -186,6 +192,9 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
     try { p = JSON.parse(body || '{}'); } catch { return sendError(res, 400, 'body is not JSON'); }
     if (!Array.isArray(p.messages) || !p.messages.length) return sendError(res, 400, 'messages[] is required');
     const model = MODELS.includes(p.model) ? p.model : 'o-ai';
+    // Stagehand's uncached web steps (main/tools/stagehand-mcp.js): a cheap model and no tools for the nested claude -p.
+    const stagehandCall = req.headers['x-o-caller'] === 'stagehand';
+    if (stagehandCall) s = { ...s, model: (getSettings && getSettings() || {}).fastModel || 'haiku' };
     const jsonOnly = model === 'o-ai-code' || !!(p.response_format && p.response_format.type === 'json_object');
     const promptMode = jsonOnly || s.mode === 'code' ? 'code' : 'chat';
     const { system, prompt, lastUser } = flatten(p.messages);
@@ -218,7 +227,7 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
     };
 
     try {
-      const files = await prepareFiles(system, promptMode, id);
+      const files = stagehandCall ? { mcpFile: null, allowedTools: [], systemFile: await systemOnlyFile(system, id) } : await prepareFiles(system, promptMode, id);
       if (stream) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
       const result = await schedule(() => runClaude({ prompt, files, s, onText, onTool, signal: abort }));
       const finish = toolCalls.length ? 'tool_calls' : 'stop';
