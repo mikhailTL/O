@@ -191,7 +191,7 @@
     sendBtn.hidden = running && !hasText;
     sendBtn.disabled = !hasText;
     sendBtn.title = running ? 'Start another task (Enter)' : t ? 'Follow up on this task (Enter)' : 'Start task (Enter)';
-    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up on this task…' : 'Only for complex tasks: describe it…';
+    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up on this task…' : 'Give O a task';
   }
 
   // ------------------------------------------------------------ agent events

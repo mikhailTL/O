@@ -65,6 +65,7 @@ function createServer(deps = {}) {
   const loadModule = deps.loadModule || defaultLoadModule;
   let shPromise = null;
   let sh = null;
+  let modelCalls = 0; // model requests sent to the proxy (a web_act that adds none was replayed from the cache)
 
   function urlProblem(url) {
     let u;
@@ -102,6 +103,7 @@ function createServer(deps = {}) {
         this.clientOptions = {};
       }
       async createChatCompletion({ options, retries = 2 }) {
+        modelCalls += 1;
         if (!baseURL || !token) throw new Error('O\'s API proxy is not configured (Settings → API proxy), so uncached web steps cannot run');
         const messages = (options.messages || []).map((m) => ({
           role: m.role,
@@ -228,10 +230,13 @@ function createServer(deps = {}) {
       const pre = await guardLanding(page);
       if (pre) return textResult(pre, true);
       if (name === 'web_act') {
+        const calls0 = modelCalls;
         const r = await withTimeout(inst.act(instruction, page ? { page } : undefined), CALL_TIMEOUT_MS, 'web_act');
         const blocked = await guardLanding(page);
         if (blocked) return textResult(blocked, true);
-        const out = { success: !!(r && r.success), message: clipText(r && r.message), action: clipText(r && r.actionDescription), cached: !!(r && r.cacheStatus === 'HIT'), url: currentUrl(page) };
+        const used = modelCalls - calls0;
+        const cached = r && r.cacheStatus ? r.cacheStatus === 'HIT' : used === 0;
+        const out = { success: !!(r && r.success), message: clipText(r && r.message), action: clipText(r && r.actionDescription), cached, modelCalls: used, url: currentUrl(page) };
         return textResult(JSON.stringify(out), !out.success);
       }
       if (name === 'web_extract') {

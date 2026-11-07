@@ -17,8 +17,10 @@
     "demo:film4": "node tools/demo/launch.js --film film4"
   },
   "dependencies": {
+    "@browserbasehq/stagehand": "3.7.3",
     "@playwright/mcp": "^0.0.84",
-    "ws": "^8.22.1"
+    "ws": "^8.22.1",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "electron": "^33.0.0"

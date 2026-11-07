@@ -1,5 +1,5 @@
 /* O's notify cards (approvals, checkpoints, done): the panel's black liquid glass, budding from the right
-   screen edge. Each card sits in a .nslot: a goo layer (edge blob + card blob, #o-goo) below, the glass card above. */
+   screen edge. Each card sits in a .nslot: a goo layer (edge blob + card blob, #ol-goo) below, the glass card above. */
 html, body.notify { background: transparent !important; }
 body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; display: block; overflow: hidden; padding: 10px 12px 14px 18px; }
 #stack, #tasks-stack, #cp-stack { display: flex; flex-direction: column; gap: 10px; }
@@ -8,7 +8,7 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
 #tasks-stack:empty, #cp-stack:empty { margin: 0; }
 
 .nslot { position: relative; }
-.nslot .ngoo { position: absolute; inset: -12px -40px -12px -12px; pointer-events: none; filter: url(#o-goo); }
+.nslot .ngoo { position: absolute; inset: -12px -40px -12px -12px; pointer-events: none; filter: url(#ol-goo); }
 .nslot .nblob { position: absolute; background: var(--blob); border-radius: var(--r-card); }
 .nslot .nedge { position: absolute; top: 18px; bottom: 18px; right: 0; width: 26px; border-radius: 13px; background: var(--blob); }
 
@@ -32,17 +32,17 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
 .nhead .ring { width: 12px; height: 12px; }
 .ntitle { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
 .ntitle b { font: 600 13px/1.3 var(--sans); }
-.ntitle span { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ntitle span { font-size: 11.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ntitle span b { font: 500 11px var(--mono); color: var(--text-2); }
-.nopen { width: 26px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--text-3); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.nopen { width: 26px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--text-2); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
 .nopen svg { width: 14px; height: 14px; }
 .nwhat { margin: 7px 0 6px; font-size: 12.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ndetail { margin: 0 0 9px; max-height: 84px; overflow: auto; background: var(--surface-inset); border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 6px 9px; font: 11px/1.45 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .nrow { display: flex; align-items: center; gap: 6px; }
 .nrow .spacer { flex: 1; }
-.ntimer { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ntimer { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .nrow button { padding: 3px 13px; }
-.nmore { text-align: center; font-size: 11px; color: var(--text-3); }
+.nmore { text-align: center; font-size: 11px; color: var(--text-2); }
 @media (hover: hover) and (pointer: fine) { .nopen:hover:not(:disabled) { background: var(--surface-2); color: var(--text); } }
 
 .ntask { display: flex; align-items: flex-start; gap: 4px; padding: 9px 8px 9px 12px; }
@@ -51,9 +51,9 @@ body.notify { border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-fi
 .ntask.is-needs .ntask-mark { background: var(--accent); }
 .ntask-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
 .ntask-body b { font: 600 12.5px/1.35 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ntask-body span { font-size: 11.5px; color: var(--text-3); margin-top: 1px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ntask-body span { font-size: 11.5px; color: var(--text-2); margin-top: 1px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 @media (hover: hover) and (pointer: fine) { .ntask-open:hover:not(:disabled) .ntask-body b { color: var(--text); background: transparent; } .ntask-open:hover:not(:disabled) { background: transparent; } }
-.ncp-meta { margin: 0 0 9px; font-size: 11.5px; color: var(--text-3); overflow-wrap: anywhere; }
+.ncp-meta { margin: 0 0 9px; font-size: 11.5px; color: var(--text-2); overflow-wrap: anywhere; }
 .ncp .ntitle b { white-space: normal; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {

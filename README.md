@@ -102,6 +102,18 @@ When a provision request matches a saved script, the status line reads "Déjà v
 - **Task pool:** each task is its own Claude Code process (`main/agent.js`, `main/tasks.js`). Up to `maxParallelTasks` run at once (default 3, 1..8); the rest wait in a queue. Tasks run whether the panel is open or closed. **■ Stop** stops all of them.
 - **Scheduler:** when you ask for something at a time or on repeat ("every Monday at 8", "tomorrow at 9", "every 3 hours"), Claude Code calls `mcp__o__schedule_task` with the prompt and a structured `when`; `mcp__o__list_schedules` and `mcp__o__cancel_schedule` manage them. Each firing starts a normal task in the pool.
 
+### Speed
+
+Most agent latency is model calls spent planning and re-observing (OSWorld-Human, arXiv 2506.16042: 75-94% of latency; agents take 1.4-2.7x the steps a person would). O cuts calls in four places:
+
+| Layer | What it does | Where |
+|---|---|---|
+| Fast path | "open myscs.org", "go to github.com/x/y", "launch Spotify", "search <query>" run with no Claude Code process and no model call, done in under 200 ms. URLs open in the default browser (http/https only, payment sites refused); apps are checked against the installed apps. Anything ambiguous goes to the full agent. `fastPath: false` turns it off. | `main/fastpath.js`, `main/tasks.js` |
+| No ToolSearch | Task processes run with `ENABLE_TOOL_SEARCH=false`, so MCP tools load up front and no task starts with a ToolSearch step (`O_ENABLE_TOOL_SEARCH` overrides, e.g. `auto`). | `main/agent.js` |
+| Model routing | Short, single-verb, fresh tasks run on `fastModel` (default `haiku`) with a 20-turn budget; everything else on `model`. The choice is an action-log note ("Model: haiku (fast: short single-verb task)"). `fastModel: ''` turns it off. | `main/agent.js` (`routeModel`) |
+| Fewer steps | The persona tells the agent to go straight to the domain typed, never search browser history or profiles (Bash commands that read browser data are refused in every permission mode), group actions per observation, skip confirmation screenshots, and stay inside a step budget. | `main/agent.js` |
+| Stagehand | When `@browserbasehq/stagehand` (v3, MIT) is installed, a `stagehand` MCP server adds `web_act`, `web_extract` and `web_observe`: one plain-language call instead of many snapshot/click/type steps. It runs locally on O Link's CDP endpoint when connected, else on O's own browser profile. Its action cache (`<userData>/stagehand-cache`) replays repeated steps with zero model calls; uncached steps go through the local API proxy on your Claude login (no API key). Payment sites are refused on every navigation. Without the package, nothing is wired. `stagehand: false` turns it off. | `main/tools/stagehand-mcp.js` |
+
 ### Learning
 
 The engine's `LearningStore` (`engine/o_engine/learning.py`) keeps what O learns from you and from its own results: an append-only `observations.jsonl` and a `profile.json` derived from it.
