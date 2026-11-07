@@ -152,7 +152,10 @@ function createServer(deps = {}) {
         const lbo = {};
         if (env.O_STAGEHAND_CDP_URL) lbo.cdpUrl = env.O_STAGEHAND_CDP_URL;
         else {
-          if (env.O_STAGEHAND_PROFILE) { lbo.userDataDir = env.O_STAGEHAND_PROFILE; lbo.preserveUserDataDir = true; }
+          if (env.O_STAGEHAND_PROFILE) {
+            try { fs.mkdirSync(env.O_STAGEHAND_PROFILE, { recursive: true }); } catch (_) {}
+            lbo.userDataDir = env.O_STAGEHAND_PROFILE; lbo.preserveUserDataDir = true;
+          }
           lbo.headless = env.O_STAGEHAND_HEADLESS !== '0';
           if (env.O_STAGEHAND_EXECUTABLE) lbo.executablePath = env.O_STAGEHAND_EXECUTABLE;
         }
