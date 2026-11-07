@@ -34,7 +34,7 @@ button:focus { outline: none; }
 
 /* ------------------------------------------------------------------ island: three parts, so its width
    morphs with transforms only (caps translate, the middle scales on X) */
-.g-cap, .g-mid, .rim, .sheen {
+.g-cap, .g-mid, .rim {
   position: absolute;
   top: var(--top);
   left: 50%;
@@ -53,14 +53,6 @@ button:focus { outline: none; }
 .rim-l { width: 18px; border-right: 0; border-radius: 18px 0 0 18px; transform: translateX(calc(var(--w) * -0.5px)); }
 .rim-r { width: 18px; margin-left: -18px; border-left: 0; border-radius: 0 18px 18px 0; transform: translateX(calc(var(--w) * 0.5px)); }
 .rim-m { width: 100px; margin-left: -50px; border-left: 0; border-right: 0; transform: scaleX(calc((var(--w) - 36) / 100)); }
-.sheen {
-  width: 160px;
-  border-radius: 18px 0 0 18px;
-  background: radial-gradient(90% 120% at 0% 0%, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 60%);
-  transform: translateX(calc(var(--w) * -0.5px));
-  pointer-events: none;
-  opacity: 0.8;
-}
 
 #island {
   position: absolute;
@@ -72,8 +64,7 @@ button:focus { outline: none; }
   border-radius: var(--ol-r-island);
   /* the hit area only; the visuals are the absolutely positioned parts inside */
 }
-#island > .rim, #island > .sheen { top: 0; left: calc(var(--w) * 0.5px); }
-#island:hover > .sheen { opacity: 1; transition: opacity var(--ol-hover) linear; }
+#island > .rim { top: 0; left: calc(var(--w) * 0.5px); }
 #island:active .island-row { opacity: 0.8; transition: opacity var(--ol-press) linear; }
 #island:focus-visible > .rim { box-shadow: var(--ol-highlight), var(--ol-glow); }
 
@@ -103,15 +94,15 @@ button:focus { outline: none; }
 
 /* ------------------------------------------------------------------ the ring glyph */
 .ring { position: relative; width: 14px; height: 14px; flex: none; }
-.ring svg { position: absolute; inset: 0; overflow: visible; filter: drop-shadow(0 0 3px rgba(76, 141, 255, 0.75)); }
+.ring svg { position: absolute; inset: 0; overflow: visible; filter: drop-shadow(0 0 2.5px rgba(255, 255, 255, 0.7)); }
 .ring circle { fill: none; stroke-width: 1.75; }
-.ring-base { stroke: url(#o-ring-grad); transition: opacity 200ms linear; }
-.ring-arc { stroke: var(--ol-accent-bright); stroke-linecap: round; stroke-dasharray: 8 25; opacity: 0; }
+.ring-base { stroke: var(--ol-text); transition: opacity 200ms linear; }
+.ring-arc { stroke: var(--ol-text); stroke-linecap: round; stroke-dasharray: 8 25; opacity: 0; }
 .ring-halo {
   position: absolute;
-  inset: -6px;
+  inset: 2px;
   border-radius: 50%;
-  background: radial-gradient(closest-side, rgba(76, 141, 255, 0.55), rgba(76, 141, 255, 0) 100%);
+  box-shadow: 0 0 9px 3px rgba(255, 255, 255, 0.28);
   opacity: 0.5;
 }
 .ring.is-idle .ring-halo { animation: o-breathe 5.2s ease-in-out infinite; }
@@ -120,14 +111,11 @@ button:focus { outline: none; }
 .ring.is-working .ring-arc { opacity: 1; }
 .ring.is-working svg { animation: o-spin 1.15s linear infinite; }
 @keyframes o-spin { to { transform: rotate(360deg); } }
-.ring.is-attention .ring-base { stroke: var(--ol-accent-bright); }
 .ring.is-attention .ring-halo { opacity: 0.95; }
-.ring.is-success .ring-base { stroke: var(--ol-success); }
-.ring.is-success svg { filter: drop-shadow(0 0 3px rgba(91, 224, 166, 0.7)); }
-.ring.is-success .ring-halo { background: radial-gradient(closest-side, rgba(91, 224, 166, 0.45), rgba(91, 224, 166, 0)); opacity: 0.8; }
+.ring.is-success .ring-halo { opacity: 0.95; }
 .ring.is-danger .ring-base { stroke: var(--ol-danger); }
-.ring.is-danger svg { filter: drop-shadow(0 0 3px rgba(255, 107, 107, 0.7)); }
-.ring.is-danger .ring-halo { background: radial-gradient(closest-side, rgba(255, 107, 107, 0.45), rgba(255, 107, 107, 0)); opacity: 0.8; }
+.ring.is-danger svg { filter: none; }
+.ring.is-danger .ring-halo { opacity: 0; }
 
 /* ------------------------------------------------------------------ the bar */
 .g-bar, #bar {
@@ -146,20 +134,20 @@ button:focus { outline: none; }
 #bar { pointer-events: none; display: flex; align-items: center; padding: 0 18px 0 20px; gap: 14px; }
 .bar-rim { position: absolute; inset: 0; border-radius: inherit; opacity: 0; transition: opacity 160ms linear; }
 .bar-rim::after {
-  /* the focus glow: an accent halo, not an outline */
+  /* the focus glow: a white halo, not an outline */
   content: '';
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  box-shadow: var(--ol-glow), inset 0 0 0 1px rgba(124, 196, 255, 0.16);
+  box-shadow: var(--ol-glow);
   opacity: 0;
   transition: opacity var(--ol-hover) linear;
 }
 #bar:focus-within .bar-rim::after { opacity: 1; }
 .bar-ring, #input, .keys { position: relative; opacity: 0; transition: opacity 80ms linear; }
 .bar-ring { width: 16px; height: 16px; flex: none; }
-.bar-ring svg { display: block; overflow: visible; filter: drop-shadow(0 0 4px rgba(76, 141, 255, 0.8)); }
-.bar-ring circle { fill: none; stroke: url(#o-ring-grad); stroke-width: 1.75; }
+.bar-ring svg { display: block; overflow: visible; filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.7)); }
+.bar-ring circle { fill: none; stroke: var(--ol-text); stroke-width: 1.75; }
 #input {
   flex: 1;
   min-width: 0;
@@ -168,14 +156,14 @@ button:focus { outline: none; }
   outline: none;
   background: transparent;
   color: var(--ol-text);
-  caret-color: var(--ol-accent-bright);
+  caret-color: var(--ol-hint);
   font: 600 20px/1 var(--ol-font);
   letter-spacing: -0.01em;
   user-select: text;
   -webkit-user-select: text;
 }
 #input::placeholder { color: var(--ol-text-3); font-weight: 500; }
-#input::selection { background: rgba(76, 141, 255, 0.35); }
+#input::selection { background: rgba(255, 255, 255, 0.22); }
 .keys { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ol-text-3); flex: none; }
 .keys { gap: 14px; }
 .kg { display: inline-flex; align-items: center; gap: 6px; transition: opacity var(--ol-hover) linear; }
@@ -205,7 +193,7 @@ body.open .bar-ring, body.open #input, body.open .keys { opacity: 1; transition-
 body.open .g-cap-l { transform: translateX(calc(var(--bar-w) / -2 + 4px)); }
 body.open .g-cap-r { transform: translateX(calc(var(--bar-w) / 2 - 4px)); }
 body.open .g-mid { transform: scaleX(5.9); }
-body.open .rim, body.open .sheen { opacity: 0; transition-duration: var(--ol-morph), 100ms; }
+body.open .rim { opacity: 0; transition-duration: var(--ol-morph), 100ms; }
 body.open .island-row { opacity: 0; transition: opacity 90ms linear; }
 body.open #island { pointer-events: none; }
 
@@ -262,8 +250,7 @@ body.ext .g-side, body.ext #side { visibility: visible; }
 .bubble.sel::after { opacity: 1; }
 .bubble .ic { width: 18px; height: 18px; flex: none; color: var(--ol-text-2); display: flex; align-items: center; justify-content: center; }
 .bubble .ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
-.bubble.k-run .ic, .bubble.k-perm .ic, .bubble.k-checkpoint .ic { color: var(--ol-accent-bright); }
-.bubble.k-run .ic svg { filter: drop-shadow(0 0 4px rgba(76, 141, 255, 0.7)); }
+.bubble.k-run .ic, .bubble.k-perm .ic, .bubble.k-checkpoint .ic { color: var(--ol-text); }
 .bubble.k-task.running .ic svg { animation: o-spin 1.15s linear infinite; }
 .bubble.k-setup .ic, .bubble.tone-danger .ic { color: var(--ol-danger); }
 .bubble .tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
@@ -288,13 +275,13 @@ body.ext .g-side, body.ext #side { visibility: visible; }
 .act:hover { background: rgba(255, 255, 255, 0.09); }
 .act:active { opacity: 0.75; }
 .act:focus-visible { box-shadow: var(--ol-highlight), var(--ol-glow); }
-.act.primary { color: #07101F; border-color: transparent; background: var(--ol-accent-gradient); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 0 16px rgba(76, 141, 255, 0.28); }
-.act.primary:hover { background: var(--ol-accent-gradient); opacity: 0.92; }
+.act.primary { color: #0A0A0B; border-color: transparent; background: #FFFFFF; box-shadow: 0 0 16px rgba(255, 255, 255, 0.18); }
+.act.primary:hover { background: #FFFFFF; opacity: 0.9; }
 .act.danger { color: var(--ol-danger); }
 
 /* ------------------------------------------------------------------ reduced motion: crossfades only */
 @media (prefers-reduced-motion: reduce) {
-  .g-cap, .g-mid, .rim, .sheen, .g-bar, #bar { transition: opacity 180ms linear !important; }
+  .g-cap, .g-mid, .rim, .g-bar, #bar { transition: opacity 180ms linear !important; }
   .ring.is-idle .ring-halo, .ring.is-working svg, .bubble.k-task.running .ic svg { animation: none; }
   .ring.is-working .ring-base { opacity: 1; }
   .ring.is-working .ring-arc { opacity: 0; }

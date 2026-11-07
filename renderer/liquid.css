@@ -1,21 +1,19 @@
 /* OLiquid: shared liquid-glass tokens and layers (see liquid.js for the technique and the API).
    Variables are prefixed --ol- so a page that includes this file keeps its own names. */
 :root {
-  --ol-glass: rgba(12, 14, 20, 0.58);
-  --ol-glass-rgb: 12, 14, 20;
-  --ol-glass-alpha: 0.58;
-  --ol-raised: rgba(22, 26, 36, 0.62);
-  --ol-line: rgba(255, 255, 255, 0.08);
-  --ol-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  --ol-text: #F3F5F9;
-  --ol-text-2: rgba(228, 234, 248, 0.58);
-  --ol-text-3: rgba(228, 234, 248, 0.36);
-  --ol-accent: #4C8DFF;
-  --ol-accent-bright: #7CC4FF;
-  --ol-accent-gradient: linear-gradient(135deg, #3A6BFF 0%, #5AB8FF 55%, #9BE3FF 100%);
-  --ol-glow: 0 0 24px rgba(76, 141, 255, 0.35);
-  --ol-danger: #FF6B6B;
-  --ol-success: #5BE0A6;
+  --ol-glass: rgba(8, 8, 10, 0.74);
+  --ol-glass-rgb: 8, 8, 10;
+  --ol-glass-alpha: 0.74;
+  --ol-raised: rgba(255, 255, 255, 0.045);
+  --ol-line: rgba(255, 255, 255, 0.10);
+  --ol-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --ol-text: #FFFFFF;
+  --ol-text-2: rgba(255, 255, 255, 0.62);
+  --ol-text-3: rgba(255, 255, 255, 0.40);
+  --ol-hint: #5B9DFF;
+  --ol-glow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 28px rgba(255, 255, 255, 0.10);
+  --ol-danger: #FF5C5C;
+  --ol-success: #FFFFFF;
   --ol-r-island: 999px;
   --ol-r-bar: 22px;
   --ol-r-bubble: 18px;
@@ -43,15 +41,13 @@
   will-change: transform;
 }
 
-/* The crisp rim for a glass surface on the unfiltered layer: hairline, top highlight, one sheen. */
+/* The crisp rim for a glass surface on the unfiltered layer: hairline and top highlight. */
 .ol-glass {
   position: relative;
   border: 1px solid var(--ol-line);
   box-shadow: var(--ol-highlight);
-  background:
-    radial-gradient(120% 160% at 0% 0%, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(140%);
+  backdrop-filter: blur(40px) saturate(140%);
 }
 
 @media (prefers-reduced-motion: reduce) {
