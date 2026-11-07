@@ -14,6 +14,8 @@ const { ChatStore, deleteClaudeTranscripts } = require('./chats');
 const { Settings } = require('./settings');
 const { createPhysics } = require('./physics');
 const { createUpdater } = require('./updater');
+let createEvolveHost = null;
+try { ({ createEvolveHost } = require('./evolve')); } catch (err) { console.error('[o] could not load evolve:', err.message); }
 
 // The action log and the engine are optional modules: a missing one logs an error, O still runs.
 let ActionLog = null;
@@ -60,6 +62,7 @@ let physics = null;
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
 let updater = null;
+let evolveHost = null;          // self-evolution: engine ticks, updater installs/rollbacks (main/evolve.js)
 let actionLog = null; // append-only, hash-chained record of everything O did
 let engine = null;    // the Python engine (provisioning, cache, remediation)
 let proxy = null;     // the localhost OpenAI-compatible API proxy (main/proxy.js)
@@ -83,6 +86,7 @@ const GENUI_ACTIONS = ['open-log', 'open-file', 'retry', 'approve', 'deny'];
 const HAS_WILL_FRAME_NAVIGATE = (parseInt(process.versions.electron, 10) || 0) >= 26;
 // Settings exported to the engine as O_AMBIENT / O_SENSOR_* / O_ABSENT_AFTER_S / O_BRIEF_TTS (main/engine.js).
 const AMBIENT_KEYS = ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'absentAfterMin', 'briefSpeak'];
+const EVOLVE_KEYS = ['evolveEnabled', 'evolveBudgetUsd', 'evolvePerProposalUsd', 'evolveAutoShip', 'evolveGithubToken', 'evolveRepo', 'evolveScanMinutes', 'evolveSlotsActive', 'evolveSlotsAway', 'practiceBudgetUsd', 'evolveSandbox'];
 const PERMISSION_TIMEOUT_MS = 60 * 1000; // ask mode: matches the agent's auto-deny; a timeout destroys the queue
 const UNREAD_NOTIFY_DEBOUNCE_MS = 30 * 1000;
 let unreadNotifyTimer = null;
@@ -1120,7 +1124,7 @@ function registerIpc() {
   const ENGINE_KEYS = ['permissionMode', 'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'dockerNetwork', 'swarmEnabled', 'genuiEnabled',
     'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder', 'cuMaxModelCalls', 'grantedFolders',
-    ...AMBIENT_KEYS];
+    ...EVOLVE_KEYS, ...AMBIENT_KEYS];
   const PROXY_KEYS = ['proxyEnabled', 'proxyPort', 'proxyToken', 'proxyConcurrency', 'proxyMode'];
   ipcMain.handle('settings:set', (_e, partial) => applySettings(partial, null).settings);
   // `consented`: the one sensor key the confirmation sheet approved (ambient:enableSensor); a plain settings
@@ -1212,6 +1216,13 @@ function registerIpc() {
     try { await shell.openExternal(url); } catch (_) { await shell.openExternal(store); }
     return { ok: true };
   });
+  // ---------- self-evolution (Evolution view) ----------
+  const noEvolve = { ok: false, error: 'Evolution is unavailable until the engine is running.' };
+  ipcMain.handle('evolve:view', (_e, hours) => (evolveHost && engineReady() ? evolveHost.view(hours) : noEvolve));
+  ipcMain.handle('evolve:approve', (_e, id) => (evolveHost ? evolveHost.approve(String(id || '')) : noEvolve));
+  ipcMain.handle('evolve:reject', (_e, id, reason) => (evolveHost ? evolveHost.reject(String(id || ''), reason) : noEvolve));
+  ipcMain.handle('evolve:rollback', (_e, id) => (evolveHost ? evolveHost.rollback(String(id || '')) : noEvolve));
+  ipcMain.handle('evolve:skill', (_e, id, approve) => (evolveHost ? evolveHost.skill(String(id || ''), approve === true) : noEvolve));
   ipcMain.handle('update:check', () => (updater ? updater.check() : { state: 'error', message: 'Updater unavailable' }));
   ipcMain.handle('update:apply', () => (updater ? updater.apply() : { state: 'error', message: 'Updater unavailable' }));
   ipcMain.handle('update:state', () => (updater ? { ...updater.state, installed: updater.installedSha() } : { state: 'idle' }));
@@ -1289,6 +1300,7 @@ app.whenReady().then(() => {
         if (tasks) tasks.prewarm().catch(() => {});
         if (goals) goals.refresh().catch((err) => console.error('[o] goals refresh:', err.message));
         if (ambient) ambient.refreshSensors().then(broadcastAmbient).catch(() => {});
+        if (evolveHost) evolveHost.onEngineReady().catch(() => {});
       });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
       engine.start();
@@ -1332,13 +1344,21 @@ app.whenReady().then(() => {
     relaunch: () => { quitting = true; app.relaunch(); app.exit(0); },
     onEvent: (ev) => {
       broadcast(ev);
+      const evolveInstalls = !!(evolveHost && evolveHost.onUpdate(ev)); // approved upgrades install while you are away
       if (ev.state === 'available' && lastAnnounced !== ev.sha) {
         lastAnnounced = ev.sha;
-        notify('O update available', 'Open the tray menu → Update O now, or Settings → Updates.');
+        if (!evolveInstalls) notify('O update available', 'Open the tray menu → Update O now, or Settings → Updates.');
       }
       rebuildTrayMenu();
     },
   });
+  if (createEvolveHost) {
+    evolveHost = createEvolveHost({
+      getSettings: () => settings.get(), isAway, isBusy: () => !!(tasks && tasks.activeCount()),
+      engineCall, getUpdater: () => updater, broadcast, log: logApp,
+    });
+    evolveHost.start();
+  }
   const autoCheck = () => { if (settings.get().autoUpdateCheck) updater.check({ quiet: true }); };
   setTimeout(autoCheck, 20 * 1000);
   setInterval(autoCheck, 6 * 60 * 60 * 1000);
@@ -1372,6 +1392,7 @@ app.on('before-quit', () => {
   for (const p of pendingPerms.values()) p.resolve({ allow: false, message: 'O is quitting' });
   pendingPerms.clear();
   try { if (scheduler) scheduler.stop(); } catch (_) {}
+  try { if (evolveHost) evolveHost.stop(); } catch (_) {}
   try { if (tasks) tasks.dispose(); } catch (_) {}
   try { if (agent && typeof agent.dispose === 'function') agent.dispose(); else if (agent) agent.cancel(); } catch (_) {}
 });

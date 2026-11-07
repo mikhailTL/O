@@ -24,6 +24,8 @@ const STDERR_RING = 200;
 let childEnv;
 try { ({ childEnv } = require('./agent')); } catch (_) { /* fallback below */ }
 if (typeof childEnv !== 'function') childEnv = (extra) => ({ ...process.env, ...extra });
+let evolveEnv = () => ({});
+try { ({ evolveEnv } = require('./scheduler')); } catch (_) { /* engine still starts without evolve settings */ }
 
 function killTree(child) {
   const pid = child && child.pid;
@@ -168,6 +170,7 @@ class EngineProcess extends EventEmitter {
       O_SENSOR_HEART_RATE: s.ambientEnabled === true && s.sensorHeartRate === true ? '1' : '0',
       O_ABSENT_AFTER_S: String(Math.max(1, Math.min(120, parseInt(s.absentAfterMin, 10) || 5)) * 60),
       O_BRIEF_TTS: s.briefSpeak === true ? '1' : '0',
+      ...evolveEnv(s, this.userDataDir), // plan L: self-evolution budget, auto-ship tier, GitHub token
       PYTHONPATH: this.engineDir + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : ''),
       PYTHONUNBUFFERED: '1',
     });

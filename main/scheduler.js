@@ -247,4 +247,107 @@ class Scheduler extends EventEmitter {
   }
 }
 
-module.exports = { Scheduler, normalizeWhen, whenFrom, nextRunAfter, describeWhen, TYPES, DAY_NAMES };
+// ------------------------------------------------------------------ self-evolution clock (plan L)
+// O evolves continuously, not in a weekly batch: the clock pokes the engine (POST /evolve/tick) every few
+// minutes, more often while the person is away (idle time gets more build slots in the engine), and only when
+// evolveEnabled. Scans are incremental and cached engine-side, so a tick is cheap. After each tick it reads
+// /evolve/status and emits 'status' so main can drive the updater (installs, rollbacks) and the panel.
+
+const EVOLVE_ACTIVE_MS = 30 * 60 * 1000;
+const EVOLVE_AWAY_MS = 8 * 60 * 1000;
+const EVOLVE_FIRST_MS = 2 * 60 * 1000;
+const EVOLVE_POLL_MS = 60 * 1000;
+const AUTO_SHIP = ['never', 'deps_only', 'low_risk'];
+
+class EvolveClock extends EventEmitter {
+  /**
+   * @param {object} o
+   * @param {() => object} o.getSettings
+   * @param {() => boolean} o.isAway          ambient presence (true while the person is away / idle)
+   * @param {(method:string, path:string, body?:object, timeoutMs?:number) => Promise<any>} o.call  engine call
+   * @param {() => number} [o.now]
+   */
+  constructor({ getSettings, isAway, call, now, activeMs = EVOLVE_ACTIVE_MS, awayMs = EVOLVE_AWAY_MS, firstMs = EVOLVE_FIRST_MS } = {}) {
+    super();
+    this.getSettings = getSettings || (() => ({}));
+    this.isAway = isAway || (() => false);
+    this.call = call;
+    this.now = now || (() => Date.now());
+    this.activeMs = activeMs;
+    this.awayMs = awayMs;
+    this.lastTick = this.now() - activeMs + firstMs; // first tick shortly after start, not during startup
+    this.wasAway = false;
+    this.busy = false;
+    this.last = null;
+    this._timer = null;
+  }
+
+  enabled() { return this.getSettings().evolveEnabled !== false; }
+
+  /** Due when enabled and the interval for the current presence has passed (or presence just turned away). */
+  due() {
+    if (!this.enabled() || this.busy) return false;
+    const away = !!this.isAway();
+    const justLeft = away && !this.wasAway;
+    this.wasAway = away;
+    return justLeft || this.now() - this.lastTick >= (away ? this.awayMs : this.activeMs);
+  }
+
+  async tick({ force = false } = {}) {
+    if (!this.call || this.busy || (!force && !this.enabled())) return null;
+    this.busy = true;
+    this.lastTick = this.now();
+    try {
+      await this.call('POST', '/evolve/tick', { presence: this.isAway() ? 'away' : 'active', force_scan: !!force }, 15000);
+      return await this.refresh();
+    } catch (err) {
+      this.emit('error', err);
+      return null;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async refresh() {
+    try {
+      const st = await this.call('GET', '/evolve/status', null, 10000);
+      this.last = st;
+      this.emit('status', st);
+      return st;
+    } catch (err) { this.emit('error', err); return null; }
+  }
+
+  check() { if (this.due()) return this.tick(); return null; }
+
+  start(intervalMs = EVOLVE_POLL_MS) {
+    this.stop();
+    this._timer = setInterval(() => { this.check(); }, intervalMs);
+    if (this._timer.unref) this._timer.unref();
+  }
+
+  stop() { if (this._timer) clearInterval(this._timer); this._timer = null; }
+}
+
+/** The engine's O_EVOLVE_* env for these settings (main/engine.js spreads it into the child env). */
+function evolveEnv(s = {}, userDataDir = '') {
+  const num = (v, d, lo, hi) => { const n = Number(v); return String(Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d); };
+  return {
+    O_EVOLVE_ENABLED: s.evolveEnabled === false ? '0' : '1',
+    O_EVOLVE_BUDGET_USD: num(s.evolveBudgetUsd, 10, 0, 1000),
+    O_EVOLVE_PER_PROPOSAL_USD: num(s.evolvePerProposalUsd, 1.5, 0, 100),
+    O_EVOLVE_AUTO_SHIP: AUTO_SHIP.includes(s.evolveAutoShip) ? s.evolveAutoShip : 'low_risk',
+    O_EVOLVE_REPO: String(s.evolveRepo || s.updateRepo || 'mikhailTL/O'),
+    O_EVOLVE_BASE: String(s.updateBranch || 'main'),
+    O_EVOLVE_GITHUB_TOKEN: String(s.evolveGithubToken || ''),
+    O_EVOLVE_SCAN_MINUTES: num(s.evolveScanMinutes, 45, 5, 1440),
+    O_EVOLVE_SLOTS_ACTIVE: num(s.evolveSlotsActive, 1, 0, 8),
+    O_EVOLVE_SLOTS_AWAY: num(s.evolveSlotsAway, 3, 0, 8),
+    // Only the app's three values reach the engine; the dev-only host mode is never set from here.
+    O_EVOLVE_SANDBOX: ['auto', 'docker', 'e2b'].includes(s.evolveSandbox) ? s.evolveSandbox : 'auto',
+    O_EVOLVE_DEV_UNSAFE: '', // blanked: a value inherited from the shell can never turn on the dev-only host mode
+    O_PRACTICE_BUDGET_USD: num(s.practiceBudgetUsd, 0.5, 0, 100),
+    O_EVOLVE_APP_LOG: userDataDir ? path.join(userDataDir, 'o-actions.jsonl') : '',
+  };
+}
+
+module.exports = { Scheduler, normalizeWhen, whenFrom, nextRunAfter, describeWhen, TYPES, DAY_NAMES, EvolveClock, evolveEnv };

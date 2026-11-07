@@ -159,6 +159,7 @@ class EngineSettings(BaseModel):
     auto_repair: bool = False  # O_AUTO_REPAIR: let the supervisor reinstall a missing engine package
     vllm_cmd: str = ""  # O_VLLM_CMD: argv to (re)start a local vLLM under the supervisor
     screenpipe_cmd: str = ""  # O_SCREENPIPE_CMD: argv to (re)start screenpipe under the supervisor
+    practice_budget_usd: float = Field(default=0.5, ge=0.0, le=100.0)  # O_PRACTICE_BUDGET_USD: rolling 24 h practice spend
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EngineSettings":
@@ -219,6 +220,7 @@ class EngineSettings(BaseModel):
             "auto_repair": _truthy_env("O_AUTO_REPAIR", False),
             "vllm_cmd": _env("O_VLLM_CMD", ""),
             "screenpipe_cmd": _env("O_SCREENPIPE_CMD", ""),
+            "practice_budget_usd": float(_env("O_PRACTICE_BUDGET_USD", "0.5")),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)
@@ -1826,6 +1828,9 @@ def create_app(
 
     app.state.ambient = ambient
     # ------------------------------------------------------------ end ambient
+
+    from .evolve.routes import evolve_router  # plan L: self-evolution (status, feed, approvals, rollback)
+    app.include_router(evolve_router(settings, guarded, log, ambient=ambient, engine_deps=deps))
 
     app.state.settings = settings
     app.state.log = log

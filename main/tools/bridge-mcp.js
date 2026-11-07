@@ -35,6 +35,8 @@
 //   goal_record_cycle  record this cycle's plan, work, platform metrics, reflection and next step.
 //   goal_propose       up to 3 goals O could own, from what it has learned (the user accepts them in O).
 //   goal_checkpoint    file a prepared checkpoint action (publish, send, ...) as an Approve / Edit / Skip card.
+//   evolve_status      read-only: O's self-evolution state (budget, building, waiting for the user, recent feed).
+//   evolve_proposals   read-only: every upgrade O is considering / building / shipped, with measured gate results.
 //
 // Checkpoint gate: in a goal task (O_GOAL_ID), every call that reaches `approve` and classifies as a checkpoint
 // action (tools/checkpoints.js) is checked with the app first (POST /goal {op:'gate'}), in every permission
@@ -487,6 +489,18 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'evolve_status',
+    description: 'Read-only. What O is doing to upgrade itself: weekly budget and spend, upgrades building now, what waits for the user\'s approval, ' +
+      'and the recent Evolution feed (what O learned, shipped or rolled back). Use it to answer "what are you upgrading?". Changes nothing.',
+    inputSchema: { type: 'object', properties: { hours: { type: 'number', minimum: 1, maximum: 720, description: 'Feed window in hours (default 24).' } }, additionalProperties: false },
+  },
+  {
+    name: 'evolve_proposals',
+    description: 'Read-only. Every self-upgrade O has proposed, built, shipped or undone: title, subsystem, why (with the developments it builds on), ' +
+      'gate results before -> after, status and PR link. Approving, rejecting and rolling back stay with the user in O\'s Evolution view.',
+    inputSchema: { type: 'object', properties: { status: { type: 'string', maxLength: 32, description: 'Only proposals with this status (e.g. pr_open, shipped).' } }, additionalProperties: false },
+  },
+  {
     name: 'goal_checkpoint',
     description: 'File a checkpoint: an action that always waits for the user (publish / post publicly, send a message as them, spend, create an account, accept terms, delete their data). ' +
       'Prepare everything first. O shows one Approve / Edit / Skip card; on Approve it runs `action` exactly as given (or lets you do that one browser step). Never perform the action yourself.',
@@ -809,6 +823,39 @@ function computerReplay(args) {
   return runJob('/computer/replay', { procedure_id: args && args.procedure_id }, 'computer_replay');
 }
 
+async function evolveStatus(args) {
+  if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
+  const hours = Math.max(1, Math.min(720, Number(args && args.hours) || 24));
+  try {
+    const f = await engine('GET', `/evolve/feed?hours=${hours}`, undefined, 10000);
+    const st = (f && f.status) || {};
+    return textResult(pretty({
+      enabled: st.enabled, auto_ship: st.auto_ship, budget: st.budget, building: st.in_flight || [],
+      waiting_for_user: st.waiting_for_you || 0, candidate_skills: ((f && f.skills) || []).map((k) => ({ id: k.id, name: k.name || k.title, kind: k.kind })),
+      recent: ((f && f.feed) || []).slice(0, 30).map((x) => ({ at: new Date(x.ts * 1000).toISOString(), what: x.text })),
+    }));
+  } catch (e) {
+    return textResult('evolve_status failed: ' + e.message, true);
+  }
+}
+
+async function evolveProposals(args) {
+  if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
+  const want = args && typeof args.status === 'string' ? args.status.trim() : '';
+  try {
+    const r = await engine('GET', '/evolve/proposals', undefined, 10000);
+    const rows = ((r && r.proposals) || []).filter((p) => !want || p.status === want).slice(0, 50).map((p) => ({
+      id: p.id, title: p.title, subsystem: p.subsystem, status: p.status, risk: p.risk, why: p.rationale,
+      builds_on: (p.signals || []).map((x) => `${x.title} <${x.url}>`),
+      checks: (p.checks || []).map((c) => `${c.name}: ${c.passed ? 'pass' : 'FAIL'}${c.metric_before != null || c.metric_after != null ? ` (${c.metric_before} -> ${c.metric_after})` : ''}`),
+      pr: p.pr_url || p.compare_url || '', rollback_reason: p.rollback_reason || undefined,
+    }));
+    return textResult(pretty({ proposals: rows }));
+  } catch (e) {
+    return textResult('evolve_proposals failed: ' + e.message, true);
+  }
+}
+
 async function engineGet(path) {
   if (!ENGINE_URL) return textResult(ENGINE_DOWN, true);
   try {
@@ -922,6 +969,10 @@ async function callTool(name, args) {
     case 'cancel_schedule':
       if (!args || typeof args.id !== 'string' || !args.id.trim()) return textResult('cancel_schedule needs an id (see list_schedules).', true);
       return scheduleCall('cancel', { id: args.id.trim() });
+    case 'evolve_status':
+      return evolveStatus(args);
+    case 'evolve_proposals':
+      return evolveProposals(args);
     case 'recall_preferences':
       return recallPreferences(args);
     case 'remember_preference':
