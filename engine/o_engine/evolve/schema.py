@@ -30,6 +30,9 @@ class Signal(BaseModel):
     stars_7d: int = 0  # star velocity when known
     license: str = ""  # SPDX id when known
     topics: list[str] = Field(default_factory=list)
+    archived: bool = False
+    pushed: str = ""  # ISO date of the repo's last push, for maintenance checks
+    docs_url: str = ""  # homepage / docs / registry page (skill signals)
 
 
 class Proposal(BaseModel):
@@ -43,6 +46,8 @@ class Proposal(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)  # why it moves O forward, with evidence
     spec: str = Field(min_length=1, max_length=12000)  # implementation spec handed to the builder
     acceptance_test: str = Field(min_length=1, max_length=4000)  # the new test that must pass
+    acceptance_test_path: str = ""  # repo path of that test when known (makes the acceptance gate exact)
+    files: list[str] = Field(default_factory=list)  # repo paths the change is expected to touch
     expected_gain: str = ""  # which metric should improve, by roughly how much
     score: float = Field(ge=0, le=1)
     risk: Literal["low", "medium", "high"] = "medium"
@@ -59,6 +64,7 @@ class GateCheck(BaseModel):
     detail: str = ""
     metric_before: float | None = None
     metric_after: float | None = None
+    skipped: bool = False  # not run (e.g. fail-fast after a static failure); still counts as not passed
 
 
 class GateReport(BaseModel):
@@ -66,6 +72,7 @@ class GateReport(BaseModel):
     proposal_id: str
     branch: str
     commit: str = ""
+    baseline_commit: str = ""
     passed: bool
     checks: list[GateCheck] = Field(default_factory=list)
     diff_files: list[str] = Field(default_factory=list)

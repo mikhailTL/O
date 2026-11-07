@@ -73,6 +73,16 @@ const DEFAULTS = Object.freeze({
   sensorHeartRate: false, // webcam rPPG heart rate, ephemeral, never logged
   absentAfterMin: 5, // 1..120 minutes without presence before O treats you as away
   briefSpeak: false, // read the welcome-back brief aloud
+  // Self-evolution (plan L): O keeps upgrading itself from new AI developments, behind measured gates
+  evolveEnabled: true, // continuous: incremental scans, builds when budget allows, more while you are away
+  evolveBudgetUsd: 10, // rolling 7-day cap on build spend, spread across the week
+  evolvePerProposalUsd: 1.5, // cap per upgrade build
+  evolveAutoShip: 'low_risk', // 'low_risk' (all gates passed, low risk, no new deps) | 'deps_only' | 'never'
+  evolveGithubToken: '', // token that can push branches and open PRs; '' = compare links only. Never logged
+  evolveRepo: '', // '' = updateRepo
+  evolveScanMinutes: 45, // 5..1440 between incremental source scans
+  evolveSlotsActive: 1, // 0..8 builds at once while you use the computer
+  evolveSlotsAway: 3, // 0..8 builds at once while you are away
   settingsVersion: 5,
 });
 
@@ -191,6 +201,16 @@ function sanitize(obj) {
   if (typeof obj.genuiSandbox === 'boolean') out.genuiSandbox = obj.genuiSandbox;
   for (const k of ['ambientEnabled', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate', 'briefSpeak']) if (typeof obj[k] === 'boolean') out[k] = obj[k];
   if (obj.absentAfterMin !== undefined && obj.absentAfterMin !== null && obj.absentAfterMin !== '') { const n = parseInt(obj.absentAfterMin, 10); if (Number.isFinite(n)) out.absentAfterMin = Math.max(1, Math.min(120, n)); }
+  if (typeof obj.evolveEnabled === 'boolean') out.evolveEnabled = obj.evolveEnabled;
+  const evNum = (k, lo, hi, int) => { if (obj[k] === undefined || obj[k] === null || obj[k] === '') return; const n = int ? parseInt(obj[k], 10) : parseFloat(obj[k]); if (Number.isFinite(n)) out[k] = Math.max(lo, Math.min(hi, int ? n : Math.round(n * 100) / 100)); };
+  evNum('evolveBudgetUsd', 0, 1000, false);
+  evNum('evolvePerProposalUsd', 0, 100, false);
+  evNum('evolveScanMinutes', 5, 1440, true);
+  evNum('evolveSlotsActive', 0, 8, true);
+  evNum('evolveSlotsAway', 0, 8, true);
+  if (['never', 'deps_only', 'low_risk'].includes(obj.evolveAutoShip)) out.evolveAutoShip = obj.evolveAutoShip;
+  if (typeof obj.evolveGithubToken === 'string') out.evolveGithubToken = obj.evolveGithubToken.trim();
+  if (typeof obj.evolveRepo === 'string' && (obj.evolveRepo.trim() === '' || /^[\w.-]+\/[\w.-]+$/.test(obj.evolveRepo.trim()))) out.evolveRepo = obj.evolveRepo.trim();
   if (Number.isInteger(obj.settingsVersion) && obj.settingsVersion >= 1) out.settingsVersion = obj.settingsVersion;
   return out;
 }

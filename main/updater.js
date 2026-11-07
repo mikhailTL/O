@@ -7,6 +7,12 @@
 // copies the sub-folder's files over the app (never touching node_modules or your settings,
 // which live in the app-data folder), removes files the new version no longer has, runs
 // `npm install` if dependencies changed, then relaunches.
+//
+// Evolve (plan L): `rollback(ref)` installs an earlier tag/commit and pins it, so the update check stops
+// offering the release that was undone until the branch moves past it. `trackEvolve(list)` tells the updater
+// which approved upgrades (merged PRs) to look for; an update that contains them reports `evolve: [...]`,
+// and after installing it the manifest keeps ship reports (`pendingShipReports()`) for the engine's
+// post-ship monitoring until main acknowledges them (`ackShipReports(ids)`).
 
 const fs = require('fs');
 const os = require('os');
@@ -139,7 +145,7 @@ function depsKey(pkg) {
   return JSON.stringify({ d: (pkg && pkg.dependencies) || {}, v: (pkg && pkg.devDependencies) || {} });
 }
 
-function installFiles(appDir, files, sha) {
+function installFiles(appDir, files, sha, extra = {}) {
   const manifestFile = path.join(appDir, MANIFEST);
   const old = readJson(manifestFile);
   const oldPkg = readJson(path.join(appDir, 'package.json'));
@@ -175,7 +181,14 @@ function installFiles(appDir, files, sha) {
     }
   }
 
-  fs.writeFileSync(manifestFile, JSON.stringify({ sha, files: [...keep].sort(), updatedAt: new Date().toISOString() }, null, 2));
+  const carry = {};
+  if (old && Array.isArray(old.evolveShipped)) carry.evolveShipped = old.evolveShipped; // unacknowledged ship reports survive
+  if (old && old.sha && old.sha !== sha) carry.previous = old.sha;
+  else if (old && old.previous) carry.previous = old.previous;
+  const next = { sha, files: [...keep].sort(), updatedAt: new Date().toISOString(), ...carry, ...extra };
+  if (Array.isArray(carry.evolveShipped) && Array.isArray(extra.evolveShipped)) next.evolveShipped = [...carry.evolveShipped, ...extra.evolveShipped];
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+  fs.writeFileSync(manifestFile, JSON.stringify(next, null, 2));
 
   const newPkg = readJson(path.join(appDir, 'package.json'));
   const electronOld = oldPkg && oldPkg.devDependencies && oldPkg.devDependencies.electron;
@@ -230,10 +243,44 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
       token: String(s.updateToken || '').trim(),
     };
   };
+  const manifestFile = path.join(appDir, MANIFEST);
+  const manifest = () => readJson(manifestFile) || {};
   const installed = () => {
-    const m = readJson(path.join(appDir, MANIFEST));
+    const m = readJson(manifestFile);
     return m && m.sha ? m.sha : null;
   };
+  const writeManifest = (patch) => {
+    const m = { ...manifest(), ...patch };
+    for (const k of Object.keys(m)) if (m[k] === undefined) delete m[k];
+    fs.writeFileSync(manifestFile, JSON.stringify(m, null, 2));
+    return m;
+  };
+  let tracked = []; // approved evolve upgrades: [{id, merge_sha, release, previous, by}]
+
+  /** Tracked upgrades contained in `sha` (merge commit identical to or behind it). */
+  async function containedEvolve(c, sha) {
+    const out = [];
+    for (const t of tracked) {
+      if (!t || !t.merge_sha) continue;
+      if (t.merge_sha === sha) { out.push(t); continue; }
+      try {
+        const res = await request(`${api}/repos/${c.repo}/compare/${encodeURIComponent(t.merge_sha)}...${encodeURIComponent(sha)}`, { headers: ghHeaders(c) });
+        if (res.status !== 200) continue;
+        const j = JSON.parse(res.body.toString('utf8'));
+        if (j && (j.status === 'ahead' || j.status === 'identical')) out.push(t);
+      } catch (_) { /* unknown: not reported */ }
+    }
+    return out;
+  }
+
+  async function resolveRef(c, ref) {
+    if (!/^[\w./-]{1,200}$/.test(String(ref || ''))) throw new Error('Nothing to roll back to: no earlier version is recorded.');
+    const res = await request(`${api}/repos/${c.repo}/commits/${encodeURIComponent(ref)}`, { headers: ghHeaders(c) });
+    if (res.status !== 200) throw new Error(explainHttp(res.status, c));
+    const j = JSON.parse(res.body.toString('utf8'));
+    if (!j || !j.sha) throw new Error('GitHub did not return a commit for that version.');
+    return j.sha;
+  }
 
   async function latest(c) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(c.repo) || !c.branch) throw new Error('Set the update repo (owner/name) and branch in Settings → Updates.');
@@ -255,9 +302,13 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
       const sha = await latest(c);
       const have = installed();
       if (have && have === sha) return emit({ state: 'current', sha, message: 'O is up to date.' });
+      const pin = manifest().pinned;
+      if (pin && pin.skip === sha) return emit({ state: 'pinned', sha, installed: have, pinned: pin, message: 'O is staying on the earlier version after an upgrade was undone.' });
+      const evolve = tracked.length ? await containedEvolve(c, sha) : [];
       return emit({
-        state: 'available', sha, installed: have,
-        message: have ? 'A new version of O is available.' : 'An update is available (this copy doesn\'t record its version yet, so updating once will set that up).',
+        state: 'available', sha, installed: have, evolve,
+        message: evolve.length ? `Ready to install: ${evolve.map((e) => e.title || e.id).join(', ')}.`
+          : have ? 'A new version of O is available.' : 'An update is available (this copy doesn\'t record its version yet, so updating once will set that up).',
       });
     } catch (err) {
       return quiet ? state : emit({ state: 'error', message: err.message || String(err) });
@@ -279,7 +330,10 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
       if (res.status !== 200) throw new Error(explainHttp(res.status, c));
       const files = selectFiles(parseTar(zlib.gunzipSync(res.body)), c.sub);
       emit({ state: 'installing', message: `Installing ${files.length} files…` });
-      const r = installFiles(appDir, files, sha);
+      const prev = installed();
+      const shippedEvolve = (tracked.length ? await containedEvolve(c, sha) : [])
+        .map((e) => ({ id: e.id, release: e.release || e.merge_sha || sha, previous: prev || e.previous || '' }));
+      const r = installFiles(appDir, files, sha, { pinned: undefined, ...(shippedEvolve.length ? { evolveShipped: shippedEvolve } : {}) });
       if (r.needsInstall) {
         if (r.electronChanged) {
           return emit({ state: 'manual', sha, message: 'Update copied. It needs a new Electron: quit O, run `npm install` in O\'s folder, then `npm start`.' });
@@ -300,7 +354,52 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
     }
   }
 
-  return { check, apply, get state() { return state; }, installedSha: installed };
+  /**
+   * Install an earlier release (tag or commit; default: the version installed before the current one) and
+   * pin it: the check stops offering the current branch head until the branch moves past it.
+   */
+  async function rollback(ref, { reason = '', evolveId = '' } = {}) {
+    if (working) return emit({ state: 'error', message: 'An update is already in progress.' });
+    if (isPackaged) return emit({ state: 'error', message: 'This is an installed build: reinstall the earlier version to roll back.' });
+    if (isBusy()) return emit({ state: 'error', busy: true, message: 'O is in the middle of a task. It will undo the upgrade when the task is done.' });
+    working = true;
+    try {
+      const c = cfg();
+      const target = String(ref || manifest().previous || '').trim();
+      emit({ state: 'downloading', message: 'Going back to the earlier version…' });
+      const sha = await resolveRef(c, target);
+      let head = '';
+      try { head = await latest(c); } catch (_) { head = installed() || ''; }
+      const res = await request(`${api}/repos/${c.repo}/tarball/${sha}`, { headers: ghHeaders(c), timeoutMs: 180000 });
+      if (res.status !== 200) throw new Error(explainHttp(res.status, c));
+      const files = selectFiles(parseTar(zlib.gunzipSync(res.body)), c.sub);
+      const r = installFiles(appDir, files, sha, { pinned: { ref: target, sha, skip: head, reason: String(reason).slice(0, 300), evolveId: String(evolveId || ''), at: new Date().toISOString() } });
+      if (r.needsInstall && !r.electronChanged) await npmInstall(appDir);
+      emit({ state: 'restarting', sha, rolledBack: true, message: 'Went back to the earlier version. Restarting O…' });
+      setTimeout(relaunch, 1200);
+      return state;
+    } catch (err) {
+      return emit({ state: 'error', message: err.message || String(err) });
+    } finally {
+      working = false;
+    }
+  }
+
+  return {
+    check, apply, rollback, get state() { return state; }, installedSha: installed,
+    /** Approved upgrades to look for in the next update: [{id, title, merge_sha, release, previous, by}]. */
+    trackEvolve(list) { tracked = (Array.isArray(list) ? list : []).filter((t) => t && typeof t.id === 'string').slice(0, 50); return tracked.length; },
+    tracked: () => tracked.slice(),
+    pinned: () => manifest().pinned || null,
+    unpin() { if (manifest().pinned) writeManifest({ pinned: undefined }); return true; },
+    pendingShipReports: () => (Array.isArray(manifest().evolveShipped) ? manifest().evolveShipped.slice() : []),
+    ackShipReports(ids) {
+      const drop = new Set(Array.isArray(ids) ? ids : []);
+      const left = (manifest().evolveShipped || []).filter((e) => !drop.has(e.id));
+      writeManifest({ evolveShipped: left.length ? left : undefined });
+      return left.length;
+    },
+  };
 }
 
 module.exports = { createUpdater, parseTar, selectFiles, installFiles };
