@@ -257,7 +257,6 @@ const EVOLVE_ACTIVE_MS = 30 * 60 * 1000;
 const EVOLVE_AWAY_MS = 8 * 60 * 1000;
 const EVOLVE_FIRST_MS = 2 * 60 * 1000;
 const EVOLVE_POLL_MS = 60 * 1000;
-const AUTO_SHIP = ['never', 'deps_only', 'low_risk'];
 
 class EvolveClock extends EventEmitter {
   /**
@@ -335,7 +334,10 @@ function evolveEnv(s = {}, userDataDir = '') {
     O_EVOLVE_ENABLED: s.evolveEnabled === false ? '0' : '1',
     O_EVOLVE_BUDGET_USD: num(s.evolveBudgetUsd, 10, 0, 1000),
     O_EVOLVE_PER_PROPOSAL_USD: num(s.evolvePerProposalUsd, 1.5, 0, 100),
-    O_EVOLVE_AUTO_SHIP: AUTO_SHIP.includes(s.evolveAutoShip) ? s.evolveAutoShip : 'low_risk',
+    // Ask before installing new tools and upgrades: only an explicit false turns asking off. The auto-ship mode is
+    // derived from it, never read from evolveAutoShip.
+    O_EVOLVE_ASK_BEFORE_INSTALL: s.evolveAskBeforeInstall === false ? '0' : '1',
+    O_EVOLVE_AUTO_SHIP: s.evolveAskBeforeInstall === false ? 'all' : 'never',
     O_EVOLVE_REPO: String(s.evolveRepo || s.updateRepo || 'mikhailTL/O'),
     O_EVOLVE_BASE: String(s.updateBranch || 'main'),
     O_EVOLVE_GITHUB_TOKEN: String(s.evolveGithubToken || ''),

@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from o_engine.evolve.sandbox import SandboxChoice
+from o_engine.evolve.sandbox import RunResult, SandboxChoice
 from o_engine.evolve.pipeline import Evolver, PipelineDeps
 from o_engine.evolve.schema import GateCheck, GateReport, Proposal, Signal
 
@@ -111,5 +111,38 @@ def make(tmp_path, fakes: Fakes, settings: dict[str, Any] | None = None, github:
     deps = PipelineDeps(scan=fakes.scan, triage=fakes.triage, build=fakes.build, run_gates=fakes.run_gates,
                         baseline=lambda: {"commit": "base"}, github=gh, push=fakes.push, repo_root=str(tmp_path / "repo"),
                         evolve_dir=str(tmp_path / "evolve"), now=lambda: clock[0], **extra)
-    s = {"evolveRepo": "o/O", "evolveAutoShip": "low_risk", **(settings or {})}  # tests exercise the opt-in auto-ship path
+    s = {"evolveRepo": "o/O", **(settings or {})}  # default: Ask before installing is on (nothing ships on its own)
     return Evolver(lambda: s, deps)
+
+
+ASK_OFF = {"evolveAskBeforeInstall": False}
+
+
+class FakeSkillRunner:
+    """Stands in for the offline sandbox runner in installer tests: records argv, answers like skill_selftest."""
+
+    calls: list = []
+
+    def __init__(self, root: Any, ok: bool = True) -> None:
+        self.root, self.ok = root, ok
+
+    def run(self, argv: Any, cwd: str = ".", timeout: float = 600.0, out_dir: Any = None) -> RunResult:
+        from pathlib import Path
+
+        FakeSkillRunner.calls.append({"argv": list(argv), "staged": sorted(p.name for p in Path(self.root).iterdir())})
+        return RunResult(0, '{"ok": true, "tools": 3}\n') if self.ok else RunResult(1, '{"ok": false, "error": "no MCP answer within 45s"}\n')
+
+    def close(self) -> None:
+        pass
+
+
+def skill_sandbox(ok: bool = True) -> SandboxChoice:
+    return SandboxChoice(True, "docker", "auto", factory=lambda root: FakeSkillRunner(root, ok))
+
+
+def no_sandbox() -> SandboxChoice:
+    return SandboxChoice(False, "none", "auto", reason="docker: not installed")
+
+
+def fake_fetch(pin: Any, staging: Any) -> None:
+    (staging / "node_modules").mkdir()

@@ -766,7 +766,8 @@
     'proxyEnabled', 'proxyPort', 'proxyConcurrency', 'proxyMode',
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',
     'cuStepsPerTurn', 'cuMaxTurns', 'cuGroundConfidence', 'cuStepCandidates', 'cuFeasibilityGate', 'cuZoomGrounding', 'cuComparativeRanking', 'cuInterfaceBuilder',
-    'ambientEnabled', 'absentAfterMin', 'briefSpeak', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate'];
+    'ambientEnabled', 'absentAfterMin', 'briefSpeak', 'sensorWifi', 'sensorSonar', 'sensorCamera', 'sensorHeartRate',
+    'evolveAskBeforeInstall'];
 
   if ($('set-theme')) $('set-theme').addEventListener('change', () => applyTheme($('set-theme').value)); // live preview; Save persists it
 
@@ -780,6 +781,8 @@
       if (el.type === 'checkbox') el.checked = !!s[k];
       else if (el.tagName === 'SELECT' && s[k] == null) el.selectedIndex = 0;
       else el.value = s[k] == null ? '' : s[k];
+      // Ask before installing applies at once (no Save needed); the Evolution view follows.
+      if (k === 'evolveAskBeforeInstall' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ evolveAskBeforeInstall: el.checked }); if (window.__oEvolve) window.__oEvolve.refresh(); }); }
       if (k === 'browserMode' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ browserMode: el.value }); refreshExtension({ card: true }); }); }
     }
   }

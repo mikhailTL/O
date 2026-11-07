@@ -62,9 +62,10 @@ def test_scan_tick_and_views(env):
     props = {p["id"]: p for p in c.get("/evolve/proposals", headers=H).json()["proposals"]}
     assert props["p1"]["status"] == "pr_open" and props["p1"]["pr_url"].endswith("/pull/" + str(ev.journal.last("p1", ("pr_opened",))["pr_number"]))
     assert props["p1"]["checks"][1]["metric_after"] == 0.74 and props["p1"]["signals"][0]["url"].startswith("https://")
-    assert props["p2"]["status"] == "approved"  # low risk: auto-shipped
+    assert props["p2"]["status"] == "pr_open"  # Ask before installing is on: even low risk waits for Approve
     st = c.get("/evolve/status", headers=H).json()
-    assert st["counts"]["pr_open"] == 1 and st["waiting_for_you"] == 2 and st["awaiting_install"][0]["id"] == "p2"
+    assert st["ask_before_install"] is True and st["auto_ship"] == "never"
+    assert st["counts"]["pr_open"] == 2 and st["waiting_for_you"] == 3 and st["awaiting_install"] == []
     feed = c.get("/evolve/feed?hours=6", headers=H).json()
     assert feed["feed"] and feed["skills"][0]["id"] == "mcp-x"
     led = c.get("/evolve/ledger", headers=H).json()

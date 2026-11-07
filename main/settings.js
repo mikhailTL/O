@@ -77,7 +77,12 @@ const DEFAULTS = Object.freeze({
   evolveEnabled: true, // continuous: incremental scans, builds when budget allows, more while you are away
   evolveBudgetUsd: 10, // rolling 7-day cap on build spend, spread across the week
   evolvePerProposalUsd: 1.5, // cap per upgrade build
-  evolveAutoShip: 'never', // code upgrades wait for Approve: gates can't yet measure real-world latency/cost (live cycle 2026-11-06). 'low_risk' | 'deps_only' | 'never'
+  // Ask before installing new tools and upgrades. true (default): every third-party tool install and every
+  // upgrade ship waits for Approve. false: O installs licensed tools it finds and ships every upgrade that passes
+  // all checks, on its own; protected paths, the offline sandbox, licence allow-list, secret scan, budgets and
+  // rollback on regression apply either way.
+  evolveAskBeforeInstall: true,
+  evolveAutoShip: 'never', // derived from evolveAskBeforeInstall ('never' while asking, 'all' when not); never set directly
   evolveGithubToken: '', // token that can push branches and open PRs; '' = compare links only. Never logged
   evolveRepo: '', // '' = updateRepo
   evolveScanMinutes: 45, // 5..1440 between incremental source scans
@@ -87,8 +92,15 @@ const DEFAULTS = Object.freeze({
   // The engine's dev-only host mode is deliberately not a value this file accepts.
   evolveSandbox: 'auto',
   practiceBudgetUsd: 0.5, // rolling 24 h cap on practice spend (O rehearses its own tasks on an isolated display while you are away)
-  settingsVersion: 5,
+  settingsVersion: 6,
 });
+
+/** evolveAutoShip follows evolveAskBeforeInstall; nothing else can set it. */
+function deriveEvolve(d) {
+  d.evolveAskBeforeInstall = d.evolveAskBeforeInstall !== false;
+  d.evolveAutoShip = d.evolveAskBeforeInstall ? 'never' : 'all';
+  return d;
+}
 
 const MODES = ['log', 'ask', 'auto'];
 const THEMES = ['glass', 'light', 'dark'];
@@ -112,11 +124,19 @@ class Settings {
         if (this.data.permissionMode === 'ask') this.data.permissionMode = 'log';
         this.data.settingsVersion = 4;
       }
+      // v6: one switch, "Ask before installing new tools and upgrades", replaces the evolveAutoShip tiers.
+      // Nobody could pick a tier in the app (old files hold the earlier 'low_risk' default), so every file
+      // moves to asking; turning it off is the person's own choice in Settings.
+      if (!(raw.settingsVersion >= 6)) {
+        if (typeof raw.evolveAskBeforeInstall !== 'boolean') this.data.evolveAskBeforeInstall = true;
+        this.data.settingsVersion = 6;
+      }
       // O moved from the claude-team repo to its own repo: follow it.
       if (this.data.updateRepo === 'samuelsortland-cmyk/claude-team') {
         Object.assign(this.data, { updateRepo: DEFAULTS.updateRepo, updateBranch: DEFAULTS.updateBranch, updatePath: DEFAULTS.updatePath });
       }
     } catch (_) { /* first run or broken file: keep defaults */ }
+    deriveEvolve(this.data);
   }
 
   get() {
@@ -128,7 +148,7 @@ class Settings {
   }
 
   set(partial) {
-    this.data = { ...this.data, ...sanitize(partial || {}) };
+    this.data = deriveEvolve({ ...this.data, ...sanitize(partial || {}) });
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
@@ -213,7 +233,8 @@ function sanitize(obj) {
   evNum('evolveSlotsActive', 0, 8, true);
   evNum('evolveSlotsAway', 0, 8, true);
   evNum('practiceBudgetUsd', 0, 100, false);
-  if (['never', 'deps_only', 'low_risk'].includes(obj.evolveAutoShip)) out.evolveAutoShip = obj.evolveAutoShip;
+  if (typeof obj.evolveAskBeforeInstall === 'boolean') out.evolveAskBeforeInstall = obj.evolveAskBeforeInstall;
+  // evolveAutoShip is not accepted from outside: it is derived from evolveAskBeforeInstall (deriveEvolve).
   if (['auto', 'docker', 'e2b'].includes(obj.evolveSandbox)) out.evolveSandbox = obj.evolveSandbox;
   if (typeof obj.evolveGithubToken === 'string') out.evolveGithubToken = obj.evolveGithubToken.trim();
   if (typeof obj.evolveRepo === 'string' && (obj.evolveRepo.trim() === '' || /^[\w.-]+\/[\w.-]+$/.test(obj.evolveRepo.trim()))) out.evolveRepo = obj.evolveRepo.trim();
@@ -221,4 +242,4 @@ function sanitize(obj) {
   return out;
 }
 
-module.exports = { Settings, DEFAULTS };
+module.exports = { Settings, DEFAULTS, deriveEvolve };

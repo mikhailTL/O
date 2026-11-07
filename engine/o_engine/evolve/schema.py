@@ -33,6 +33,7 @@ class Signal(BaseModel):
     archived: bool = False
     pushed: str = ""  # ISO date of the repo's last push, for maintenance checks
     docs_url: str = ""  # homepage / docs / registry page (skill signals)
+    package: str = ""  # "npm:<name>" / "pypi:<name>" when the signal names an installable package (skill installer)
 
 
 class Proposal(BaseModel):

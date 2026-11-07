@@ -68,6 +68,10 @@ PROTECTED_RULES: tuple[tuple[str, str], ...] = (
     ("engine/o_engine/evolve/sandbox.Dockerfile", "evolve: the pinned sandbox image"),
     ("engine/o_engine/evolve/pipeline.py", "evolve: auto-ship policy and the sandbox-gated code-build tier"),
     ("engine/o_engine/evolve/routes.py", "evolve: wiring of the sandbox into builder, gates and baseline"),
+    ("engine/o_engine/evolve/skills.py", "evolve: who may approve a third-party skill (user, or the Ask-off setting)"),
+    ("engine/o_engine/evolve/installer.py", "evolve: pinned skill entries, reserved names, secret scan, sandbox self-test"),
+    ("engine/o_engine/evolve/skill_selftest.py", "evolve: the in-sandbox skill self-test"),
+    ("engine/tests/test_evolve_installer.py", "evolve: skill installer tests"),
     ("engine/tests/test_evolve_sandbox.py", "evolve: sandbox / untrusted-text tests"),
     ("engine/tests/test_evolve_triage.py", "evolve: triage tests"),
     ("engine/tests/evolve_fakes.py", "evolve: fakes the evolve tests use"),
@@ -104,6 +108,8 @@ TOUCH_MARKERS: tuple[tuple[str, str], ...] = (
     (r"isPaymentUrl|PAY_HOST|\b__oGuard\b", "payment guard"),
     (r"highRiskSandbox|select_sandbox|select_isolated|run_high_risk", "containment policy"),
     (r"evolveSandbox|O_EVOLVE_SANDBOX|O_EVOLVE_DEV_UNSAFE|unsafe-host-dev|o-sandbox-test|runner_for", "evolve sandbox"),
+    (r"evolveAskBeforeInstall|O_EVOLVE_ASK_BEFORE_INSTALL|evolveAutoShip|O_EVOLVE_AUTO_SHIP|auto_approve|RESERVED_MCP|installedSkillServers",
+     "the person's Ask before installing switch and the installed-skill merge"),
     (r"\[tool\.pytest|addopts|testpaths", "pytest configuration"),
 )
 

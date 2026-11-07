@@ -22,7 +22,9 @@ const STDERR_RING = 200;
 // Child env from agent.js: strips CLAUDECODE/CLAUDE_CODE_*/ELECTRON_RUN_AS_NODE and sets PATH=fullPath().
 // Fallback keeps engine.js loadable if agent.js is missing.
 let childEnv;
+let installedSkillServers = () => ({});
 try { ({ childEnv } = require('./agent')); } catch (_) { /* fallback below */ }
+try { ({ installedSkillServers } = require('./agent')); } catch (_) { /* no installed skills */ }
 if (typeof childEnv !== 'function') childEnv = (extra) => ({ ...process.env, ...extra });
 let evolveEnv = () => ({});
 try { ({ evolveEnv } = require('./scheduler')); } catch (_) { /* engine still starts without evolve settings */ }
@@ -122,8 +124,10 @@ class EngineProcess extends EventEmitter {
     const file = path.join(this.dataDir, 'mcp-servers.json');
     try {
       const j = JSON.parse((s && s.mcpServers) || '{}');
+      // Pinned servers O installed itself (evolve skills) under the person's own; theirs win a name clash.
+      const merged = { ...installedSkillServers(this.userDataDir), ...(j && typeof j === 'object' && !Array.isArray(j) ? j : {}) };
       fs.mkdirSync(this.dataDir, { recursive: true });
-      fs.writeFileSync(file, JSON.stringify({ mcpServers: j && typeof j === 'object' ? j : {} }, null, 2), { mode: 0o600 });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: merged }, null, 2), { mode: 0o600 });
     } catch (_) { /* malformed JSON: the engine sees an empty file */ }
     return file;
   }

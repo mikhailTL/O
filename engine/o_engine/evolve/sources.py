@@ -557,6 +557,19 @@ async def src_anthropic(ctx: Ctx) -> list[Signal]:
     return out
 
 
+def _registry_package(srv: dict[str, Any]) -> tuple[str, str]:
+    """The first npm / PyPI package an MCP registry entry names, as ("npm:<id>", "<version>"); ("", "") if none.
+    Registry text is untrusted: the skill installer re-validates the name and requires an exact version."""
+    for p in srv.get("packages") or []:
+        if not isinstance(p, dict):
+            continue
+        rt = str(p.get("registryType") or p.get("registry_type") or "").lower()
+        ident = str(p.get("identifier") or p.get("name") or "")[:214]
+        if rt in ("npm", "pypi") and ident:
+            return f"{rt}:{ident}", str(p.get("version") or "")[:64]
+    return "", ""
+
+
 async def src_mcp_registry(ctx: Ctx) -> list[Signal]:
     since = ctx.since_for("mcp-registry")
     out: list[Signal] = []
@@ -582,7 +595,9 @@ async def src_mcp_registry(ctx: Ctx) -> list[Signal]:
             url = repo_url or srv.get("websiteUrl") or f"https://registry.modelcontextprotocol.io/v0/servers?search={quote(name)}"
             transports = [r.get("type", "") for r in srv.get("remotes") or []] + \
                          [p.get("registryType") or p.get("registry_type") or "" for p in srv.get("packages") or []]
-            out.append(_sig(kind="mcp_server", source="mcp-registry", url=url, version=srv.get("version") or "",
+            pkg, pkg_ver = _registry_package(srv)
+            out.append(_sig(kind="mcp_server", source="mcp-registry", url=url, version=pkg_ver or srv.get("version") or "",
+                            package=pkg,
                             title=f"MCP server {srv.get('title') or name} {srv.get('version') or ''}".strip(),
                             summary=f"{name}: {srv.get('description') or ''}", published=published,
                             repo=github_repo(repo_url), topics=["mcp", "mcp-server", "skill"] + transports))
@@ -602,6 +617,7 @@ async def src_packages(ctx: Ctx) -> list[Signal]:
         url = (f"https://pypi.org/project/{d.name}/{d.latest}/" if d.ecosystem == "pypi"
                else f"https://www.npmjs.com/package/{d.name}/v/{d.latest}")
         out.append(_sig(kind="package_release", source=d.ecosystem, url=url, version=d.latest, repo=d.repo,
+                        package=f"{d.ecosystem}:{d.name}" if d.ecosystem in ("npm", "pypi") else "",
                         title=f"{d.name} {d.latest} ({d.ecosystem})", published=d.published,
                         summary=f"O declares {d.name}{(' ' + d.spec) if d.spec else ''}; latest {d.latest} "
                                 f"published {d.published[:10]}. {d.summary}",

@@ -140,12 +140,20 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
     if m_skills is not None:
         cls = _first(m_skills, ("SkillRegistry", "Registry", "Skills"))
         skills = _try(lambda: cls(data_dir / "skills")) if cls else _first(m_skills, ("registry", "REGISTRY"))
+    installer = None
+    try:  # approved skills become pinned MCP entries in <data_dir>/skills/mcp-servers.json (main/agent.js merges it)
+        from .installer import McpInstaller
+
+        installer = McpInstaller(data_dir / "skills", sandbox=choice)
+    except Exception:  # noqa: BLE001
+        missing.append("installer")
     token = str(evo.get("evolveGithubToken") or "")
     repo = str(evo.get("evolveRepo") or "")
     learning_dir = getattr(engine_settings, "learning_path", data_dir / "learning")
     return PipelineDeps(
         store=store, scan=scan, triage=triage, build=build, run_gates=run_gates, baseline=baseline, protected=protected,
         github=GitHub(repo, token), push=lambda workdir, branch: git_push(workdir, branch, repo, token), skills=skills,
+        installer=installer,
         telemetry=Telemetry(learning_dir, data_dir, evo.get("evolveAppLog") or None),
         repo_root=repo_root, evolve_dir=str(evolve_dir), missing=missing, sandbox=choice,
     )
@@ -349,6 +357,12 @@ def evolve_router(engine_settings: Any, guard: list[Any], log: Any = None,
     def skill_reject(sid: str) -> dict[str, Any]:
         r = decided(ev().decide_skill(sid, False))
         note("policy", f"evolve: you declined skill {sid}", skill_id=sid)
+        return r
+
+    @router.post("/skills/{sid}/uninstall")
+    def skill_uninstall(sid: str) -> dict[str, Any]:
+        r = decided(ev().uninstall_skill(sid, by="user"))
+        note("policy", f"evolve: you removed skill {sid}", skill_id=sid)
         return r
 
     router.state = state  # type: ignore[attr-defined]  # tests reach the Evolver through this

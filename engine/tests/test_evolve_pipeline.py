@@ -2,7 +2,10 @@ import threading
 
 import pytest
 
-from .evolve_fakes import FakeGitHub, Fakes, make, prop, sig
+from .evolve_fakes import ASK_OFF, FakeGitHub, Fakes, fake_fetch, make, no_sandbox, prop, sig, skill_sandbox
+from o_engine.evolve.installer import McpInstaller
+from o_engine.evolve.schema import Signal
+from o_engine.evolve.skills import SkillRegistry
 from o_engine.evolve.pipeline import (
     GitHub, LocalStore, StoreAdapter, auto_ship_allowed, evolve_settings, pr_body, run_cycle,
 )
@@ -42,31 +45,51 @@ def test_no_token_records_compare_url(tmp_path):
     assert not ev.deps.github.prs
 
 
-def test_low_risk_auto_ships_with_release_tag(tmp_path):
-    f = Fakes(signals=[sig(1)], proposals=[prop(1, risk="low")])
+def test_ask_off_ships_every_passing_upgrade_of_any_risk(tmp_path):
+    f = Fakes(signals=[sig(1), sig(2), sig(3)],
+              proposals=[prop(1, 0.9, risk="low"), prop(2, 0.8, risk="high"), prop(3, 0.7, risk="medium", new_deps=["pypi:x==1.0"])])
+    ev = make(tmp_path, f, settings={**ASK_OFF, "evolveTopK": 3, "evolveSlotsActive": 3})
+    run_cycle(ev.settings(), ev.deps, evolver=ev)
+    gh = ev.deps.github
+    assert sorted(gh.merged) == [1, 2, 3] and {r["tag"] for r in gh.releases} == {"evolve-p1", "evolve-p2", "evolve-p3"}
+    assert {ev.store.get(i).status for i in ("p1", "p2", "p3")} == {"approved"}
+    assert {ev.journal.last(i, ("approved",))["by"] for i in ("p1", "p2", "p3")} == {"auto"}
+    assert {a["id"] for a in ev.awaiting_install()} == {"p1", "p2", "p3"}  # the updater installs them
+    st = ev.status()
+    assert st["ask_before_install"] is False and st["auto_ship"] == "all" and st["waiting_for_you"] == 0
+
+
+def test_ask_on_never_ships_on_its_own(tmp_path):
+    f = Fakes(signals=[sig(1)], proposals=[prop(1, risk="low")])  # low risk, no deps: the old auto-ship case
     ev = make(tmp_path, f)
     run_cycle(ev.settings(), ev.deps, evolver=ev)
     gh = ev.deps.github
-    assert gh.merged == [1] and gh.releases[0]["tag"] == "evolve-p1" and gh.releases[0]["sha"] == "merge1"
-    assert ev.store.get("p1").status == "approved"
-    assert ev.awaiting_install() == [{"id": "p1", "title": "Upgrade 1", "pr_number": 1, "merge_sha": "merge1",
-                                      "release": "evolve-p1", "previous": "base1"}]
+    assert gh.prs and gh.merged == [] and gh.releases == [] and ev.store.get("p1").status == "pr_open"
+    assert ev.awaiting_install() == [] and ev.status()["waiting_for_you"] == 1
+    assert ev.approve("p1")["status"] == "approved" and gh.merged == [1]  # the person's Approve ships it
+    assert ev.journal.last("p1", ("approved",))["by"] == "user"
 
 
-@pytest.mark.parametrize("p,mode,ok", [
-    (prop(1, risk="low"), "low_risk", True),
-    (prop(1, risk="medium"), "low_risk", False),
-    (prop(1, risk="low", new_deps=["pypi:x==1"]), "low_risk", False),
-    (prop(1, risk="low"), "never", False),
-    (prop(1, risk="medium", dep_only=True, new_deps=["pypi:x==2"]), "deps_only", True),
-    (prop(1, risk="low"), "deps_only", False),
-])
-def test_auto_ship_policy(p, mode, ok):
+def test_ask_off_still_never_ships_failed_or_protected(tmp_path):
+    f = Fakes(signals=[sig(1), sig(2)], proposals=[prop(1, 0.9), prop(2, 0.8)], fail_gates={"p1"}, protected={"p2"})
+    ev = make(tmp_path, f, settings={**ASK_OFF, "evolveTopK": 2})
+    run_cycle(ev.settings(), ev.deps, evolver=ev)
+    assert ev.store.get("p1").status == "gated_fail" and ev.store.get("p2").status == "gated_fail"
+    assert not ev.deps.github.prs and not ev.deps.github.merged
+
+
+@pytest.mark.parametrize("p", [prop(1, risk="low"), prop(1, risk="medium"), prop(1, risk="high"),
+                               prop(1, risk="high", new_deps=["npm:x@1.0.0"])])
+def test_auto_ship_policy(p):
     rep = GateReport(proposal_id="p1", branch="b", passed=True, checks=[GateCheck(name="t", passed=True)])
-    assert auto_ship_allowed(p, rep, mode, [])[0] is ok
-    assert auto_ship_allowed(p, rep, mode, ["main/actionlog.js"])[0] is False
-    bad = rep.model_copy(update={"passed": False})
-    assert auto_ship_allowed(p, bad, mode, [])[0] is False
+    assert auto_ship_allowed(p, rep, "all", [])[0] is True
+    assert auto_ship_allowed(p, rep, "never", [])[0] is False
+    for mode in ("all", "never"):  # safety rails hold in both modes
+        assert auto_ship_allowed(p, rep, mode, ["main/actionlog.js"])[0] is False
+        assert auto_ship_allowed(p, rep.model_copy(update={"passed": False}), mode, [])[0] is False
+        failed_check = rep.model_copy(update={"checks": [GateCheck(name="license_scan", passed=False)]})
+        assert auto_ship_allowed(p, failed_check, mode, [])[0] is False
+        assert auto_ship_allowed(p.model_copy(update={"licenses_ok": False}), rep, mode, [])[0] is False
 
 
 def test_failed_gates_and_protected_paths_never_open_a_pr(tmp_path):
@@ -201,10 +224,14 @@ def test_skills_tier_adopts_practice_but_candidates_wait(tmp_path):
 def test_feed_is_plain_words_newest_first(tmp_path):
     f = Fakes(signals=[sig(1)], proposals=[prop(1)])
     clock = [1_000_000.0]
-    ev = make(tmp_path, f, clock=clock)
+    ev = make(tmp_path, f, clock=clock, settings=ASK_OFF)
     run_cycle(ev.settings(), ev.deps, evolver=ev)
-    texts = [x["text"] for x in ev.feed()]
-    assert texts[0] == "Shipping Upgrade 1 (all checks passed, low risk)"
+    feed = ev.feed()
+    texts = [x["text"] for x in feed]
+    assert texts[0] == "Shipped: Upgrade 1 — all checks passed"
+    assert feed[0]["undo"] == {"kind": "upgrade", "id": "p1"}  # one-tap Undo = roll back the release
+    assert ev.rollback("p1", "undo from the feed")["status"] == "rolled_back"
+    assert not any("undo" in x for x in ev.feed())
     assert "Upgrade 1 passed every check" in texts and "Read 1 new development, 1 worth trying" in texts
     clock[0] += 2 * 86400
     assert ev.feed(hours=24) == []
@@ -257,6 +284,14 @@ def test_local_store_round_trip(tmp_path):
 def test_evolve_settings_env_and_defaults():
     s = evolve_settings(env={})
     assert s["evolveEnabled"] is True and s["evolveBudgetUsd"] == 10.0 and s["evolveAutoShip"] == "never"
+    assert s["evolveAskBeforeInstall"] is True
+    off = evolve_settings(env={"O_EVOLVE_ASK_BEFORE_INSTALL": "0"})
+    assert off["evolveAskBeforeInstall"] is False and off["evolveAutoShip"] == "all"
+    assert evolve_settings({"evolveAskBeforeInstall": False}, env={})["evolveAutoShip"] == "all"
+    # evolveAutoShip is derived: a legacy value cannot turn auto-ship on while O asks, or off while it does not
+    assert evolve_settings({"evolveAutoShip": "low_risk"}, env={"O_EVOLVE_AUTO_SHIP": "low_risk"})["evolveAutoShip"] == "never"
+    assert evolve_settings({"evolveAutoShip": "never", "evolveAskBeforeInstall": False}, env={})["evolveAutoShip"] == "all"
+    assert evolve_settings({"evolveAskBeforeInstall": "garbage"}, env={})["evolveAskBeforeInstall"] is True
     s = evolve_settings(env={"O_EVOLVE_ENABLED": "0", "O_EVOLVE_BUDGET_USD": "4.5", "O_EVOLVE_AUTO_SHIP": "bogus",
                              "GITHUB_TOKEN": "gh", "O_EVOLVE_SLOTS_AWAY": "99"})
     assert s["evolveEnabled"] is False and s["evolveBudgetUsd"] == 4.5 and s["evolveAutoShip"] == "never"
@@ -422,3 +457,81 @@ def test_triage_waits_for_budget_and_books_its_spend(tmp_path):
     assert ev.budget()["spent_24h"] == 0.2
     ev.scan_and_triage()
     assert len(seen) == 1  # backlog cleared
+
+
+# ---------------------------------------------------------------- external skills: ask on / ask off
+
+
+def _skill_signals():
+    return [
+        Signal(id="sk1", kind="mcp_server", source="mcp-registry", title="MCP server screen-ocr-mcp 1.2.0",
+               url="https://github.com/acme/screen-ocr-mcp", repo="acme/screen-ocr-mcp", version="1.2.0",
+               license="Apache-2.0", package="npm:screen-ocr-mcp", topics=["mcp", "skill"]),
+        Signal(id="sk2", kind="mcp_server", source="mcp-registry", title="MCP server gpl-thing 2.0.0",
+               url="https://github.com/x/gpl-thing", version="2.0.0", license="GPL-3.0", package="npm:gpl-thing",
+               topics=["mcp", "skill"]),
+    ]
+
+
+def _skills_env(tmp_path, settings=None, sandbox=skill_sandbox):
+    reg = SkillRegistry(tmp_path / "skills")
+    inst = McpInstaller(tmp_path / "skills", sandbox=sandbox, fetch=fake_fetch)
+    ev = make(tmp_path, Fakes(signals=_skill_signals()), skills=reg, installer=inst, settings=settings)
+    return ev, reg, inst
+
+
+def _config(inst):
+    import json as _j
+
+    return _j.loads(inst.config_path.read_text())["mcpServers"] if inst.config_path.exists() else {}
+
+
+def test_ask_on_skill_waits_for_approve_then_installs(tmp_path):
+    ev, reg, inst = _skills_env(tmp_path)
+    ev.tick("away", force_scan=True)
+    ev.tick("away")
+    assert _config(inst) == {} and inst.rows() == []  # ticking never installs while O asks
+    cands = ev.skill_candidates()
+    assert [c["package"] for c in cands] == ["npm:screen-ocr-mcp"] and ev.status()["waiting_for_you"] == 1
+    r = ev.decide_skill(cands[0]["id"], True)
+    assert r["ok"] and r["install"]["ok"] and r["install"]["tested"] is True
+    assert _config(inst) == {"screen-ocr-mcp": {"type": "stdio", "command": "npx", "args": ["-y", "screen-ocr-mcp@1.2.0"]}}
+    assert inst.rows()[-1]["by"] == "user"
+    assert "Installed screen-ocr-mcp 1.2.0 (Apache-2.0) — tested in sandbox (you approved it)" in [x["text"] for x in ev.feed()]
+
+
+def test_ask_off_auto_installs_licensed_skills_with_undo(tmp_path):
+    ev, reg, inst = _skills_env(tmp_path, settings=ASK_OFF)
+    out = ev.tick("away", force_scan=True)
+    assert [x["ok"] for x in out["skills_installed"]] == [True]
+    assert list(_config(inst)) == ["screen-ocr-mcp"]  # GPL candidate stays blocked: licence allow-list holds
+    states = {s.package: s.status for s in reg.external().values()}
+    assert states == {"npm:screen-ocr-mcp": "installed", "npm:gpl-thing": "blocked_license"}
+    ok = next(s for s in reg.external().values() if s.status == "installed")
+    assert (ok.decided_by, ok.decided_via) == ("auto", "setting")
+    feed = ev.feed()
+    assert feed[0]["text"] == "Installed screen-ocr-mcp 1.2.0 (Apache-2.0) — tested in sandbox"
+    assert feed[0]["undo"] == {"kind": "skill", "id": ok.id}
+    assert ev.status()["waiting_for_you"] == 0 and ev.status()["installed_skills"][0]["name"] == "screen-ocr-mcp"
+    assert ev.tick("away")["skills_installed"] == []  # nothing installed twice
+    r = ev.uninstall_skill(ok.id)
+    assert r["ok"] and _config(inst) == {} and reg.external()[ok.id].status == "uninstalled"
+    assert [x["action"] for x in inst.rows()] == ["install", "uninstall"]  # append-only: superseded, not erased
+    texts = [x["text"] for x in ev.feed()]
+    assert texts[0] == "Removed screen-ocr-mcp" and not any("undo" in x for x in ev.feed())
+
+
+def test_ask_off_without_sandbox_installs_untested_and_says_so(tmp_path):
+    ev, reg, inst = _skills_env(tmp_path, settings=ASK_OFF, sandbox=no_sandbox)
+    ev.tick("away", force_scan=True)
+    row = inst.rows()[-1]
+    assert row["tested"] is False and row["backend"] == "none"
+    assert ev.feed()[0]["text"] == "Installed screen-ocr-mcp 1.2.0 (Apache-2.0) — untested: no sandbox to test it in"
+
+
+def test_failed_self_test_never_activates(tmp_path):
+    ev, reg, inst = _skills_env(tmp_path, settings=ASK_OFF, sandbox=lambda: skill_sandbox(ok=False))
+    ev.tick("away", force_scan=True)
+    assert _config(inst) == {} and inst.rows() == []
+    assert {s.status for s in reg.external().values()} == {"install_failed", "blocked_license"}
+    assert ev.feed()[0]["text"].startswith("Did not install") and "self-test failed" in ev.feed()[0]["text"]

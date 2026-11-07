@@ -125,7 +125,8 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
     approve: (id) => decide(id, 'approve'),
     reject: (id, reason) => decide(id, 'reject', { reason: String(reason || '').slice(0, 1000) }),
     rollback: (id, reason) => decide(id, 'rollback', { reason: String(reason || 'rolled back by you').slice(0, 1000) }),
-    skill: (id, approve) => post(`/evolve/skills/${pid(id)}/${approve ? 'approve' : 'reject'}`, {}, 120000),
+    skill: (id, approve) => post(`/evolve/skills/${pid(id)}/${approve ? 'approve' : 'reject'}`, {}, 600000), // approve fetches + sandbox-tests
+    uninstall: (id) => post(`/evolve/skills/${pid(id)}/uninstall`, {}, 30000),
     scanNow: () => c.tick({ force: true }),
     status: () => lastStatus,
   };

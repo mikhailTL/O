@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('o', {
   evolveReject: (id, reason) => ipcRenderer.invoke('evolve:reject', String(id || ''), String(reason || '')),
   evolveRollback: (id) => ipcRenderer.invoke('evolve:rollback', String(id || '')),
   evolveSkill: (id, approve) => ipcRenderer.invoke('evolve:skill', String(id || ''), approve === true),
+  evolveUninstall: (id) => ipcRenderer.invoke('evolve:uninstall', String(id || '')),
   // long-term goals
   listGoals: () => ipcRenderer.invoke('goals:list'),
   goalDetail: (id) => ipcRenderer.invoke('goals:detail', String(id || '')),

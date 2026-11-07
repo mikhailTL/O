@@ -12,8 +12,12 @@ state, older lines are the history; nothing is rewritten or deleted):
   ``skill`` (``ingest_signals``). It is stored as metadata plus a proposed adapter TEXT and starts at
   ``needs_approval`` (``blocked_license`` when the licence is not on ``OK_LICENSES``). This module never
   downloads, installs or executes anything. ``approve`` records the user's decision and is the only way
-  to ``approved``; ``install(id, installer)`` refuses unless the newest record is ``approved`` by the
-  user through the app, and even then only calls the ``installer`` the caller (the app route) passes in.
+  to ``approved`` by the person. The one other way is ``auto_approve``, which the Evolver calls only while the
+  person's own setting ``evolveAskBeforeInstall`` is off (recorded as ``decided_by="auto"``,
+  ``decided_via="setting"``); a licence-blocked candidate can never be approved either way.
+  ``install(id, installer)`` refuses anything not approved one of those two ways and only calls the ``installer``
+  the caller passes in (``evolve/installer.py``: pinned MCP entry, sandbox self-test, provenance);
+  ``uninstall(id, uninstaller)`` reverses an installed skill with a new ``uninstalled`` version line.
 """
 from __future__ import annotations
 
@@ -35,7 +39,9 @@ WINDOW = 5
 DEMOTE_BELOW = 0.6
 
 InternalStatus = Literal["candidate", "active", "demoted"]
-ExternalStatus = Literal["needs_approval", "blocked_license", "approved", "rejected", "installed"]
+ExternalStatus = Literal["needs_approval", "blocked_license", "approved", "rejected", "installed", "install_failed",
+                         "uninstalled"]
+AUTO_BY, AUTO_VIA = "auto", "setting"  # approvals made because the person turned "Ask before installing" off
 
 
 class NotApproved(PermissionError):
@@ -73,7 +79,8 @@ class ExternalSkill(BaseModel):
     title: str
     url: str
     repo: str = ""
-    package: str = ""
+    package: str = ""  # "npm:<name>" / "pypi:<name>" (installable) or a bare name (older records)
+    release: str = ""  # the package release the signal named; the installer pins exactly this
     license: str = ""
     summary: str = ""
     proposed_adapter: str  # inert text for the user to read; never executed here
@@ -224,13 +231,14 @@ class SkillRegistry:
             lic = str(get("license") or "")
             title = str(get("title") or repo or sid_sig)[:400]
             url = str(get("url") or "")
-            package = repo.split("/")[-1] if kind == "package_release" else ""
+            package = str(get("package") or "") or (repo.split("/")[-1] if kind == "package_release" else "")
             status = "needs_approval" if lic in OK_LICENSES else "blocked_license"
             rec = ExternalSkill(
                 id="xs-" + hashlib.sha256(sid_sig.encode()).hexdigest()[:16], version=1, status=status,  # type: ignore[arg-type]
-                signal_id=sid_sig, kind=kind, title=title, url=url, repo=repo, package=package, license=lic,
+                signal_id=sid_sig, kind=kind, title=title, url=url, repo=repo, package=package[:240],
+                release=str(get("version") or "")[:64], license=lic,
                 summary=str(get("summary") or "")[:2000],
-                proposed_adapter=proposed_adapter(kind, title, url, repo, package, str(get("version") or "")),
+                proposed_adapter=proposed_adapter(kind, title, url, repo, package.split(":", 1)[-1], str(get("version") or "")),
                 note="" if status == "needs_approval" else f"licence {lic or 'unknown'} is not one of {', '.join(OK_LICENSES)}",
                 ts=float(self.now()))
             self._append(self.external_path, rec.model_dump())
@@ -262,21 +270,56 @@ class SkillRegistry:
             raise NotApproved(f"{skill_id} is {cur.status}; only a needs_approval candidate can be approved")
         return self._decide(skill_id, "approved", by, via, note or "approved by the user in the app")
 
-    def reject(self, skill_id: str, *, by: str = "user", via: str = "app", note: str = "") -> ExternalSkill:
-        return self._decide(skill_id, "rejected", by, via, note or "rejected")
-
-    def install(self, skill_id: str, installer: Callable[[ExternalSkill], Any]) -> ExternalSkill:
-        """Run the caller's ``installer`` for an approved skill and record ``installed``. Refuses anything
-        whose newest record is not ``approved`` by the user via the app. This module ships no installer."""
+    def auto_approve(self, skill_id: str, *, ask_before_install: bool) -> ExternalSkill:
+        """Approval on the person's behalf, only because they turned "Ask before installing new tools and
+        upgrades" off. ``ask_before_install`` is that setting as the Evolver read it; True refuses."""
+        if ask_before_install is not False:
+            raise NotApproved("O asks before installing: only the user can approve this skill, in the app")
         cur = self.external().get(skill_id)
         if cur is None:
             raise KeyError(skill_id)
-        if cur.status != "approved" or cur.decided_by != "user" or cur.decided_via != "app":
+        if cur.status != "needs_approval" or cur.license not in OK_LICENSES:
+            raise NotApproved(f"{skill_id} is {cur.status}; only a licensed needs_approval candidate can be approved")
+        return self._decide(skill_id, "approved", AUTO_BY, AUTO_VIA, "approved automatically: Ask before installing is off")
+
+    def reject(self, skill_id: str, *, by: str = "user", via: str = "app", note: str = "") -> ExternalSkill:
+        return self._decide(skill_id, "rejected", by, via, note or "rejected")
+
+    @staticmethod
+    def _approved(s: ExternalSkill) -> bool:
+        return s.status == "approved" and ((s.decided_by, s.decided_via) in (("user", "app"), (AUTO_BY, AUTO_VIA)))
+
+    def install(self, skill_id: str, installer: Callable[[ExternalSkill], Any]) -> ExternalSkill:
+        """Run the caller's ``installer`` for an approved skill and record ``installed`` (or ``install_failed``
+        when the installer refuses: unpinnable, reserved name, secret, failed sandbox self-test). Refuses anything
+        whose newest record is not ``approved`` by the user via the app or by ``auto_approve``. This module ships
+        no installer."""
+        cur = self.external().get(skill_id)
+        if cur is None:
+            raise KeyError(skill_id)
+        if not self._approved(cur):
             raise NotApproved(f"{skill_id} is {cur.status}; the user must approve it in the app before anything is installed")
         if not callable(installer):
             raise NotApproved("no installer given")
-        result = installer(cur)
-        return self._decide(skill_id, "installed", "user", "app", f"installed: {str(result)[:300]}")
+        by, via = cur.decided_by or "user", cur.decided_via or "app"
+        try:
+            result = installer(cur)
+        except Exception as exc:  # noqa: BLE001 - recorded; nothing was activated
+            self._decide(skill_id, "install_failed", by, via, f"not installed: {type(exc).__name__}: {exc}"[:500])
+            raise
+        return self._decide(skill_id, "installed", by, via, f"installed: {str(result)[:300]}")
+
+    def uninstall(self, skill_id: str, uninstaller: Callable[[ExternalSkill], Any], *, by: str = "user",
+                  via: str = "app") -> ExternalSkill:
+        """Reverse an installed skill: the caller's ``uninstaller`` supersedes its config entry; a new
+        ``uninstalled`` version line records who did it. History is never rewritten."""
+        cur = self.external().get(skill_id)
+        if cur is None:
+            raise KeyError(skill_id)
+        if cur.status != "installed":
+            raise NotApproved(f"{skill_id} is {cur.status}; only an installed skill can be removed")
+        uninstaller(cur)
+        return self._decide(skill_id, "uninstalled", by, via, "removed")
 
     def view(self) -> dict[str, Any]:
         """For an app panel: active/candidate/demoted internal skills and external candidates awaiting approval."""

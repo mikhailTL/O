@@ -1,6 +1,8 @@
 'use strict';
 // Evolution view: what O learned and added lately, what waits for one tap (upgrades that need approval and
 // candidate skills that would install third-party code), and every upgrade with its measured gate results.
+// With Settings → "Ask before installing new tools and upgrades" off (status.ask_before_install === false) there
+// are no approval cards: the feed logs each automatic install / ship as it happens, with a one-tap Undo.
 // Data: window.o.evolveView() (main/evolve.js -> engine /evolve/feed + /evolve/proposals); live updates
 // arrive as {type:'evolve'} agent events.
 (function () {
@@ -18,7 +20,9 @@
     gated_fail: 'Did not pass', pr_open: 'Ready for you', approved: 'Installing', shipped: 'In use',
     rolled_back: 'Undone', rejected: 'Set aside',
   };
-  const GOOD = new Set(['gated', 'approved', 'shipped', 'held', 'skill_adopted', 'skill_approved', 'practiced']);
+  const GOOD = new Set(['gated', 'approved', 'shipped', 'held', 'skill_adopted', 'skill_approved', 'skill_installed', 'practiced']);
+  const UNDONE = new Set(['rolled_back', 'rejected', 'skill_uninstalled', 'skill_install_failed']);
+  const asks = (st) => !st || st.ask_before_install !== false;
   const WAITS = new Set(['pr_open', 'gated_pass']);
   let data = { feed: [], skills: [], proposals: [], status: {} };
   let open = new Set();
@@ -104,7 +108,7 @@
       <div class="cp-head">${esc(k.name || k.title || k.id)}</div>
       ${k.description || k.summary ? `<p class="cp-sum">${esc(k.description || k.summary)}</p>` : ''}
       ${k.proposed_adapter ? `<pre class="ev-adapter" aria-label="What O would add">${esc(String(k.proposed_adapter).slice(0, 600))}</pre>` : ''}
-      <p class="ev-meta">${[k.license ? esc(k.license) : '', src ? `<a href="${esc(src)}" target="_blank" rel="noopener">source</a>` : '', 'nothing is installed until you approve'].filter(Boolean).join(' · ')}</p>
+      <p class="ev-meta">${[k.license ? esc(k.license) : '', k.release ? `pinned to ${esc(k.release)}` : '', src ? `<a href="${esc(src)}" target="_blank" rel="noopener">source</a>` : '', 'nothing is installed until you approve', ((data.status || {}).code_builds || {}).enabled === false ? 'no sandbox here, so it would be installed untested' : 'tested in the sandbox before it is turned on'].filter(Boolean).join(' · ')}</p>
       <div class="cp-acts"><button type="button" class="cp-skip">Decline</button><button type="button" class="cp-approve">Approve</button></div>`;
     el.querySelector('.cp-approve').addEventListener('click', () => act('k:' + k.id, () => o.evolveSkill(k.id, true), el));
     el.querySelector('.cp-skip').addEventListener('click', () => act('k:' + k.id, () => o.evolveSkill(k.id, false), el));
@@ -136,9 +140,20 @@
 
   function feedItem(f) {
     const li = document.createElement('li');
-    li.dataset.tone = f.event === 'rolled_back' || f.event === 'rejected' ? 'undo' : GOOD.has(f.event) ? 'good' : '';
+    li.dataset.tone = UNDONE.has(f.event) ? 'undo' : GOOD.has(f.event) ? 'good' : '';
     const u = safeUrl(f.url);
     li.innerHTML = `<time>${esc(when(f.ts))}</time>${u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(f.text)}</a>` : `<span>${esc(f.text)}</span>`}`;
+    const undo = f.undo && (f.undo.kind === 'skill' || f.undo.kind === 'upgrade') ? f.undo : null;
+    if (undo) {
+      li.classList.add('has-undo');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ev-undo';
+      b.textContent = 'Undo';
+      b.setAttribute('aria-label', undo.kind === 'skill' ? `Undo: uninstall ${f.text}` : `Undo: roll back ${f.text}`);
+      b.addEventListener('click', () => act('u:' + undo.id, () => (undo.kind === 'skill' ? o.evolveUninstall(undo.id) : o.evolveRollback(undo.id)), b));
+      li.appendChild(b);
+    }
     return li;
   }
 
@@ -158,8 +173,9 @@
     $('evolve-sub').textContent = subline(st);
     const waiting = $('evolve-waiting');
     waiting.innerHTML = '';
-    const ups = (data.proposals || []).filter((p) => WAITS.has(p.status));
-    const skills = data.skills || [];
+    const ask = asks(st);
+    const ups = ask ? (data.proposals || []).filter((p) => WAITS.has(p.status)) : [];
+    const skills = ask ? data.skills || [] : [];
     if (ups.length || skills.length) {
       const h = document.createElement('h3'); h.className = 'sheet-h'; h.textContent = 'Waiting for you'; waiting.appendChild(h);
       ups.forEach((p) => waiting.appendChild(upgradeCard(p)));
@@ -172,11 +188,12 @@
     else feed.innerHTML = '<li class="ev-empty">Nothing new yet. O looks for new releases and research every so often and tries what fits.</li>';
     const list = $('evolve-list');
     list.innerHTML = '';
-    const rest = (data.proposals || []).filter((p) => !WAITS.has(p.status));
+    const rest = (data.proposals || []).filter((p) => !ups.includes(p));
     if (rest.length) rest.forEach((p) => list.appendChild(upgradeRow(p)));
     else list.innerHTML = '<p class="goals-empty">No upgrades yet.</p>';
-    const auto = { low_risk: 'Low-risk upgrades that pass every check install on their own while you are away; the rest wait for you.', deps_only: 'Only dependency updates install on their own; everything else waits for you.', never: 'Every upgrade waits for your approval.' }[st.auto_ship] || '';
-    $('evolve-foot').textContent = [auto, st.enabled !== false ? 'Approvals, payments, the action log and consent rules are never changed by an upgrade.' : ''].filter(Boolean).join(' ');
+    const mode = ask ? 'Every new tool and upgrade waits for your approval.'
+      : 'O installs tools it finds and ships its own upgrades without asking; each one is listed above with Undo. Upgrades install while you are away.';
+    $('evolve-foot').textContent = [mode, st.enabled !== false ? 'Safety checks, sandbox testing and automatic rollback always apply; approvals, payments, the action log and consent rules are never changed by an upgrade.' : ''].filter(Boolean).join(' ');
     badge(ups.length + skills.length);
   }
 
@@ -200,7 +217,7 @@
       return;
     }
     data = r;
-    if (!sheet.hidden) render(); else badge((r.proposals || []).filter((p) => WAITS.has(p.status)).length + (r.skills || []).length);
+    if (!sheet.hidden) render(); else badge(asks(r.status) ? (r.proposals || []).filter((p) => WAITS.has(p.status)).length + (r.skills || []).length : 0);
   }
 
   function openSheet() {

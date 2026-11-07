@@ -14,9 +14,15 @@ Code-build tier: builds only start while ``deps.sandbox()`` reports a sandbox (`
 see ``sandbox.py``) to run the candidate's tests in. Without one the tier is paused, the feed shows one calm line
 (``sandbox.PAUSED_MESSAGE``) and everything else (scanning, triage, practice, skills) keeps running.
 
-Adoption tiers: ``evolveAutoShip`` "low_risk" (default) merges and tags a release only when every gate passed,
-risk is low, there are no new dependencies and no protected path changed; "deps_only" only for
-dependency-only proposals; "never" leaves every PR for one-tap approval. Everything else waits for the person.
+Adoption: one setting, ``evolveAskBeforeInstall`` (default True). ``evolveAutoShip`` is derived from it:
+* True -> "never": every upgrade PR and every third-party skill waits for the person's Approve.
+* False -> "all": every upgrade that passes every gate ships on its own (merge + release tag), whatever its risk,
+  including new dependencies whose licences pass; licensed skill candidates are approved and installed
+  (``installer.McpInstaller``: pinned MCP entry, sandbox self-test when there is a sandbox). The feed logs each
+  one with Undo (roll back the release / uninstall the skill).
+Neither mode is an approval of the safety rails: protected paths, the offline sandbox for candidate code,
+untrusted-text handling, the licence allow-list, the secret scan, spend budgets and post-ship rollback on
+regression apply in both.
 
 ``run_cycle(settings, deps)`` is the same machinery as one synchronous pass (scan -> triage -> top-K -> build in
 parallel -> gates -> ship). Sibling stages (store, sources, triage, builder, gates, baseline, skills) are
@@ -39,7 +45,8 @@ from . import sandbox as sbx
 from .learn import Journal, Telemetry, evaluate_shipped, prior_multiplier, priors
 from .schema import GateReport, Proposal, Signal
 
-AUTO_SHIP_MODES = ("never", "deps_only", "low_risk")
+AUTO_SHIP_MODES = ("never", "all")  # derived from evolveAskBeforeInstall (True -> never, False -> all)
+MAX_AUTO_INSTALLS = 2  # skills installed per tick while Ask before installing is off
 BUILDABLE = ("accepted", "proposed")
 MIN_BUILD_USD = 0.25
 TRIAGE_BATCH = 40  # signals per triage call
@@ -51,7 +58,8 @@ DEFAULTS: dict[str, Any] = {
     "evolveEnabled": True,
     "evolveBudgetUsd": 10.0,  # rolling 7-day cap
     "evolvePerProposalUsd": 1.5,  # cap per build
-    "evolveAutoShip": "never",  # gates cannot yet measure real-world latency/cost; code waits for Approve
+    "evolveAskBeforeInstall": True,  # True: installs and ships wait for Approve. False: O does them on its own
+    "evolveAutoShip": "never",  # derived from evolveAskBeforeInstall; any value passed in is ignored
     "evolveRepo": "mikhailTL/O",
     "evolveBaseBranch": "main",
     "evolveGithubToken": "",
@@ -65,6 +73,7 @@ DEFAULTS: dict[str, Any] = {
 _ENV = {
     "evolveEnabled": "O_EVOLVE_ENABLED", "evolveBudgetUsd": "O_EVOLVE_BUDGET_USD",
     "evolvePerProposalUsd": "O_EVOLVE_PER_PROPOSAL_USD", "evolveAutoShip": "O_EVOLVE_AUTO_SHIP",
+    "evolveAskBeforeInstall": "O_EVOLVE_ASK_BEFORE_INSTALL",
     "evolveRepo": "O_EVOLVE_REPO", "evolveBaseBranch": "O_EVOLVE_BASE", "evolveGithubToken": "O_EVOLVE_GITHUB_TOKEN",
     "evolveScanMinutes": "O_EVOLVE_SCAN_MINUTES", "evolveSlotsActive": "O_EVOLVE_SLOTS_ACTIVE",
     "evolveSlotsAway": "O_EVOLVE_SLOTS_AWAY", "evolveTopK": "O_EVOLVE_TOP_K", "evolveAppLog": "O_EVOLVE_APP_LOG",
@@ -103,12 +112,13 @@ def evolve_settings(overrides: dict[str, Any] | None = None, env: dict[str, str]
         if k in DEFAULTS and v not in (None, ""):
             out[k] = v
     out["evolveEnabled"] = str(out["evolveEnabled"]).strip().lower() not in ("0", "false", "no", "off")
+    # Only an explicit off turns asking off; anything unreadable keeps asking.
+    out["evolveAskBeforeInstall"] = str(out["evolveAskBeforeInstall"]).strip().lower() not in ("0", "false", "no", "off")
     for k in ("evolveBudgetUsd", "evolvePerProposalUsd"):
         out[k] = max(0.0, float(out[k]))
     for k, lo, hi in (("evolveScanMinutes", 5, 1440), ("evolveSlotsActive", 0, 8), ("evolveSlotsAway", 0, 8), ("evolveTopK", 1, 8)):
         out[k] = max(lo, min(hi, int(float(out[k]))))
-    if out["evolveAutoShip"] not in AUTO_SHIP_MODES:
-        out["evolveAutoShip"] = DEFAULTS["evolveAutoShip"]
+    out["evolveAutoShip"] = "never" if out["evolveAskBeforeInstall"] else "all"
     out["evolveSandbox"] = sbx.normalize_mode(out["evolveSandbox"])
     return out
 
@@ -357,6 +367,7 @@ class PipelineDeps:
     github: GitHub | None = None
     push: Callable[[str, str], None] | None = None  # push(workdir, branch)
     skills: Any = None  # runtime skills registry (evolve/skills.py)
+    installer: Any = None  # installer.McpInstaller: installs / uninstalls approved external skills
     sandbox: Callable[[], Any] | None = None  # -> sandbox.SandboxChoice; None or unavailable pauses code builds
     telemetry: Telemetry | None = None
     rollback: Callable[[str, str, str], Any] | None = None  # extra hook; the app's updater is driven via status
@@ -387,13 +398,9 @@ def auto_ship_allowed(p: Proposal, report: GateReport, mode: str, violations: li
         return False, "touches protected paths"
     if not p.licenses_ok:
         return False, "license needs review"
-    if mode == "never":
-        return False, "auto-ship is off"
-    if mode == "deps_only":
-        return (True, "dependency-only, all gates passed") if p.dependency_only and p.risk != "high" else (False, "waits for approval (not dependency-only)")
-    if p.risk == "low" and not p.new_dependencies:
-        return True, "low risk, no new dependencies, all gates passed"
-    return False, "waits for approval: " + ("adds dependencies" if p.new_dependencies else f"{p.risk} risk")
+    if mode == "all":
+        return True, "all checks passed"
+    return False, "waits for approval: Ask before installing is on"
 
 
 def _fmt(v: float | None) -> str:
@@ -656,7 +663,8 @@ class Evolver:
             return {"id": p.id, "status": "gated_pass", "error": "push failed"}
         if gh is None or not gh.token:
             url = (gh or GitHub(s["evolveRepo"])).compare_url(base, report.branch)
-            self._record("compare", p.id, compare_url=url, auto_ship=False, auto_ship_reason="no GitHub token: open the compare link to make the PR")
+            self._record("compare", p.id, compare_url=url, auto_ship=False, ask=bool(s["evolveAskBeforeInstall"]),
+                         auto_ship_reason="no GitHub token: open the compare link to make the PR")
             self._status(p.id, "gated_pass")
             return {"id": p.id, "status": "gated_pass", "compare_url": url}
         try:
@@ -840,7 +848,7 @@ class Evolver:
         return [_as_dict(r) for r in rows]
 
     def decide_skill(self, sid: str, approve: bool) -> dict[str, Any]:
-        """Only reached from the person's Approve / Reject in the Evolution feed."""
+        """Only reached from the person's Approve / Reject in the Evolution feed. Approve also installs."""
         reg = self.deps.skills
         m = _method(reg, ("approve",) if approve else ("reject", "decline", "dismiss"))
         if m is None:
@@ -850,7 +858,75 @@ class Evolver:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
         self._record("skill_approved" if approve else "skill_rejected", skill_id=sid, by="user")
-        return {"ok": True, "id": sid, "result": _as_dict(r) if r is not None else None}
+        out: dict[str, Any] = {"ok": True, "id": sid, "result": _as_dict(r) if r is not None else None}
+        if approve and self.deps.installer is not None and callable(getattr(reg, "install", None)):
+            out["install"] = self._install_skill(sid, by="user")
+        return out
+
+    def _skill_row(self, sid: str) -> dict[str, Any]:
+        ext = getattr(self.deps.skills, "external", None)
+        try:
+            cur = ext().get(sid) if callable(ext) else None
+        except Exception:  # noqa: BLE001
+            cur = None
+        return _as_dict(cur) if cur is not None else {}
+
+    def _install_skill(self, sid: str, by: str) -> dict[str, Any]:
+        """Approved skill -> ``SkillRegistry.install`` with the injected installer; the result goes to the feed."""
+        reg, inst = self.deps.skills, self.deps.installer
+        meta = self._skill_row(sid)
+        try:
+            reg.install(sid, inst)
+        except Exception as exc:  # noqa: BLE001 - refused or failed: nothing was activated
+            reason = f"{exc}"[:300] or type(exc).__name__
+            self._record("skill_install_failed", skill_id=sid, by=by, name=meta.get("title") or sid, reason=reason)
+            return {"ok": False, "error": reason}
+        row = (inst.active() if callable(getattr(inst, "active", None)) else {}).get(sid) or {}
+        self._record("skill_installed", skill_id=sid, by=by, name=row.get("name") or meta.get("title") or sid,
+                     version=row.get("version", ""), license=row.get("license") or meta.get("license", ""),
+                     tested=bool(row.get("tested")), backend=row.get("backend", ""), detail=row.get("detail", ""),
+                     url=meta.get("url", ""))
+        return {"ok": True, "name": row.get("name"), "tested": bool(row.get("tested"))}
+
+    def auto_install_skills(self) -> list[dict[str, Any]]:
+        """Ask before installing is off: licensed candidates are approved on the person's behalf and installed.
+        Licence-blocked candidates stay blocked; the installer still pins, scans and sandbox-tests."""
+        s = self.settings()
+        reg = self.deps.skills
+        if s["evolveAskBeforeInstall"] or self.deps.installer is None or not callable(getattr(reg, "auto_approve", None)):
+            return []
+        out = []
+        for row in self.skill_candidates()[:MAX_AUTO_INSTALLS]:
+            sid = str(row.get("id") or "")
+            try:
+                reg.auto_approve(sid, ask_before_install=s["evolveAskBeforeInstall"])
+            except Exception as exc:  # noqa: BLE001
+                self._record("skill_install_failed", skill_id=sid, by="auto", name=row.get("title") or sid, reason=str(exc)[:300])
+                continue
+            out.append({"id": sid, **self._install_skill(sid, by="auto")})
+        return out
+
+    def uninstall_skill(self, sid: str, by: str = "user") -> dict[str, Any]:
+        """Undo an installed skill (the feed's Undo, or the person's Remove)."""
+        reg, inst = self.deps.skills, self.deps.installer
+        if inst is None or not callable(getattr(reg, "uninstall", None)):
+            return {"ok": False, "error": "skill installer unavailable"}
+        name = ((inst.active() or {}).get(sid) or {}).get("name") or self._skill_row(sid).get("title") or sid
+        try:
+            reg.uninstall(sid, lambda sk: inst.uninstall(sk, by=by), by=by, via="app")
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{exc}"[:300]}
+        self._record("skill_uninstalled", skill_id=sid, by=by, name=name)
+        return {"ok": True, "id": sid, "status": "uninstalled"}
+
+    def installed_skills(self) -> list[dict[str, Any]]:
+        inst = self.deps.installer
+        try:
+            act = inst.active() if inst is not None else {}
+        except Exception:  # noqa: BLE001
+            act = {}
+        return [{"id": sid, **{k: r.get(k) for k in ("name", "package", "version", "license", "tested", "backend", "by")}}
+                for sid, r in act.items()]
 
     # ------------------------------------------------------------ the loop
 
@@ -866,6 +942,7 @@ class Evolver:
             out["skills_adopted"] = len(self.skills_tick())
             due = self.now() - self.last_scan() >= s["evolveScanMinutes"] * 60
             out["scan"] = self.scan_and_triage() if (force_scan or due) else None
+            out["skills_installed"] = self.auto_install_skills()
             slots = s["evolveSlotsAway"] if presence == "away" else s["evolveSlotsActive"]
             with self._lock:
                 free = max(0, slots - len(self._inflight))
@@ -937,11 +1014,24 @@ class Evolver:
         tier = self.code_tier()
         if not tier["enabled"] and self.settings()["evolveEnabled"]:
             out.append({"ts": self.now(), "event": "code_paused", "proposal_id": "", "text": tier["message"], "url": ""})
+        status = {p.id: p.status for p in self.store.proposals()}
+        installed = {x["id"] for x in self.installed_skills()}
+        undone: set[str] = set()
         for r in reversed(rows):
             text = _feed_text(r, titles.get(r.get("proposal_id", ""), ""))
-            if text:
-                out.append({"ts": r["ts"], "event": r["event"], "proposal_id": r.get("proposal_id", ""), "text": text,
-                            "url": r.get("pr_url") or r.get("compare_url") or ""})
+            if not text:
+                continue
+            item = {"ts": r["ts"], "event": r["event"], "proposal_id": r.get("proposal_id", ""), "text": text,
+                    "url": r.get("pr_url") or r.get("compare_url") or ""}
+            # One-tap Undo on the newest row that put something in place, while it is still in place.
+            pid, sid = r.get("proposal_id", ""), str(r.get("skill_id") or "")
+            if r["event"] == "approved" and status.get(pid) in ("approved", "shipped") and pid not in undone:
+                item["undo"] = {"kind": "upgrade", "id": pid}
+                undone.add(pid)
+            elif r["event"] == "skill_installed" and sid in installed and sid not in undone:
+                item["undo"] = {"kind": "skill", "id": sid}
+                undone.add(sid)
+            out.append(item)
         return out
 
     def status(self) -> dict[str, Any]:
@@ -951,10 +1041,13 @@ class Evolver:
             counts[p.status] = counts.get(p.status, 0) + 1
         return {
             "enabled": s["evolveEnabled"], "auto_ship": s["evolveAutoShip"], "repo": s["evolveRepo"],
+            "ask_before_install": s["evolveAskBeforeInstall"], "installed_skills": self.installed_skills(),
             "github": bool(self.deps.github and self.deps.github.token),
             "budget": self.budget(), "in_flight": self.in_flight(), "last_scan": self.last_scan() or None,
             "scan_minutes": s["evolveScanMinutes"], "slots": {"active": s["evolveSlotsActive"], "away": s["evolveSlotsAway"]},
-            "counts": counts, "waiting_for_you": counts.get("pr_open", 0) + counts.get("gated_pass", 0) + len(self.skill_candidates()),
+            "counts": counts,
+            "waiting_for_you": (counts.get("pr_open", 0) + counts.get("gated_pass", 0) + len(self.skill_candidates()))
+            if s["evolveAskBeforeInstall"] else 0,
             "rollback_requests": self.rollback_requests(), "awaiting_install": self.awaiting_install(),
             "missing": list(self.deps.missing),
             "code_builds": self.code_tier(), "sandbox_setting": s["evolveSandbox"],
@@ -995,9 +1088,13 @@ def _feed_text(r: dict[str, Any], title: str) -> str:
     if e == "pr_opened":
         return f"{t} is ready for your review" if not r.get("auto_ship") else f"{t} ready to ship"
     if e == "compare":
+        if r.get("ask") is False:
+            return f"{t} passed every check; O needs a GitHub token to ship it on its own, so open the branch to merge it"
         return f"{t} is ready; open the branch to review it"
     if e == "approved":
-        return f"Shipping {t}" + (" (all checks passed, low risk)" if r.get("by") == "auto" else "")
+        return f"Shipped: {t} — all checks passed" if r.get("by") == "auto" else f"Shipping {t}"
+    if e == "merge_failed":
+        return f"Could not ship {t}: {str(r.get('error') or 'merge failed')[:120]}; the pull request stays open"
     if e == "shipped":
         return f"Now using {t}"
     if e == "held":
@@ -1011,8 +1108,15 @@ def _feed_text(r: dict[str, Any], title: str) -> str:
         return f"Learned a skill from practice: {r.get('name') or r.get('skill_id')}"
     if e == "practiced":
         return f"Learned to {r.get('name') or r.get('family')}: {_cost_time(r.get('first'))} → {_cost_time(r.get('last'))}"
-    if e == "skill_approved":
-        return f"Installed a skill you approved: {r.get('skill_id')}"
+    if e == "skill_installed":
+        what = " ".join(x for x in (str(r.get("name") or r.get("skill_id")), str(r.get("version") or "")) if x)
+        lic = f" ({r['license']})" if r.get("license") else ""
+        tested = "tested in sandbox" if r.get("tested") else "untested: no sandbox to test it in"
+        return f"Installed {what}{lic} — {tested}" + (" (you approved it)" if r.get("by") == "user" else "")
+    if e == "skill_install_failed":
+        return f"Did not install {r.get('name') or r.get('skill_id')}: {str(r.get('reason') or '')[:160]}; nothing changed"
+    if e == "skill_uninstalled":
+        return f"Removed {r.get('name') or r.get('skill_id')}"
     return ""
 
 

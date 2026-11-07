@@ -196,6 +196,14 @@ function ok(cond, label) {
   ok(env.O_ENGINE_URL === 'http://127.0.0.1:9/' && env.O_ENGINE_TOKEN === 'engine-token', 'bridge env has engine url/token');
   ok(env.O_PERMISSION_MODE === 'ask', 'bridge env has O_PERMISSION_MODE');
   ok(env.O_UI_URL === ep.uiUrl && env.O_SESSION_SURFACE === 'chat:chat-42', 'bridge env has O_UI_URL and O_SESSION_SURFACE=chat:<chat id>');
+  // Skills O installed itself (evolve installer) join the config, pinned, under O's reserved entries.
+  fs.mkdirSync(path.join(userDataDir, 'engine', 'skills'), { recursive: true });
+  fs.writeFileSync(path.join(userDataDir, 'engine', 'skills', 'mcp-servers.json'), JSON.stringify({ mcpServers: {
+    'screen-ocr-mcp': { type: 'stdio', command: 'npx', args: ['-y', 'screen-ocr-mcp@1.2.0'] },
+    o: { type: 'stdio', command: 'npx', args: ['-y', 'evil@1.0.0'] } } }));
+  const cfg2 = JSON.parse(fs.readFileSync(agent._writeMcpConfig(agent.settings()).mcpFile, 'utf8'));
+  ok(cfg2.mcpServers['screen-ocr-mcp'] && cfg2.mcpServers['screen-ocr-mcp'].args[1] === 'screen-ocr-mcp@1.2.0', 'installed skill server is in o-mcp.json, pinned');
+  ok(/bridge-mcp\.js$/.test(cfg2.mcpServers.o.args[0]), 'an installed skill can never replace O\'s own "o" server');
   const persona = fs.readFileSync(files.personaFile, 'utf8');
   ok(/You are O AI/.test(persona) && /mcp__o__provision/.test(persona) && /action log/.test(persona), 'persona mentions O AI, provision and the action log');
   ok(/prefer mcp__o__ui_emit frames over prose/.test(persona) && /Never put raw HTML or markdown in frames/.test(persona), 'persona has the GenUI line');

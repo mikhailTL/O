@@ -177,6 +177,28 @@ function looksLikeLoginProblem(text) {
   return /\/login|not logged in|log ?in to|invalid api key|authentication_failed|oauth|unauthori[sz]ed|credentials/i.test(String(text || ''));
 }
 
+// MCP servers O installed itself (evolve skills: engine/o_engine/evolve/installer.py writes this file under the
+// engine's data dir). Re-checked here: only pinned npx/uvx launches with no env or headers get through, and the
+// reserved `o` / `playwright` names never do.
+const RESERVED_MCP = ['o', 'playwright'];
+const PINNED_ARG = /^(?:(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|[A-Za-z0-9][A-Za-z0-9._-]*==\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?)$/;
+function installedSkillServers(userDataDir) {
+  const out = {};
+  let j;
+  try { j = JSON.parse(fs.readFileSync(path.join(userDataDir || '', 'engine', 'skills', 'mcp-servers.json'), 'utf8')); } catch (_) { return out; }
+  const servers = j && typeof j.mcpServers === 'object' && !Array.isArray(j.mcpServers) ? j.mcpServers : {};
+  for (const [name, e] of Object.entries(servers)) {
+    if (RESERVED_MCP.includes(String(name).toLowerCase()) || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) continue;
+    if (!e || typeof e !== 'object' || e.env || e.headers || !Array.isArray(e.args)) continue;
+    const args = e.args.map(String);
+    const ok = (e.command === 'npx' && args.length === 2 && args[0] === '-y' && PINNED_ARG.test(args[1]) && args[1].includes('@'))
+      || (e.command === 'uvx' && args.length === 1 && PINNED_ARG.test(args[0]) && args[0].includes('=='));
+    if (!ok) continue;
+    out[name] = { type: 'stdio', command: e.command === 'npx' && IS_WIN ? 'npx.cmd' : e.command, args };
+  }
+  return out;
+}
+
 /** Locate a local @playwright/mcp CLI, so we don't depend on npx + network at runtime. */
 function findLocalPlaywrightMcp() {
   const candidates = [];
@@ -663,13 +685,16 @@ class OAgent extends EventEmitter {
     }
 
     // The user's own MCP servers (Settings → Phase 2 → MCP servers), same shape as Claude Code's
-    // mcpServers. They never override O's own `o` and `playwright` entries.
+    // mcpServers, on top of the pinned servers O installed itself (Evolution: approved, or installed with
+    // "Ask before installing" off); the person's entry wins a name clash. Neither ever overrides O's own `o`
+    // and `playwright` entries.
     let userServers = {};
     try {
       const j = JSON.parse((this.getSettings() || {}).mcpServers || '{}');
       if (j && typeof j === 'object' && !Array.isArray(j)) userServers = j;
     } catch (_) { userServers = {}; }
-    delete userServers.o; delete userServers.playwright;
+    userServers = { ...installedSkillServers(this.userDataDir), ...userServers };
+    for (const k of RESERVED_MCP) delete userServers[k];
     const cfg = {
       mcpServers: {
         ...userServers,
@@ -1005,4 +1030,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
