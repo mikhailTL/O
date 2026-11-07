@@ -16,7 +16,7 @@ No claim of completeness is made about the code.
 
 | Component | File | One line |
 |---|---|---|
-| Pet window | `main/main.js`, `renderer/index.html`, `renderer/sprite.js`, `renderer/behavior.js` | Transparent always-on-top sprite; moods and status lines; never takes focus. |
+| Island window | `main/main.js`, `renderer/index.html`, `renderer/app.js`, `renderer/island.css`, `renderer/liquid.js`, `renderer/liquid.css` | Transparent always-on-top status capsule at the top centre that expands into the command bar (with approval, task and suggestion bubbles); takes focus only while the bar is open. |
 | Panel | `main/main.js`, `renderer/panel.html`, `renderer/panel.js`, `renderer/panel.css` | Chat, Settings sheet, and the Action log sheet (header button with unread badge). |
 | Notify cards | `main/main.js`, `renderer/notify.html`, `renderer/notify.js` | Non-focus-stealing cards; the only place an `ask`-mode approval is shown. |
 | Tray | `main/main.js` | Tray icon and menu, including "Open action log". |
@@ -273,7 +273,7 @@ Two decisions (builder's, stated):
 entry; skipping permissions at the CLI would remove those entries. `--dangerously-skip-permissions` is
 ruled out for the same reason.
 
-**(b) Persona stripped, safety kept.** The spec's "prompt interception" strips O's pet persona, prose
+**(b) Persona stripped, safety kept.** The spec's "prompt interception" strips O's persona, prose
 styling and reply-length rules for API callers and injects a code-only template (answer with code or
 structured JSON only; no preamble). The money, untrusted-content and no-credentials rules are kept
 verbatim from `agent.js` `PERSONA_TEMPLATE` and are never stripped.

@@ -30,6 +30,9 @@
   const MAX_BUBBLES = 6;
   const slotTop = (i) => TOP + BAR_H + FIRST_GAP + i * (BUB_H + BUB_GAP);
   const ISLAND_MIN = 220, ISLAND_MAX = 420, ISLAND_PAD = 32;
+  const ISLAND_H = 36; // --island-h
+  const COMPACT_W = 448; // main.js ISLAND_COMPACT.width: the window the capsule shape is relative to
+  const SHAPE_PAD = 2; // keeps the capsule's antialiased edge inside the Linux window shape
 
   // ------------------------------------------------------------ state fed by agent events
   let tasks = [];
@@ -143,6 +146,15 @@
   function setIslandWidth(w) {
     stage.style.setProperty('--w', String(w));
     stage.style.setProperty('--bsx', String(Math.max(0.2, (w - 6) / 640)));
+    // Linux: shape the compact window to the capsule so the transparent strip around it passes clicks on.
+    if (bridge.platform === 'linux' && typeof bridge.setIslandShape === 'function') {
+      bridge.setIslandShape({
+        x: Math.round(COMPACT_W / 2 - w / 2) - SHAPE_PAD,
+        y: TOP - SHAPE_PAD,
+        width: Math.round(w) + 2 * SHAPE_PAD,
+        height: ISLAND_H + 2 * SHAPE_PAD,
+      });
+    }
   }
 
   setInterval(() => { if (running().length || (flash && flash.until <= Date.now())) renderIsland(); }, 1000);
@@ -309,16 +321,35 @@
         b.type = 'button';
         b.className = 'act' + (a.primary ? ' primary' : '');
         b.textContent = a.label;
-        b.addEventListener('click', (e) => { e.stopPropagation(); a.run(); });
+        // Keep the caret in the bar: the button never takes focus, and focus is put back after the action,
+        // so a following Enter goes to #input (it cannot re-press this button).
+        b.addEventListener('mousedown', (e) => e.preventDefault());
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (b.disabled || el.inert) return;
+          a.run();
+          refocus();
+        });
         acts.appendChild(b);
       }
       el.appendChild(acts);
     }
-    el.addEventListener('click', () => activate(item));
+    el.addEventListener('click', () => { if (el.inert) return; activate(item); refocus(); });
     el.addEventListener('mouseenter', () => setSel(-1));
     const blob = document.createElement('div');
     blob.className = 'ol-blob g-bub';
     return { item, el, blob, slot: -1 };
+  }
+
+  /** A retracting bubble is done: its buttons go disabled and the bubble inert, so nothing fires twice. */
+  function retire(rec) {
+    rec.el.inert = true;
+    rec.el.setAttribute('aria-hidden', 'true');
+    for (const b of rec.el.querySelectorAll('button')) b.disabled = true;
+  }
+
+  function refocus() {
+    if (isOpen && document.activeElement !== input) input.focus();
   }
 
   function place(rec, slot) {
@@ -337,6 +368,7 @@
     for (const [key, rec] of live) {
       if (keys.has(key)) continue;
       live.delete(key);
+      retire(rec);
       const dy = rec.slot === 0 ? -(slotTop(0) - (TOP + 4)) : -(BUB_H + BUB_GAP);
       L.retract([rec.blob, rec.el], { dy, duration: 220, delay: gone++ * 30, fade: [rec.el, rec.blob] }).then(() => { rec.el.remove(); rec.blob.remove(); });
     }
@@ -356,7 +388,9 @@
           } else {
             const fresh = buildBubble(item);
             fresh.el.style.top = rec.el.style.top;
+            const hadFocus = rec.el.contains(document.activeElement);
             rec.el.replaceWith(fresh.el);
+            if (hadFocus) refocus();
             rec.el = fresh.el;
           }
         }
@@ -442,7 +476,10 @@
     } catch (err) { setFlash('Could not set goal', err && err.message, 'danger', 5000); }
   }
 
+  const answered = new Set(); // permission ids already answered from this window
   function answer(id, allow) {
+    if (answered.has(id)) return;
+    answered.add(id);
     bridge.respondPermission(id, allow);
     perms.delete(id);
     changed();
@@ -526,6 +563,7 @@
     if (typeof bridge.islandClose === 'function') bridge.islandClose();
     const recs = [...live.values()].sort((a, b) => b.slot - a.slot);
     live.clear();
+    recs.forEach(retire);
     recs.forEach((rec, i) => {
       L.retract([rec.blob, rec.el], { dy: -(slotTop(rec.slot) - (TOP + 4)), duration: 220, delay: i * 25, fade: [rec.el, rec.blob] })
         .then(() => { rec.el.remove(); rec.blob.remove(); });

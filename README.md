@@ -83,9 +83,11 @@ First run: open Settings → Engine → **Check requirements** and fix anything 
 
 | Do this | What happens |
 |---|---|
-| Hover O and click **✦** (or **Ctrl/Cmd+Shift+O**, or double-click O) | Opens the panel |
-| **Right-click O** | Menu: Open O, Stop current task, Snooze wandering, Hide O, Turn off O |
-| Type a task, press **Enter** | O thinks, browses, works; progress in the panel and speech bubble |
+| Click the Island (the status capsule at the top centre), or **Ctrl/Cmd+Shift+O** | Opens the command bar; approvals, running tasks and suggestions appear as bubbles under it |
+| **Right-click the Island** | Menu: Open panel, Open action log, Stop all tasks, Hide the Island, Turn off O |
+| Type a task in the command bar, press **Enter** | The bar collapses back into the Island, which shows what O is doing; details in the panel |
+| **Ctrl/Cmd+Enter** in the command bar (or the button beside it) | Starts the task and opens it in the panel; with an empty bar, just opens the panel |
+| **Esc** or a click elsewhere | Closes the command bar |
 | Close the panel (✕ / Esc) | O keeps working in the background |
 | Send another task while busy | Runs alongside the others, up to `maxParallelTasks` (default 3); more wait in a queue |
 | **■ Stop** (or **Ctrl+.**, or tray → Stop current task) | Stops immediately: Claude Code, browser tools and engine jobs are shut down, queue cleared |
@@ -93,7 +95,6 @@ First run: open Settings → Engine → **Check requirements** and fix anything 
 | **Chats** (▯) | Chat history; each chat is its own Claude Code session. Rename ✎, delete 🗑, **Delete all chats** at the bottom |
 | ✎ New chat | Fresh chat; the old one stays in Chats |
 | Ask about your screen | O screenshots the display under your cursor and looks at it (`screenAccess`) |
-| Drag / fling O | Moves, falls, bounces |
 
 When a provision request matches a saved script, the status line reads "Déjà vu — replaying a saved script, no thinking needed".
 
@@ -174,7 +175,7 @@ Security and safety in O come from recording, not from asking. Every entry has a
 
 - **Files:** app side `<userData>/o-actions.jsonl` plus a text twin `o-actions.log`; engine side `<dataDir>/engine-actions.jsonl` plus `.log`. The engine also posts each entry to the app, which re-chains it into the app file.
 - **Hash chain:** each entry carries `prev` (sha256 of the previous entry) and `hash` (sha256 of itself). Append-only. **Verify chain** in the log sheet recomputes every link and reports ✓ intact or ✗ broken at #n.
-- **Reading it:** click the list icon in the panel header (it carries an unread badge) or use **tray → Open action log**. The pet says how many actions happened since you last looked; the sheet shows the same count as its subtitle, with filter chips (All · Tools · Engine · Policy · Errors) and **Open log file**.
+- **Reading it:** click the list icon in the panel header (it carries an unread badge) or use **tray → Open action log**. The Island's status line says how many actions happened since you last looked; the sheet shows the same count as its subtitle, with filter chips (All · Tools · Engine · Policy · Errors) and **Open log file**.
 - **Away notification:** "O did N things while you were away", only when the panel is closed and something was logged since you last read it (debounced 30 s). Turn off with `logUnreadBadge`.
 
 #### Permission modes (Settings → Permissions)
@@ -415,7 +416,7 @@ Needs Playwright with Chromium (`npx playwright install chromium`) and `ffmpeg`/
 
 ```
 O/
-  main/main.js             Electron main: pet, panel, tray, task queue, action log wiring, requirements check, GenUI store + relay (POST /ui -> {type:'genui', frame})
+  main/main.js             Electron main: Island window (status capsule + command bar), panel, tray, task queue, action log wiring, requirements check, GenUI store + relay (POST /ui -> {type:'genui', frame})
   main/preload.js          window.o bridge (logTail, logMarkRead, logVerifyChain, engineStatus, checkRequirements, onGenui, genuiFrames, genuiSurfaces, genuiAction, logNote)
   main/settings.js         JSON settings
   main/agent.js            Claude Code CLI wrapper; log/ask/auto decisions; records tool/result entries; POST /ui envelope check for GenUI frames
@@ -431,7 +432,7 @@ O/
   main/tools/native-tabs.js native tab control without O Link (osascript/JXA on macOS, UI Automation titles on Windows)
   main/tools/selftest-proxy.js  proxy selftest against main/tools/fake-claude.js
   extension/               O Link browser extension + payment guard
-  renderer/                pet window, panel, log sheet, Runs sheet, sprite
+  renderer/                Island + command bar (index.html, app.js, island.css, liquid.js), panel, log sheet, Runs sheet
   renderer/genui.js        GenUI: frame validator, oui decoder, A2UI -> DOM on panel.css tokens, sandboxed Preview iframe + postMessage bridge
   renderer/preview.html    Preview iframe host: own CSP (hash-pinned bootstrap, 'strict-dynamic'), takes one o-ui-load message, runs the js as a blob: script
   renderer/genui.css       GenUI component styles (status pills shared with the action log)

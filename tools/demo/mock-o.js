@@ -7,15 +7,12 @@
   var local = function (v) { return function () { return Promise.resolve(typeof v === 'function' ? v.apply(null, arguments) : v); }; };
   var remote = function (method) { return function () { return hub.rpc(method, Array.prototype.slice.call(arguments)); }; };
   window.o = {
-    // pet window
-    moveBy: function (dx, dy) { hub.moveBy(dx, dy); },
+    // Island window (status capsule + command bar)
     getBounds: local(function () { return hub.getBounds(); }),
     getWorkArea: local(function () { return hub.getWorkArea(); }),
     getCursor: local(function () { return hub.getCursor(); }),
     togglePanel: function () { hub.togglePanel(); },
     setIgnoreMouse: function () {},
-    fling: function () {},
-    grab: function () {},
     // both windows
     onAgentEvent: function (cb) { return hub.onAgentEvent(cb); },
     sendPrompt: remote('sendPrompt'),
@@ -67,7 +64,7 @@
     proxyRegenerateToken: local({ ok: true }),
     platform: 'win32',
   };
-  // Mouse moves inside a frame are reported to the stage in stage coordinates (the pet's eyes follow the cursor).
+  // Mouse moves inside a frame are reported to the stage in stage coordinates (the hub's cursorAt; the current scene stage ignores them).
   document.addEventListener('mousemove', function (e) {
     var r = window.frameElement.getBoundingClientRect(); // viewport px; e.clientX is frame px
     hub.cursorAt(e.clientX + r.left / hub.K, e.clientY + r.top / hub.K);

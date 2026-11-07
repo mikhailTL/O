@@ -1,5 +1,5 @@
 'use strict';
-// Turns Claude Code tool calls into a pet mood + a short, friendly line for speech bubbles.
+// Turns Claude Code tool calls into a status mood + a short, friendly line for the Island's status line.
 
 const path = require('path');
 
