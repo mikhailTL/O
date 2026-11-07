@@ -1,0 +1,103 @@
+# Self-evolution gates in CI (plan L). Every PR from an evolve/* branch (opened by O's evolve pipeline) runs
+# the same gates it passed locally, on a clean Ubuntu runner: engine pytest, all node selftests, the offline
+# OSWorld eval compared with the base branch, a secret scan and the protected-paths rule on the diff.
+# Read-only token, no repository secrets.
+name: evolve-gates
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evolve-gates-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    if: startsWith(github.head_ref, 'evolve/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./engine[dev]"
+
+      - name: Install app dependencies
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Protected paths and secret scan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        working-directory: engine
+        run: |
+          python - <<'PY'
+          import os, sys
+          from o_engine.evolve import gates, protected
+          diff = gates.collect_diff("..", os.environ["BASE_SHA"])
+          bad = protected.violations(diff.files, diff.text)
+          sec = gates.check_secrets(diff)
+          print(f"{len(diff.files)} files, +{diff.added}/-{diff.removed}")
+          for v in bad:
+              print("protected:", v)
+          print("secret_scan:", "pass" if sec.passed else sec.detail)
+          sys.exit(1 if bad or not sec.passed else 0)
+          PY
+
+      - name: Engine tests
+        working-directory: engine
+        run: python -m pytest -q
+
+      - name: Node selftests
+        run: |
+          fail=0
+          for t in main/tools/selftest*.js; do
+            echo "::group::$t"
+            node "$t" || { echo "FAILED: $t"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Offline eval (no regression vs base)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          cd engine
+          python - <<'PY'
+          import os, sys
+          from o_engine.evolve import baseline as bl
+          env = dict(os.environ)
+          head = bl.run_offline_eval("..", env=env)
+          base = bl.run_offline_eval(os.path.join(os.environ["RUNNER_TEMP"], "base"), env=env)
+          if head["returncode"] != 0:
+              print(head["tail"]); sys.exit(1)
+          worse = []
+          for k, b in base["metrics"].items():
+              h = head["metrics"].get(k)
+              if h is None:
+                  continue
+              for m in ("hit_rate", "agreement"):
+                  if h.get(m) is not None and b.get(m) is not None and h[m] < b[m] - 1e-9:
+                      worse.append(f"{k} {m}: {b[m]} -> {h[m]}")
+              print(f"{k}: hit_rate {b.get('hit_rate')} -> {h.get('hit_rate')}, agreement {b.get('agreement')} -> {h.get('agreement')}")
+          for w in worse:
+              print("REGRESSION", w)
+          sys.exit(1 if worse else 0)
+          PY

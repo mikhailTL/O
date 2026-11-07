@@ -15,7 +15,12 @@ isolated display, then:
    new version is appended with ``parent`` lineage; nothing is ever rewritten;
 4. on a failure, appends the lesson to the app's interface notes (the planner reads them on the next
    fresh plan) and ``lessons.jsonl``; when a replayed version that had passed before now fails, the last
-   passing script is re-appended as the newest version (a revert is a new version, never a delete).
+   passing script is re-appended as the newest version (a revert is a new version, never a delete). A
+   stored version the ground-truth check proved wrong (graph ok, file wrong) or whose replay failed goes
+   into ``quarantine.jsonl``; the practice graph's procedure view (``QuarantinedProcedures``) skips it, so
+   the next attempt replays the newest good version or plans fresh. The quarantined file stays on disk.
+   Lessons come from deterministic rules over the failure (``Practicer.rules``) plus what the isolated
+   display shows right after it (``_diagnose``: does the target exist now, editable/dialog landmarks).
 
 Guards, all checked before every item and enforced, not advisory:
 
@@ -312,15 +317,66 @@ class IsolatedPracticeEnvironment(PracticeEnvironment):
         self.xdisplay.stop()
 
 
-def practice_deps(base: Any, env: PracticeEnvironment, *, notes: Any = None) -> Any:
+class Quarantine:
+    """``quarantine.jsonl``: procedure versions practice proved wrong (the graph said ok, the ground-truth
+    check said no; or a replay failed). Append-only; a quarantined version stays on disk untouched."""
+
+    def __init__(self, path: str | os.PathLike[str], now: Callable[[], float] = time.time) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.now = now
+
+    def add(self, procedure_id: str, reason: str) -> None:
+        if not procedure_id or procedure_id in self.ids():
+            return
+        with self.path.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps({"ts": float(self.now()), "procedure_id": procedure_id, "reason": reason[:500]}, sort_keys=True) + "\n")
+
+    def ids(self) -> set[str]:
+        if not self.path.is_file():
+            return set()
+        out = set()
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.add(str(json.loads(line)["procedure_id"]))
+            except (ValueError, KeyError):
+                continue
+        return out
+
+
+class QuarantinedProcedures:
+    """A ``ProcedureStore`` view for the practice graph: ``latest`` skips quarantined versions (the newest
+    good one is replayed, or none -> a fresh plan). Every write goes to the real store unchanged."""
+
+    def __init__(self, inner: Any, quarantine: Quarantine) -> None:
+        self.inner = inner
+        self.quarantine = quarantine
+
+    def latest(self, app: str, goal: str) -> Any:
+        bad = self.quarantine.ids()
+        for proc in reversed(self.inner.versions(app, goal)):
+            if proc.id not in bad:
+                return proc
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
+def practice_deps(base: Any, env: PracticeEnvironment, *, notes: Any = None, quarantine: Quarantine | None = None) -> Any:
     """``base`` (the engine's ``CUDeps``) re-pointed at the practice environment: one slot, its backend, its
     display; the shared planner / judge / grounder / procedure store are kept so practice learning is the
-    same memory real jobs use. The interface builder and best-of-N are off (spend)."""
+    same memory real jobs use (behind the practice quarantine when one is given). The interface builder and
+    best-of-N are off (spend)."""
     from ..cu.judge import StateJudge
 
     home = env.desktop_home
+    procs = base.procedures
+    if quarantine is not None and procs is not None:
+        procs = QuarantinedProcedures(procs, quarantine)
     return dataclasses.replace(
         base,
+        procedures=procs,
         backend_factory=lambda slot: env.backend,
         displays=[env.display],
         candidates=1,
@@ -378,6 +434,7 @@ class Practicer:
         self.ledger = SpendLedger(self.dir / "ledger.jsonl", now=now)
         self.fitness_path = self.dir / "fitness.jsonl"
         self.lessons_path = self.dir / "lessons.jsonl"
+        self.quarantine = Quarantine(self.dir / "quarantine.jsonl", now=now)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ guards
@@ -429,7 +486,9 @@ class Practicer:
             return _run_cu_job(self.graph, item.goal, item.app, job_id, 1, self.max_heals, None, None)
 
     def _procedures(self) -> Any:
-        return getattr(self.deps, "procedures", None) if self.deps is not None else None
+        """The real procedure store (unwrapped from the practice quarantine view)."""
+        store = getattr(self.deps, "procedures", None) if self.deps is not None else None
+        return getattr(store, "inner", store)
 
     def attempt(self, item: PracticeItem) -> Attempt:
         ok, why = self.can_practice()
@@ -464,7 +523,10 @@ class Practicer:
         if passed:
             distilled = self._distill(item, pid)
         else:
-            self._lesson(item, n, error or "failed", state)
+            self._lesson(item, n, error or "failed", state, check_ok)
+            if pid and (graph_ok or state.get("cached")):
+                # the stored version is proven wrong: never replay it in practice again (it stays on disk)
+                self.quarantine.add(pid, f"{item.family} attempt {n}: {error or 'failed'}")
             self._revert_if_regressed(item, pid)
         outcome = Attempt(item_id=item.id, family=item.family, attempt=n, ts=float(self.now()), ok=passed,
                           graph_ok=graph_ok, check_ok=check_ok, steps=steps, model_calls=_paid(snap),
@@ -518,6 +580,8 @@ class Practicer:
 
         try:
             raw = script_to_dict(store.load_script(good))
+            if script_to_dict(store.load_script(latest)) == raw:
+                return None  # the passing script itself failed this time: quarantine only, no duplicate version
         except Exception:  # noqa: BLE001
             return None
         stored = store.store(item.app, item.goal, raw, parent=latest.id, reason=f"practice revert: {latest.id} failed; restoring {good_id}")
@@ -566,7 +630,7 @@ class Practicer:
         return "; ".join(out)
 
     @staticmethod
-    def rules(item: PracticeItem, error: str, steps: list[dict]) -> list[str]:
+    def rules(item: PracticeItem, error: str, steps: list[dict], check_ok: bool = False) -> list[str]:
         """Deterministic reflection over one failed attempt: failure classes seen in real practice runs,
         each turned into an instruction for the next plan."""
         out: list[str] = []
@@ -582,17 +646,30 @@ class Practicer:
         if "ground-truth check failed" in error:
             out.append("the app looked done but the file on disk was wrong: check the saved file's exact contents "
                        "(state_assert file_contains) before reporting done")
+        if item.check is not None and item.check.kind == "file_lines" and item.check.expect:
+            try:
+                got = [ln.rstrip() for ln in Path(item.check.path).read_text(encoding="utf-8").strip("\n").splitlines()]
+            except OSError:
+                got = []
+            want = list(item.check.expect)
+            if len(got) > len(want) and got[-len(want):] == want:
+                out.append("the new text was added to the old text instead of replacing it: select all (ctrl+a) in the "
+                           "text area before typing the replacement")
+        if check_ok and "ground-truth" not in error:
+            out.append("the end state on disk was already right; what failed was the plan's own check or the step "
+                       "budget: verify a saved file with state_assert file_contains on the expected lines (no shell "
+                       "probes such as grep -c, whose exit code is 1 when the count is 0) and stop once it holds")
         if "model-call cap" in error:
             out.append("the attempt ran out of model calls: plan fewer, larger turns")
         return out
 
-    def _lesson(self, item: PracticeItem, n: int, error: str, state: dict) -> None:
+    def _lesson(self, item: PracticeItem, n: int, error: str, state: dict, check_ok: bool = False) -> None:
         steps = list(state.get("steps") or [])
         failed = [s for s in steps if s.get("exit_code") not in (0, None)]
         cmd = str(failed[-1].get("command", ""))[:160] if failed else ""
         step_txt = f" at '{cmd}'" if failed else ""
         seen = self._diagnose(cmd)
-        rules = self.rules(item, error, steps)
+        rules = self.rules(item, error, steps, check_ok)
         text = (f"practice pitfall ({item.family}, attempt {n}): failed{step_txt}: {error[:300]}"
                 + (f". Seen: {seen}" if seen else "") + ("".join(f"\nLesson: {r}" for r in rules)))
         row = {"ts": float(self.now()), "item_id": item.id, "family": item.family, "app": item.app, "attempt": n, "lesson": text}

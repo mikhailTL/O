@@ -180,8 +180,8 @@ button.icon {
   button.icon:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
   #btn-quit:hover { color: var(--bad); background: var(--bad-soft); }
 }
-#btn-runs, #btn-goals { position: relative; }
-#btn-runs .badge, #btn-goals .badge {
+#btn-runs, #btn-goals, #btn-evolve { position: relative; }
+#btn-runs .badge, #btn-goals .badge, #btn-evolve .badge {
   position: absolute; top: -3px; right: -4px; min-width: 14px; height: 14px; padding: 0 4px;
   border-radius: 999px; background: var(--accent); color: var(--on-accent); box-shadow: 0 0 0 2px var(--bg-solid), var(--glow);
   font: 600 9px/14px var(--sans); font-variant-numeric: tabular-nums; text-align: center; pointer-events: none;
@@ -198,8 +198,8 @@ button.icon {
   gap: 14px;
   scroll-behavior: smooth;
 }
-#log::-webkit-scrollbar, #actionlog::-webkit-scrollbar, #runs::-webkit-scrollbar, #settings::-webkit-scrollbar, #goals::-webkit-scrollbar { width: 8px; }
-#log::-webkit-scrollbar-thumb, #actionlog::-webkit-scrollbar-thumb, #runs::-webkit-scrollbar-thumb, #settings::-webkit-scrollbar-thumb, #goals::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+#log::-webkit-scrollbar, #actionlog::-webkit-scrollbar, #runs::-webkit-scrollbar, #settings::-webkit-scrollbar, #goals::-webkit-scrollbar, #evolve::-webkit-scrollbar { width: 8px; }
+#log::-webkit-scrollbar-thumb, #actionlog::-webkit-scrollbar-thumb, #runs::-webkit-scrollbar-thumb, #settings::-webkit-scrollbar-thumb, #goals::-webkit-scrollbar-thumb, #evolve::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 
 /* empty state, before the first message */
 #hero {
@@ -353,14 +353,14 @@ body.chatting #hero { display: none; }
 /* Settings opens as a full sheet over the chat. */
 /* Sheets are a deeper layer of the same black: the chat underneath is hidden while one is open
    (a nested backdrop-filter does not blur it, and it is not meant to be seen). */
-#settings, #actionlog, #runs, #goals {
+#settings, #actionlog, #runs, #goals, #evolve {
   position: absolute; inset: 56px 0 0 0; z-index: 5;
   background: var(--sheet-bg); overflow-y: auto; overscroll-behavior: contain;
   border-top: 1px solid var(--line);
   border-radius: 0 0 var(--win-radius) var(--win-radius);
   animation: slide .18s ease-out;
 }
-body:has(#settings:not([hidden]), #actionlog:not([hidden]), #runs:not([hidden]), #goals:not([hidden])) :is(#log, #composer, #setup, #taskbar) { visibility: hidden; }
+body:has(#settings:not([hidden]), #actionlog:not([hidden]), #runs:not([hidden]), #goals:not([hidden]), #evolve:not([hidden])) :is(#log, #composer, #setup, #taskbar) { visibility: hidden; }
 #settings { padding: 4px 18px 22px; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: var(--sticky-bg); padding: 10px 0 6px; z-index: 1; }
 .sheet-head h2 { margin: 0; font: 400 21px/1.2 var(--serif); }
@@ -794,3 +794,49 @@ body:is(.has-strip, .has-goals) .hero-pet { width: 56px; height: 56px; margin-bo
 @media (prefers-reduced-motion: reduce) { .confirm-card { animation: none; } }
 
 .task-row[data-status="paused"] .tdot { background: transparent; box-shadow: inset 3px 0 0 0 var(--muted), inset -3px 0 0 0 var(--muted); border-radius: 1px; }
+
+/* ---------------------------------------------------------------- evolution */
+/* What O learned and added lately, what waits for one tap, and every upgrade with its measured result.
+   Luminance only: passed is bright, failed is dim; nothing here is an alarm. */
+#evolve { padding: 0 18px 22px; }
+.ev-feed { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 1px solid var(--line-strong); display: flex; flex-direction: column; gap: 7px; }
+.ev-feed li { position: relative; display: grid; grid-template-columns: 62px 1fr; gap: 8px; font-size: 12.5px; color: var(--text-2); line-height: 1.4; }
+.ev-feed li::before { content: ""; position: absolute; left: -17.5px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--bg-solid); border: 1px solid var(--line-strong); }
+.ev-feed li[data-tone="good"]::before { background: var(--accent); border-color: var(--accent); }
+.ev-feed li[data-tone="undo"] { color: var(--muted); }
+.ev-feed time { font: 11px/18px var(--mono); color: var(--muted); white-space: nowrap; }
+.ev-feed li > span, .ev-feed li > a { min-width: 0; overflow-wrap: anywhere; }
+.ev-feed .ev-empty { display: block; }
+.ev-feed a { color: var(--text-2); text-underline-offset: 2px; }
+.ev-empty { color: var(--muted); font-size: 12.5px; margin: 4px 2px; list-style: none; }
+.ev-feed .ev-empty::before { display: none; }
+.ev-row { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.ev-open { display: flex; align-items: center; gap: 12px; text-align: left; border: 0; background: transparent; border-radius: 13px; padding: 8px 12px; color: var(--text); width: 100%; }
+.ev-open:active { transform: none; }
+.ev-pill { flex: 0 0 auto; font: 500 11px/18px var(--sans); color: var(--pill-text); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.ev-row[data-status="shipped"] .ev-pill, .ev-row[data-status="pr_open"] .ev-pill, .ev-row[data-status="gated_pass"] .ev-pill { color: var(--text); border-color: var(--accent-line); }
+.ev-row[data-status="gated_fail"] .ev-pill, .ev-row[data-status="rejected"] .ev-pill, .ev-row[data-status="rolled_back"] .ev-pill { color: var(--muted); }
+.ev-row[data-status="building"] .ev-pill { animation: ringbreathe 2.4s ease-in-out infinite; }
+.ev-gain { flex: 0 0 auto; font: 12px/1.3 var(--sans); font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+.ev-body { padding: 0 12px 10px; font-size: 12.5px; color: var(--text-2); }
+.ev-why { margin: 0 0 8px; overflow-wrap: anywhere; }
+.ev-sigs { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.ev-sigs a { color: var(--text-2); text-underline-offset: 2px; overflow-wrap: anywhere; }
+.ev-sigs span { color: var(--muted); font: 11px/1.4 var(--mono); margin-left: 6px; }
+.ev-checks { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 7px 10px; border-radius: 12px; background: var(--surface-inset); border: 1px solid var(--line); }
+.ev-check { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center; font-size: 12px; }
+.ev-check .mk { font: 600 11px/1 var(--sans); color: var(--text); }
+.ev-check[data-ok="false"] { color: var(--muted); }
+.ev-check[data-ok="false"] .mk { color: var(--muted); }
+.ev-check .ba { font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+.ev-meta { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.ev-meta a { color: var(--text-2); text-underline-offset: 2px; }
+.ev-acts { display: flex; justify-content: flex-end; gap: 6px; }
+.ev-acts button { border-radius: 999px; padding: 5px 13px; font-size: 12.5px; }
+.ev-foot { margin: 14px 2px 0; font-size: 12px; color: var(--muted); }
+.cp-card .ev-checks { margin-top: 2px; }
+@media (hover: hover) and (pointer: fine) {
+  .ev-open:hover { background: var(--surface-2); }
+}
+@media (prefers-reduced-motion: reduce) { .ev-row[data-status="building"] .ev-pill { animation: none; } }
+.ev-check .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

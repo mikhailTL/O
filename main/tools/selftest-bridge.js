@@ -154,7 +154,7 @@ async function main() {
 
     const list = await rpc('tools/list', {});
     const names = (list.result.tools || []).map((t) => t.name).sort();
-    const want = ['approve', 'cache_lookup', 'cancel_schedule', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'goal_checkpoint', 'goal_create', 'goal_propose', 'goal_record_cycle', 'goal_status', 'list_schedules', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'recall_preferences', 'remember_preference', 'schedule_task', 'script_run', 'see_screen', 'swarm_run', 'ui_emit', 'verify_port', 'web_run', 'workspace_context'];
+    const want = ['approve', 'cache_lookup', 'cancel_schedule', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'evolve_proposals', 'evolve_status', 'goal_checkpoint', 'goal_create', 'goal_propose', 'goal_record_cycle', 'goal_status', 'list_schedules', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'recall_preferences', 'remember_preference', 'schedule_task', 'script_run', 'see_screen', 'swarm_run', 'ui_emit', 'verify_port', 'web_run', 'workspace_context'];
     check(JSON.stringify(names) === JSON.stringify(want), 'tools/list → ' + names.join(','));
     const prov = list.result.tools.find((t) => t.name === 'provision');
     const stepSchema = prov.inputSchema.properties.steps.items;

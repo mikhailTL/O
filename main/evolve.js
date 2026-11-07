@@ -13,11 +13,15 @@
 
 const { EvolveClock } = require('./scheduler');
 
+const CHECK_EVERY_MS = 10 * 60 * 1000;
+
 function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => false, engineCall, getUpdater = () => null,
   broadcast = () => {}, log = () => {}, clock = null } = {}) {
   const c = clock || new EvolveClock({ getSettings, isAway, call: engineCall });
   const rolling = new Set();
   let lastStatus = null;
+  let lastCheck = 0;
+  const now = () => (c.now ? c.now() : Date.now());
 
   c.on('status', (st) => { onStatus(st).catch(() => {}); });
   c.on('error', () => {}); // engine not running yet: the next poll retries
@@ -28,8 +32,15 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
     broadcast({ type: 'evolve', status: st });
     const up = getUpdater();
     if (!up) return;
-    if (typeof up.trackEvolve === 'function') up.trackEvolve(st.awaiting_install || []);
+    const awaiting = st.awaiting_install || [];
+    if (typeof up.trackEvolve === 'function') up.trackEvolve(awaiting);
     for (const r of st.rollback_requests || []) await applyRollback(r);
+    // An approved upgrade is merged: look for it now instead of waiting for the 6-hourly update check.
+    if (awaiting.length && typeof up.check === 'function') {
+      const cur = up.state || {};
+      if (cur.state === 'available' && Array.isArray(cur.evolve) && cur.evolve.length) onUpdate(cur);
+      else if (now() - lastCheck >= CHECK_EVERY_MS) { lastCheck = now(); up.check({ quiet: true }).catch(() => {}); }
+    }
   }
 
   async function applyRollback(r) {
@@ -71,7 +82,7 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
         await engineCall('POST', `/evolve/proposals/${encodeURIComponent(r.id)}/shipped`, { release: r.release || '', previous: r.previous || '' });
         done.push(r.id);
       } catch (err) {
-        if (/409/.test(String(err && err.message))) done.push(r.id); // unknown to this engine: drop it
+        if (err && (err.status === 409 || /409/.test(String(err.message)))) done.push(r.id); // unknown to this engine: drop it
       }
     }
     if (done.length) up.ackShipReports(done);
@@ -85,19 +96,26 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
 
   /** Everything the Evolution view shows. */
   async function view(hours = 48) {
-    const [f, p] = await Promise.all([
+    let f, p;
+    try {
+      [f, p] = await Promise.all([
       engineCall('GET', `/evolve/feed?hours=${Math.max(1, Math.min(720, Number(hours) || 48))}`, null, 10000),
       engineCall('GET', '/evolve/proposals', null, 10000),
-    ]);
+      ]);
+    } catch (err) { return failed(err); }
     return { ok: true, feed: f.feed || [], skills: f.skills || [], status: f.status || lastStatus || {}, proposals: p.proposals || [] };
   }
 
   const pid = (id) => encodeURIComponent(String(id || '').slice(0, 128));
-  async function decide(id, op, body) {
-    const r = await engineCall('POST', `/evolve/proposals/${pid(id)}/${op}`, body || {}, 30000);
-    c.refresh().catch(() => {});
-    return { ok: true, ...r };
+  const failed = (err) => ({ ok: false, error: (err && err.body && err.body.detail) || (err && err.message) || 'That did not work' });
+  async function post(p, body, timeoutMs) {
+    try {
+      const r = await engineCall('POST', p, body || {}, timeoutMs);
+      c.refresh().catch(() => {});
+      return { ...r, ok: true };
+    } catch (err) { return failed(err); }
   }
+  const decide = (id, op, body) => post(`/evolve/proposals/${pid(id)}/${op}`, body, 30000);
 
   return {
     clock: c,
@@ -107,11 +125,7 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
     approve: (id) => decide(id, 'approve'),
     reject: (id, reason) => decide(id, 'reject', { reason: String(reason || '').slice(0, 1000) }),
     rollback: (id, reason) => decide(id, 'rollback', { reason: String(reason || 'rolled back by you').slice(0, 1000) }),
-    skill: async (id, approve) => {
-      const r = await engineCall('POST', `/evolve/skills/${pid(id)}/${approve ? 'approve' : 'reject'}`, {}, 120000);
-      c.refresh().catch(() => {});
-      return { ok: true, ...r };
-    },
+    skill: (id, approve) => post(`/evolve/skills/${pid(id)}/${approve ? 'approve' : 'reject'}`, {}, 120000),
     scanNow: () => c.tick({ force: true }),
     status: () => lastStatus,
   };

@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('o', {
   learnProfile: () => ipcRenderer.invoke('learn:profile'),
   learnForget: (id) => ipcRenderer.invoke('learn:forget', String(id || '')),
   acceptSuggestion: (sg) => ipcRenderer.invoke('learn:acceptSuggestion', sg && typeof sg === 'object' ? { id: sg.id || null, text: String(sg.text || ''), prompt: String(sg.prompt || ''), when: sg.when || null, cron: sg.cron || null } : null),
+  // self-evolution (Evolution view): what O learned and added, gate results, approvals, rollback
+  evolveView: (hours) => ipcRenderer.invoke('evolve:view', Number(hours) || 48),
+  evolveApprove: (id) => ipcRenderer.invoke('evolve:approve', String(id || '')),
+  evolveReject: (id, reason) => ipcRenderer.invoke('evolve:reject', String(id || ''), String(reason || '')),
+  evolveRollback: (id) => ipcRenderer.invoke('evolve:rollback', String(id || '')),
+  evolveSkill: (id, approve) => ipcRenderer.invoke('evolve:skill', String(id || ''), approve === true),
   // long-term goals
   listGoals: () => ipcRenderer.invoke('goals:list'),
   goalDetail: (id) => ipcRenderer.invoke('goals:detail', String(id || '')),

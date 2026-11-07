@@ -296,3 +296,40 @@ def test_practice_deps_repoints_display_and_disables_spend_features():
     assert d.procedures == "P" and d.notes == "N"  # shared memory with real jobs
     sj = d.state_judge_factory(None, None)
     assert sj.desktop_home.endswith("/tmp/practice/ws")
+
+
+def test_false_success_is_quarantined_and_next_attempt_plans_fresh(tmp_path):
+    from o_engine.evolve.practice import QuarantinedProcedures
+
+    pr, cur, graph, procs, notes, item, _ = _setup(tmp_path)
+    view = QuarantinedProcedures(procs, pr.quarantine)
+    graph.procedures = view  # the practice graph sees the quarantine view, as practice_deps builds it
+
+    real_call = graph.__call__
+
+    def wrong_then_right(it, job_id, meter, _n=[0]):
+        _n[0] += 1
+        out = real_call(it, job_id, meter)
+        if _n[0] == 1:  # the app "looked done" but the file has the old text plus the new
+            Path(it.check.path).write_text("old line\n" + "\n".join(it.check.expect) + "\n")
+        return out
+
+    pr.run_job = wrong_then_right
+    first = pr.attempt(item)
+    assert first.graph_ok and not first.check_ok and not first.ok
+    assert first.procedure_id in pr.quarantine.ids()
+    assert view.latest(item.app, item.goal) is None  # quarantined: the next practice run plans fresh
+    lesson = (tmp_path / "practice" / "lessons.jsonl").read_text()
+    assert "select all (ctrl+a)" in lesson and "check the saved file" in lesson
+    second = pr.attempt(item)
+    assert second.ok and not second.cached
+    assert [v.version for v in procs.versions(item.app, item.goal)] == [1, 2, 3]  # v1 bad (kept), v2 fresh, v3 distilled
+    assert view.latest(item.app, item.goal).version == 3
+
+
+def test_rule_when_end_state_was_right_but_the_plan_check_failed(tmp_path):
+    pr, *_ , item, _ = _setup(tmp_path)
+    steps = [{"command": "launch mousepad", "exit_code": 0}, {"command": "state_assert", "exit_code": 1}]
+    rules = Practicer.rules(item, "step 3 failed: state_assert failed: probe exited 1", steps, check_ok=True)
+    assert any("already right" in r and "file_contains" in r for r in rules)
+    assert not any("launch mousepad first" in r for r in rules)  # it did launch first
