@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
   "pydantic>=2.6",
+  "python-dateutil>=2.8,<3",  # botocore (pulled in by optional extras) requires <3
   "langgraph>=0.2",
   "fastapi>=0.110",
   "uvicorn>=0.27",
