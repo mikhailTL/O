@@ -77,7 +77,8 @@ def _env(tmp_path: Path, mode: str) -> dict[str, str]:
     env = dict(os.environ)
     env.update({"FAKE_MODE": mode, "FAKE_RECORD": str(tmp_path / "record.json"), "GITHUB_TOKEN": "ghp_x",
                 "MY_API_KEY": "k", "SOME_SECRET": "s", "DB_PASSWORD": "p", "O_PERM_TOKEN": "t", "O_PERM_URL": "u",
-                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-keep", "HARMLESS": "1"})
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-keep", "HARMLESS": "1", "IS_SANDBOX": "1", "CCR_AUTO_MODE_ALLOW": "x",
+                "CLAUDE_CODE_ENTRYPOINT": "parent", "CLAUDECODE": "1"})
     return env
 
 
@@ -106,8 +107,15 @@ def test_cli_args_are_scoped_and_never_skip_permissions(repo, fake, tmp_path):
     assert argv[:4] == ["-p", "--output-format", "stream-json", "--verbose"]
     assert argv[argv.index("--max-turns") + 1] == "7"
     assert argv[argv.index("--max-budget-usd") + 1] == "2.50"
-    assert argv[argv.index("--allowedTools") + 1] == (
-        "Read,Edit,Write,Glob,Grep,Bash(python3 -m pytest:*),Bash(node:*),Bash(npm test:*)")
+    wt = (tmp_path / "w").resolve()
+    assert argv[argv.index("--allowedTools") + 1] == (  # no sandbox: no shell at all; files only inside the checkout
+        f"Read(/{wt}/**),Edit(/{wt}/**),Write(/{wt}/**),Glob,Grep")
+    assert argv[argv.index("--tools") + 1] == "Read,Edit,Write,Glob,Grep"
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert argv[argv.index("--setting-sources") + 1] == ""  # user/project allow rules cannot widen the list
+    assert "--strict-mcp-config" in argv
+    denied = argv[argv.index("--disallowedTools") + 1]
+    assert "Read(~/.ssh/**)" in denied and "Read(~/Library/Application Support/O/**)" in denied
     assert not any("dangerously" in a for a in argv)
     assert Path(rec["cwd"]).resolve() == (tmp_path / "w").resolve()
     with pytest.raises(builder.BuildError):
@@ -117,7 +125,8 @@ def test_cli_args_are_scoped_and_never_skip_permissions(repo, fake, tmp_path):
 def test_env_is_scrubbed_except_claude_auth(repo, fake, tmp_path):
     builder.build(_proposal(), repo, tmp_path / "w", fake, 1.0, env=_env(tmp_path, "patch"))
     env = json.loads((tmp_path / "record.json").read_text())["env"]
-    for k in ("GITHUB_TOKEN", "MY_API_KEY", "SOME_SECRET", "DB_PASSWORD", "O_PERM_TOKEN", "O_PERM_URL"):
+    for k in ("GITHUB_TOKEN", "MY_API_KEY", "SOME_SECRET", "DB_PASSWORD", "O_PERM_TOKEN", "O_PERM_URL", "IS_SANDBOX",
+              "CCR_AUTO_MODE_ALLOW", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE"):
         assert k not in env
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-keep"
     assert env["HARMLESS"] == "1"

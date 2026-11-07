@@ -342,6 +342,9 @@ function evolveEnv(s = {}, userDataDir = '') {
     O_EVOLVE_SCAN_MINUTES: num(s.evolveScanMinutes, 45, 5, 1440),
     O_EVOLVE_SLOTS_ACTIVE: num(s.evolveSlotsActive, 1, 0, 8),
     O_EVOLVE_SLOTS_AWAY: num(s.evolveSlotsAway, 3, 0, 8),
+    // Only the app's three values reach the engine; the dev-only host mode is never set from here.
+    O_EVOLVE_SANDBOX: ['auto', 'docker', 'e2b'].includes(s.evolveSandbox) ? s.evolveSandbox : 'auto',
+    O_EVOLVE_DEV_UNSAFE: '', // blanked: a value inherited from the shell can never turn on the dev-only host mode
     O_PRACTICE_BUDGET_USD: num(s.practiceBudgetUsd, 0.5, 0, 100),
     O_EVOLVE_APP_LOG: userDataDir ? path.join(userDataDir, 'o-actions.jsonl') : '',
   };

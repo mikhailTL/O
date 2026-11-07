@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from o_engine.evolve.sandbox import SandboxChoice
 from o_engine.evolve.pipeline import Evolver, PipelineDeps
 from o_engine.evolve.schema import GateCheck, GateReport, Proposal, Signal
 
@@ -97,12 +98,18 @@ class Fakes:
         self.pushed.append(branch)
 
 
+def available_sandbox() -> SandboxChoice:
+    """A sandbox that is there (the fakes never run code); tests of the paused tier pass their own."""
+    return SandboxChoice(True, "docker", "auto", factory=lambda root: None)
+
+
 def make(tmp_path, fakes: Fakes, settings: dict[str, Any] | None = None, github: Any = "default", clock: list[float] | None = None,
          **extra: Any) -> Evolver:
     clock = clock if clock is not None else [1_000_000.0]
     gh = FakeGitHub() if github == "default" else github
+    extra.setdefault("sandbox", available_sandbox)
     deps = PipelineDeps(scan=fakes.scan, triage=fakes.triage, build=fakes.build, run_gates=fakes.run_gates,
                         baseline=lambda: {"commit": "base"}, github=gh, push=fakes.push, repo_root=str(tmp_path / "repo"),
                         evolve_dir=str(tmp_path / "evolve"), now=lambda: clock[0], **extra)
-    s = {"evolveRepo": "o/O", **(settings or {})}
+    s = {"evolveRepo": "o/O", "evolveAutoShip": "low_risk", **(settings or {})}  # tests exercise the opt-in auto-ship path
     return Evolver(lambda: s, deps)

@@ -256,10 +256,10 @@ def test_local_store_round_trip(tmp_path):
 
 def test_evolve_settings_env_and_defaults():
     s = evolve_settings(env={})
-    assert s["evolveEnabled"] is True and s["evolveBudgetUsd"] == 10.0 and s["evolveAutoShip"] == "low_risk"
+    assert s["evolveEnabled"] is True and s["evolveBudgetUsd"] == 10.0 and s["evolveAutoShip"] == "never"
     s = evolve_settings(env={"O_EVOLVE_ENABLED": "0", "O_EVOLVE_BUDGET_USD": "4.5", "O_EVOLVE_AUTO_SHIP": "bogus",
                              "GITHUB_TOKEN": "gh", "O_EVOLVE_SLOTS_AWAY": "99"})
-    assert s["evolveEnabled"] is False and s["evolveBudgetUsd"] == 4.5 and s["evolveAutoShip"] == "low_risk"
+    assert s["evolveEnabled"] is False and s["evolveBudgetUsd"] == 4.5 and s["evolveAutoShip"] == "never"
     assert s["evolveGithubToken"] == "gh" and s["evolveSlotsAway"] == 8
     assert evolve_settings({"evolveAutoShip": "never"}, env={})["evolveAutoShip"] == "never"
 

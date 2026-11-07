@@ -77,12 +77,15 @@ const DEFAULTS = Object.freeze({
   evolveEnabled: true, // continuous: incremental scans, builds when budget allows, more while you are away
   evolveBudgetUsd: 10, // rolling 7-day cap on build spend, spread across the week
   evolvePerProposalUsd: 1.5, // cap per upgrade build
-  evolveAutoShip: 'low_risk', // 'low_risk' (all gates passed, low risk, no new deps) | 'deps_only' | 'never'
+  evolveAutoShip: 'never', // code upgrades wait for Approve: gates can't yet measure real-world latency/cost (live cycle 2026-11-06). 'low_risk' | 'deps_only' | 'never'
   evolveGithubToken: '', // token that can push branches and open PRs; '' = compare links only. Never logged
   evolveRepo: '', // '' = updateRepo
   evolveScanMinutes: 45, // 5..1440 between incremental source scans
   evolveSlotsActive: 1, // 0..8 builds at once while you use the computer
   evolveSlotsAway: 3, // 0..8 builds at once while you are away
+  // Where upgrade code is tested: 'auto' (Docker, then E2B) | 'docker' | 'e2b'. Without one, code upgrades pause.
+  // The engine's dev-only host mode is deliberately not a value this file accepts.
+  evolveSandbox: 'auto',
   practiceBudgetUsd: 0.5, // rolling 24 h cap on practice spend (O rehearses its own tasks on an isolated display while you are away)
   settingsVersion: 5,
 });
@@ -211,6 +214,7 @@ function sanitize(obj) {
   evNum('evolveSlotsAway', 0, 8, true);
   evNum('practiceBudgetUsd', 0, 100, false);
   if (['never', 'deps_only', 'low_risk'].includes(obj.evolveAutoShip)) out.evolveAutoShip = obj.evolveAutoShip;
+  if (['auto', 'docker', 'e2b'].includes(obj.evolveSandbox)) out.evolveSandbox = obj.evolveSandbox;
   if (typeof obj.evolveGithubToken === 'string') out.evolveGithubToken = obj.evolveGithubToken.trim();
   if (typeof obj.evolveRepo === 'string' && (obj.evolveRepo.trim() === '' || /^[\w.-]+\/[\w.-]+$/.test(obj.evolveRepo.trim()))) out.evolveRepo = obj.evolveRepo.trim();
   if (Number.isInteger(obj.settingsVersion) && obj.settingsVersion >= 1) out.settingsVersion = obj.settingsVersion;

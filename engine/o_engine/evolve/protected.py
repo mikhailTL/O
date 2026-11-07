@@ -61,6 +61,24 @@ PROTECTED_RULES: tuple[tuple[str, str], ...] = (
     ("engine/o_engine/evolve/schema.py", "evolve: shared contract incl. OK_LICENSES"),
     ("engine/tests/test_evolve_gates.py", "evolve: gate tests"),
     ("engine/tests/test_evolve_builder.py", "evolve: builder tests"),
+    ("engine/o_engine/evolve/triage.py", "evolve: untrusted-signal handling and proposal validation"),
+    ("engine/o_engine/evolve/untrusted.py", "evolve: untrusted-text cleaning, data blocks, verbatim-copy checks"),
+    ("engine/o_engine/evolve/sandbox.py", "evolve: the sandbox candidate code runs in (offline, limits, no host fallback)"),
+    ("engine/o_engine/evolve/sandbox_test.py", "evolve: o-sandbox-test, the builder's only test command"),
+    ("engine/o_engine/evolve/sandbox.Dockerfile", "evolve: the pinned sandbox image"),
+    ("engine/o_engine/evolve/pipeline.py", "evolve: auto-ship policy and the sandbox-gated code-build tier"),
+    ("engine/o_engine/evolve/routes.py", "evolve: wiring of the sandbox into builder, gates and baseline"),
+    ("engine/tests/test_evolve_sandbox.py", "evolve: sandbox / untrusted-text tests"),
+    ("engine/tests/test_evolve_triage.py", "evolve: triage tests"),
+    ("engine/tests/evolve_fakes.py", "evolve: fakes the evolve tests use"),
+    # code the test runner loads implicitly: a candidate could fake or skip every gate from these
+    ("**/conftest.py", "pytest auto-loads it: could rewrite test results"),
+    ("**/pytest.ini", "pytest config: could deselect or redirect tests"),
+    ("**/setup.cfg", "pytest/tool config"),
+    ("**/tox.ini", "pytest/tool config"),
+    ("**/sitecustomize.py", "imported by every Python process"),
+    ("**/usercustomize.py", "imported by every Python process"),
+    ("**/*.pth", "executed by the Python site module"),
     ("engine/eval/osworld/offline.py", "evolve: offline eval harness the regression gate scores with"),
     ("engine/tests/fixtures/offline/**", "evolve: offline eval episodes the regression gate scores on"),
     (".github/**", "CI: workflows incl. evolve-gates.yml"),
@@ -85,6 +103,8 @@ TOUCH_MARKERS: tuple[tuple[str, str], ...] = (
     (r"\bscrub_env\b|_SCRUB_", "secret scrubbing"),
     (r"isPaymentUrl|PAY_HOST|\b__oGuard\b", "payment guard"),
     (r"highRiskSandbox|select_sandbox|select_isolated|run_high_risk", "containment policy"),
+    (r"evolveSandbox|O_EVOLVE_SANDBOX|O_EVOLVE_DEV_UNSAFE|unsafe-host-dev|o-sandbox-test|runner_for", "evolve sandbox"),
+    (r"\[tool\.pytest|addopts|testpaths", "pytest configuration"),
 )
 
 # Removed lines matching these weaken a protected property (logging); adding them is fine.

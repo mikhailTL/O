@@ -6,8 +6,10 @@
 static (cheap, on the diff):
   clean_worktree, protected_paths, diff_budget, secret_scan, dangerous_patterns,
   declared_dependencies, license_scan, lockfile_consistency
-dynamic (run the candidate's code with a secret-free env):
+dynamic (run the candidate's code, always inside the sandbox ``GateConfig.runner_for`` gives, see
+evolve/sandbox.py: offline, resource-limited, the worktree its only read-write mount):
   acceptance_test, engine_pytest, node_selftests, offline_osworld
+Without ``runner_for`` the dynamic checks are not run (reported failed): candidate code never runs on the host.
 
 With ``fail_fast`` (default) a failed static check skips the dynamic ones; they are then reported as
 failed with ``detail="not run: ..."`` so the report still lists every gate.
@@ -52,6 +54,8 @@ class GateConfig:
     # (ecosystem, name) -> SPDX-ish license string or None; injected in tests, network by default.
     license_lookup: Callable[[str, str], str | None] | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
+    # worktree -> evolve.sandbox.Runner. None: dynamic gates are not run (candidate code never runs on the host).
+    runner_for: Callable[[Path], Any] | None = None
 
 
 # ---------------------------------------------------------------- scanners
@@ -279,6 +283,10 @@ def _check(name: str, passed: bool, detail: str = "", before: float | None = Non
     return GateCheck(name=name, passed=bool(passed), detail=detail[:4000], metric_before=before, metric_after=after)
 
 
+def _where(c: GateCheck, backend: str) -> GateCheck:
+    return c.model_copy(update={"detail": f"[sandbox: {backend}] {c.detail}"[:4000]})
+
+
 def check_clean(wd: Path) -> GateCheck:
     dirty = bl.git(wd, "status", "--porcelain", "--untracked-files=all").strip()
     return _check("clean_worktree", not dirty, "committed state is what is gated" if not dirty
@@ -423,21 +431,21 @@ def acceptance_targets(proposal: Proposal, diff: Diff) -> tuple[list[str], list[
 
 
 def check_acceptance(proposal: Proposal, diff: Diff, wd: Path, cfg: GateConfig,
-                     env: Mapping[str, str]) -> GateCheck:
+                     env: Mapping[str, str], runner: Any = None) -> GateCheck:
     py_args, node_files, new_tests = acceptance_targets(proposal, diff)
     if not new_tests:
         return _check("acceptance_test", False, "no new test in the diff (need a new `def test_*` in engine/tests "
                       "or new asserts in a main/tools selftest)", None, 0.0)
     parts, ok, passed = [], True, 0
     if py_args:
-        r = bl.run_engine_pytest(wd, tuple(py_args), env=env)
+        r = bl.run_engine_pytest(wd, tuple(py_args), env=env, runner=runner)
         good = r["returncode"] == 0 and r["failed"] == 0 and r["passed"] > 0
         ok &= good
         passed += r["passed"]
         parts.append(f"pytest {' '.join(py_args)}: {r['passed']} passed, {r['failed']} failed"
                      + ("" if good else "\n" + r["tail"][-1200:]))
     if node_files:
-        r = bl.run_node_selftests(wd, node_files, node=cfg.node, env=env)
+        r = bl.run_node_selftests(wd, node_files, node=cfg.node, env=env, runner=runner)
         ok &= r["all_passed"]
         passed += r["total_ok"]
         parts.append(f"node {' '.join(node_files)}: " + ", ".join(
@@ -446,9 +454,9 @@ def check_acceptance(proposal: Proposal, diff: Diff, wd: Path, cfg: GateConfig,
     return _check("acceptance_test", ok, "\n".join(parts), 0.0, float(passed))
 
 
-def check_pytest(base: Mapping[str, Any], wd: Path, env: Mapping[str, str]) -> GateCheck:
+def check_pytest(base: Mapping[str, Any], wd: Path, env: Mapping[str, str], runner: Any = None) -> GateCheck:
     b = base.get("engine_pytest") or {}
-    r = bl.run_engine_pytest(wd, env=env)
+    r = bl.run_engine_pytest(wd, env=env, runner=runner)
     new_fail = sorted(set(r["failed_ids"]) - set(b.get("failed_ids", [])))
     vanished = sorted(set(b.get("passed_ids", [])) - set(r["passed_ids"]) - set(r["failed_ids"]))
     ok = not new_fail and not vanished and r["passed"] >= int(b.get("passed", 0)) and r["passed"] > 0
@@ -463,10 +471,11 @@ def check_pytest(base: Mapping[str, Any], wd: Path, env: Mapping[str, str]) -> G
     return _check("engine_pytest", ok, detail, float(b.get("passed", 0)), float(r["passed"]))
 
 
-def check_node(base: Mapping[str, Any], wd: Path, diff: Diff, cfg: GateConfig, env: Mapping[str, str]) -> GateCheck:
+def check_node(base: Mapping[str, Any], wd: Path, diff: Diff, cfg: GateConfig, env: Mapping[str, str],
+               runner: Any = None) -> GateCheck:
     b = base.get("node_selftests") or {}
     files = sorted(set((b.get("files") or {}).keys()) | set(bl.discover_selftests(wd)))
-    r = bl.run_node_selftests(wd, files, node=cfg.node, env=env)
+    r = bl.run_node_selftests(wd, files, node=cfg.node, env=env, runner=runner)
     bad = [f"{f} rc={v['returncode']}" + (f" ({v['tail'][-300:]})" if v["returncode"] != 0 else "")
            for f, v in r["files"].items() if v["returncode"] != 0]
     fewer = [f"{f} ok {(b.get('files') or {}).get(f, {}).get('ok', 0)}->{v['ok']}" for f, v in r["files"].items()
@@ -480,9 +489,10 @@ def check_node(base: Mapping[str, Any], wd: Path, diff: Diff, cfg: GateConfig, e
     return _check("node_selftests", ok, detail, float(b.get("total_ok", 0)), float(r["total_ok"]))
 
 
-def check_offline(base: Mapping[str, Any], wd: Path, cfg: GateConfig, env: Mapping[str, str]) -> GateCheck:
+def check_offline(base: Mapping[str, Any], wd: Path, cfg: GateConfig, env: Mapping[str, str],
+                  runner: Any = None) -> GateCheck:
     b = base.get("offline_osworld") or {}
-    r = bl.run_offline_eval(wd, grounder=cfg.grounder, judge=cfg.judge, env=env)
+    r = bl.run_offline_eval(wd, grounder=cfg.grounder, judge=cfg.judge, env=env, runner=runner)
     bm, am = b.get("metrics") or {}, r["metrics"]
     regress, lines = [], []
     if r["returncode"] != 0 or not am:
@@ -534,14 +544,24 @@ def run_gates(proposal: Proposal, workdir: Path | str, baseline: Mapping[str, An
     if static_failed and cfg.fail_fast:
         checks += [_check(n, False, "not run: static checks failed (" + ", ".join(static_failed) + ")")
                    for n in DYNAMIC_CHECKS]
+    elif cfg.runner_for is None:
+        checks += [_check(n, False, "not run: no sandbox (candidate code never runs on the host)")
+                   for n in DYNAMIC_CHECKS]
     else:
         env = bl.untrusted_env(cfg.extra_env)
-        checks.append(check_acceptance(proposal, diff, wd, cfg, env))
-        checks.append(check_pytest(baseline, wd, env) if cfg.run_pytest
-                      else _check("engine_pytest", False, "disabled in config"))
-        checks.append(check_node(baseline, wd, diff, cfg, env) if cfg.run_node
-                      else _check("node_selftests", False, "disabled in config"))
-        checks.append(check_offline(baseline, wd, cfg, env) if cfg.run_offline
-                      else _check("offline_osworld", False, "disabled in config"))
+        runner = cfg.runner_for(wd)
+        try:
+            where = getattr(runner, "name", "sandbox")
+            checks.append(_where(check_acceptance(proposal, diff, wd, cfg, env, runner), where))
+            checks.append(_where(check_pytest(baseline, wd, env, runner), where) if cfg.run_pytest
+                          else _check("engine_pytest", False, "disabled in config"))
+            checks.append(_where(check_node(baseline, wd, diff, cfg, env, runner), where) if cfg.run_node
+                          else _check("node_selftests", False, "disabled in config"))
+            checks.append(_where(check_offline(baseline, wd, cfg, env, runner), where) if cfg.run_offline
+                          else _check("offline_osworld", False, "disabled in config"))
+        finally:
+            close = getattr(runner, "close", None)
+            if callable(close):
+                close()
     return GateReport(proposal_id=proposal.id, branch=branch, commit=head, passed=all(c.passed for c in checks),
                       checks=checks, diff_files=diff.files, diff_lines=diff.total_lines, spent_usd=spent_usd)

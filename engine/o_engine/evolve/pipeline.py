@@ -10,6 +10,10 @@ each tick is cheap and non-blocking:
    while they use the computer. Each build runs in its own worktree on a worker thread: build -> gates ->
    push -> PR (GitHub REST, ``evolveGithubToken`` / ``GITHUB_TOKEN``; without a token a compare URL) -> ledger.
 
+Code-build tier: builds only start while ``deps.sandbox()`` reports a sandbox (``evolveSandbox`` auto|docker|e2b,
+see ``sandbox.py``) to run the candidate's tests in. Without one the tier is paused, the feed shows one calm line
+(``sandbox.PAUSED_MESSAGE``) and everything else (scanning, triage, practice, skills) keeps running.
+
 Adoption tiers: ``evolveAutoShip`` "low_risk" (default) merges and tags a release only when every gate passed,
 risk is low, there are no new dependencies and no protected path changed; "deps_only" only for
 dependency-only proposals; "never" leaves every PR for one-tap approval. Everything else waits for the person.
@@ -31,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import sandbox as sbx
 from .learn import Journal, Telemetry, evaluate_shipped, prior_multiplier, priors
 from .schema import GateReport, Proposal, Signal
 
@@ -46,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
     "evolveEnabled": True,
     "evolveBudgetUsd": 10.0,  # rolling 7-day cap
     "evolvePerProposalUsd": 1.5,  # cap per build
-    "evolveAutoShip": "low_risk",
+    "evolveAutoShip": "never",  # gates cannot yet measure real-world latency/cost; code waits for Approve
     "evolveRepo": "mikhailTL/O",
     "evolveBaseBranch": "main",
     "evolveGithubToken": "",
@@ -55,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
     "evolveSlotsAway": 3,
     "evolveTopK": 2,
     "evolveAppLog": "",
+    "evolveSandbox": "auto",  # auto | docker | e2b (unsafe-host-dev: dev only, needs O_EVOLVE_DEV_UNSAFE=1)
 }
 _ENV = {
     "evolveEnabled": "O_EVOLVE_ENABLED", "evolveBudgetUsd": "O_EVOLVE_BUDGET_USD",
@@ -62,6 +68,7 @@ _ENV = {
     "evolveRepo": "O_EVOLVE_REPO", "evolveBaseBranch": "O_EVOLVE_BASE", "evolveGithubToken": "O_EVOLVE_GITHUB_TOKEN",
     "evolveScanMinutes": "O_EVOLVE_SCAN_MINUTES", "evolveSlotsActive": "O_EVOLVE_SLOTS_ACTIVE",
     "evolveSlotsAway": "O_EVOLVE_SLOTS_AWAY", "evolveTopK": "O_EVOLVE_TOP_K", "evolveAppLog": "O_EVOLVE_APP_LOG",
+    "evolveSandbox": "O_EVOLVE_SANDBOX",
 }
 
 
@@ -102,6 +109,7 @@ def evolve_settings(overrides: dict[str, Any] | None = None, env: dict[str, str]
         out[k] = max(lo, min(hi, int(float(out[k]))))
     if out["evolveAutoShip"] not in AUTO_SHIP_MODES:
         out["evolveAutoShip"] = DEFAULTS["evolveAutoShip"]
+    out["evolveSandbox"] = sbx.normalize_mode(out["evolveSandbox"])
     return out
 
 
@@ -349,6 +357,7 @@ class PipelineDeps:
     github: GitHub | None = None
     push: Callable[[str, str], None] | None = None  # push(workdir, branch)
     skills: Any = None  # runtime skills registry (evolve/skills.py)
+    sandbox: Callable[[], Any] | None = None  # -> sandbox.SandboxChoice; None or unavailable pauses code builds
     telemetry: Telemetry | None = None
     rollback: Callable[[str, str, str], Any] | None = None  # extra hook; the app's updater is driven via status
     repo_root: str = ""
@@ -466,6 +475,20 @@ class Evolver:
     def priors(self) -> dict[str, Any]:
         return priors(self.journal)
 
+    def code_tier(self) -> dict[str, Any]:
+        """Whether upgrades that change code may be built now: only with a sandbox to test them in."""
+        if self.deps.sandbox is None:
+            return {"enabled": False, "backend": "none", "reason": "no sandbox wired", "message": sbx.PAUSED_MESSAGE}
+        try:
+            choice = self.deps.sandbox()
+        except Exception as exc:  # noqa: BLE001 - a probe that crashes is no sandbox
+            return {"enabled": False, "backend": "none", "reason": f"{type(exc).__name__}: {exc}"[:300],
+                    "message": sbx.PAUSED_MESSAGE}
+        view = choice.view() if hasattr(choice, "view") else dict(choice)
+        if not view.get("enabled"):
+            view["message"] = view.get("message") or sbx.PAUSED_MESSAGE
+        return view
+
     def _sources_of(self, p: Proposal) -> list[str]:
         out: list[str] = []
         for sid in p.signal_ids:
@@ -563,6 +586,8 @@ class Evolver:
             cap = min(float(s["evolvePerProposalUsd"]), self.budget()["available_usd"])
             if cap < MIN_BUILD_USD or self.deps.build is None or self.deps.run_gates is None:
                 return False
+            if not self.code_tier()["enabled"]:
+                return False
             self._record("build_started", p.id, reserved_usd=round(cap, 4), title=p.title)
             self._status(p.id, "building")
             self._reserved[p.id] = cap
@@ -583,7 +608,8 @@ class Evolver:
         workdir = self.root / "work" / p.id
         workdir.parent.mkdir(parents=True, exist_ok=True)
         try:
-            branch, commit, spent, _transcript = _call(d.build, p, d.repo_root, str(workdir), budget_usd=cap, max_usd=cap)
+            branch, commit, spent, _transcript = _call(d.build, p, d.repo_root, str(workdir), budget_usd=cap, max_usd=cap,
+                                                       signals=self._signals_of(p))
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._record("build_failed", p.id, error=f"{type(exc).__name__}: {exc}"[:500], spent_usd=0.0)
@@ -844,7 +870,9 @@ class Evolver:
             with self._lock:
                 free = max(0, slots - len(self._inflight))
             started = []
-            for p in self.candidates():
+            tier = self.code_tier()
+            out["code_builds"] = tier
+            for p in (self.candidates() if tier["enabled"] else []):
                 if len(started) >= free:
                     break
                 if not self.launch(p):
@@ -906,6 +934,9 @@ class Evolver:
         rows = self.journal.read(since=self.now() - hours * 3600)
         titles = {p.id: p.title for p in self.store.proposals()}
         out = []
+        tier = self.code_tier()
+        if not tier["enabled"] and self.settings()["evolveEnabled"]:
+            out.append({"ts": self.now(), "event": "code_paused", "proposal_id": "", "text": tier["message"], "url": ""})
         for r in reversed(rows):
             text = _feed_text(r, titles.get(r.get("proposal_id", ""), ""))
             if text:
@@ -926,6 +957,7 @@ class Evolver:
             "counts": counts, "waiting_for_you": counts.get("pr_open", 0) + counts.get("gated_pass", 0) + len(self.skill_candidates()),
             "rollback_requests": self.rollback_requests(), "awaiting_install": self.awaiting_install(),
             "missing": list(self.deps.missing),
+            "code_builds": self.code_tier(), "sandbox_setting": s["evolveSandbox"],
         }
 
 
@@ -995,7 +1027,8 @@ def run_cycle(settings: Any, deps: PipelineDeps, evolver: Evolver | None = None)
         return {"ok": True, "enabled": False}
     scan = ev.scan_and_triage()
     picked = []
-    for p in ev.candidates():
+    tier = ev.code_tier()
+    for p in (ev.candidates() if tier["enabled"] else []):
         if len(picked) >= s["evolveTopK"]:
             break
         if not ev.launch(p):
@@ -1004,7 +1037,7 @@ def run_cycle(settings: Any, deps: PipelineDeps, evolver: Evolver | None = None)
     ev.wait()
     return {"ok": True, "enabled": True, "scan": scan, "built": picked,
             "results": [ev.proposal_view(p) for p in (ev.store.get(i) for i in picked) if p is not None],
-            "budget": ev.budget()}
+            "budget": ev.budget(), "code_builds": tier}
 
 
 # --------------------------------------------------------------------------------- practice (tier 1 learning)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from o_engine.evolve.sandbox import UnsafeHostRunner
 from o_engine.evolve import baseline as bl
 from o_engine.evolve import builder, gates, protected
 from o_engine.evolve.schema import GateReport, Proposal
@@ -97,6 +98,9 @@ GOOD = {
 
 
 def _cfg(**kw) -> gates.GateConfig:
+    # Tiny temp repos written by the test itself: the dev-only host runner stands in for the sandbox here
+    # (test_evolve_sandbox.py covers the routing through a real sandbox runner).
+    kw.setdefault("runner_for", UnsafeHostRunner)
     return gates.GateConfig(node=NODE or "node", license_lookup=kw.pop("license_lookup", lambda e, n: "MIT"), **kw)
 
 

@@ -109,15 +109,32 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
         triage = _try(lambda: _Triage(m_triage, str(getattr(engine_settings, "claude_path", "") or "claude"), store))
         if triage is None:
             missing.append("triage (capability map)")
+    # Candidate code (builder test runs, every dynamic gate, the baseline it is compared with) runs only in the
+    # sandbox evolveSandbox selects; with none, the Evolver pauses code builds (sandbox.PAUSED_MESSAGE).
+    from . import sandbox as m_sandbox
+
+    mode = lambda: evolve_settings()["evolveSandbox"]  # noqa: E731
+    choice = m_sandbox.CachedChoice(mode, engine_settings)
     build = None
     if m_builder is not None and getattr(m_builder, "build", None) is not None:
         claude = str(getattr(engine_settings, "claude_path", "") or "claude")
-        build = lambda p, root, wd, budget_usd=3.0: m_builder.build(p, root, wd, client_cmd=claude, budget_usd=budget_usd)  # noqa: E731
-    run_gates = _first(m_gates, ("run_gates",)) if m_gates else None
+
+        def build(p: Any, root: str, wd: str, budget_usd: float = 3.0, signals: Any = ()) -> Any:
+            return m_builder.build(p, root, wd, client_cmd=claude, budget_usd=budget_usd, sandbox_mode=mode(),
+                                   signals=list(signals or ()))
+    run_gates = None
+    if m_gates is not None and getattr(m_gates, "run_gates", None) is not None:
+        def run_gates(p: Any, wd: str, base: Any, spent_usd: float = 0.0) -> Any:
+            c = choice()
+            cfg = m_gates.GateConfig(runner_for=c.factory if c.available else None)
+            return m_gates.run_gates(p, wd, base, cfg, spent_usd=spent_usd)
     baseline = None
-    if m_baseline is not None:
-        fn = _first(m_baseline, ("ensure_baseline",))
-        baseline = (lambda: fn(repo_root)) if fn else None
+    if m_baseline is not None and getattr(m_baseline, "sandboxed_baseline", None) is not None:
+        def baseline() -> Any:
+            c = choice()
+            if not c.available:
+                raise RuntimeError(f"no sandbox for the baseline: {c.reason}")
+            return m_baseline.sandboxed_baseline(repo_root, c.factory, c.backend)
     protected = _first(m_protected, ("violations",)) if m_protected else None
     skills = None
     if m_skills is not None:
@@ -130,7 +147,7 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
         store=store, scan=scan, triage=triage, build=build, run_gates=run_gates, baseline=baseline, protected=protected,
         github=GitHub(repo, token), push=lambda workdir, branch: git_push(workdir, branch, repo, token), skills=skills,
         telemetry=Telemetry(learning_dir, data_dir, evo.get("evolveAppLog") or None),
-        repo_root=repo_root, evolve_dir=str(evolve_dir), missing=missing,
+        repo_root=repo_root, evolve_dir=str(evolve_dir), missing=missing, sandbox=choice,
     )
 
 

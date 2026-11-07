@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 
 import pytest
@@ -133,7 +134,7 @@ def test_dependency_only_and_license_flag():
 # ---------------------------------------------------------------- triage
 def test_triage_batches_of_twenty_and_budget_passed():
     signals = [sig(i) for i in range(1, 46)]
-    answer = lambda user: json.dumps({"proposals": [good([json.loads(user.split("Signals:\n", 1)[1].rsplit("\n\nReturn", 1)[0])[0]["id"]],
+    answer = lambda user: json.dumps({"proposals": [good([re.search(r'"id": "([^"]+)"', user).group(1)],
                                                          title=f"p{len(user)}")]})
     client = FakeClient([answer, answer, answer], cost=0.05)
     res = T.TriageResult()
