@@ -1827,6 +1827,9 @@ def create_app(
     app.state.ambient = ambient
     # ------------------------------------------------------------ end ambient
 
+    from .evolve.routes import evolve_router  # plan L: self-evolution (status, feed, approvals, rollback)
+    app.include_router(evolve_router(settings, guarded, log))
+
     app.state.settings = settings
     app.state.log = log
     app.state.jobs = jobs
