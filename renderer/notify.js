@@ -30,6 +30,31 @@
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   }
 
+  // Each card buds from the right screen edge: on a goo layer (#o-goo), a blob leaves an edge blob and the
+  // threshold draws the neck between them; the glass card fades in over it. Transform/opacity only, once.
+  const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)';
+  const reduced = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  function slot(card) {
+    const s = document.createElement('div');
+    s.className = 'nslot';
+    s.appendChild(card);
+    if (typeof card.animate !== 'function') return s;
+    if (reduced()) { card.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear' }); return s; }
+    const goo = document.createElement('div');
+    goo.className = 'ngoo';
+    goo.innerHTML = '<div class="nedge"></div><div class="nblob"></div>';
+    s.insertBefore(goo, card);
+    requestAnimationFrame(() => {
+      const blob = goo.querySelector('.nblob');
+      blob.style.cssText = `left:12px;top:12px;width:${card.offsetWidth}px;height:${card.offsetHeight}px`;
+      blob.animate([{ transform: `translateX(${card.offsetWidth * 0.85}px) scale(0.5, 0.7)` }, { transform: 'none' }], { duration: 340, easing: EASE_OUT, fill: 'both' });
+      const g = goo.animate([{ opacity: 1 }, { opacity: 1, offset: 0.6 }, { opacity: 0 }], { duration: 460, easing: 'linear', fill: 'both' });
+      g.onfinish = () => goo.remove();
+    });
+    card.animate([{ opacity: 0, transform: 'translateX(24px)' }, { opacity: 0, transform: 'translateX(24px)', offset: 0.35 }, { opacity: 1, transform: 'none' }], { duration: 460, easing: EASE_OUT });
+    return s;
+  }
+
   function makeCard(p) {
     const el = document.createElement('div');
     el.className = 'ncard';
@@ -37,7 +62,7 @@
     const detail = detailOf(p);
     el.innerHTML = `
       <div class="nhead">
-        <img src="../assets/o-icon.png" alt="">
+        <span class="ring" aria-hidden="true"></span>
         <div class="ntitle"><b>O needs your OK</b><span>${p.taskTitle ? `${esc(p.taskTitle)} · ` : ''}wants to use <b>${esc(p.toolName || 'a tool')}</b></span></div>
         <button class="nopen" title="Open O's chat">${OPEN_ICON}</button>
       </div>
@@ -65,8 +90,9 @@
     const el = cards.get(id);
     if (!el) return;
     cards.delete(id);
-    el.classList.add('out');
-    setTimeout(() => { el.remove(); fit(); }, 230);
+    const box = el.parentElement && el.parentElement.classList.contains('nslot') ? el.parentElement : el;
+    box.classList.add('out');
+    setTimeout(() => { box.remove(); fit(); }, 230);
   }
 
   let moreEl = null;
@@ -77,7 +103,7 @@
       if (cards.has(p.id)) return;
       const el = makeCard(p);
       cards.set(p.id, el);
-      stack.appendChild(el);
+      stack.appendChild(slot(el));
     });
     const extra = list.length - MAX_SHOWN;
     if (extra > 0) {
@@ -103,7 +129,7 @@
     const head = c.kind === 'done' ? 'Done' : 'Needs you';
     el.innerHTML = `
       <button type="button" class="ntask-open" aria-label="${esc(head)}: ${esc(c.title)}. Open the task">
-        <span class="ntask-mark" aria-hidden="true">${c.kind === 'done' ? '✓' : '!'}</span>
+        <span class="ntask-mark" aria-hidden="true"></span>
         <span class="ntask-body"><b>${esc(head)}: ${esc(c.title)}</b><span>${esc(String(c.text || '').split('\n')[0].slice(0, 140))}</span></span>
       </button>
       <button type="button" class="nopen ntask-close" title="Dismiss" aria-label="Dismiss">${CLOSE_ICON}</button>`;
@@ -116,8 +142,9 @@
     const el = taskCards.get(id);
     if (!el) return;
     taskCards.delete(id);
-    el.classList.add('out');
-    setTimeout(() => { el.remove(); fit(); }, 230);
+    const box = el.parentElement && el.parentElement.classList.contains('nslot') ? el.parentElement : el;
+    box.classList.add('out');
+    setTimeout(() => { box.remove(); fit(); }, 230);
   }
 
   function renderTasks(list) {
@@ -127,7 +154,7 @@
       if (taskCards.has(c.id)) return;
       const el = makeTaskCard(c);
       taskCards.set(c.id, el);
-      taskStack.appendChild(el);
+      taskStack.appendChild(slot(el));
     });
     fit();
   }
@@ -146,7 +173,7 @@
     const meta = [items.file, items.thumbnail && `thumbnail ${items.thumbnail}`, items.schedule].filter(Boolean).join(' · ');
     el.innerHTML = `
       <div class="nhead">
-        <img src="../assets/o-icon.png" alt="">
+        <span class="ring" aria-hidden="true"></span>
         <div class="ntitle"><b>${esc(c.headline)}</b><span>${esc(c.goalTitle || 'Goal')} · ${esc(c.kindLabel || c.kind)}</span></div>
       </div>
       ${c.summary ? `<div class="nwhat">${esc(c.summary)}</div>` : ''}
@@ -169,8 +196,9 @@
     const el = cpCards.get(id);
     if (!el) return;
     cpCards.delete(id);
-    el.classList.add('out');
-    setTimeout(() => { el.remove(); fit(); }, 230);
+    const box = el.parentElement && el.parentElement.classList.contains('nslot') ? el.parentElement : el;
+    box.classList.add('out');
+    setTimeout(() => { box.remove(); fit(); }, 230);
   }
 
   function renderCheckpoints(list) {
@@ -180,7 +208,7 @@
       if (cpCards.has(c.id)) return;
       const el = makeCheckpointCard(c);
       cpCards.set(c.id, el);
-      cpStack.appendChild(el);
+      cpStack.appendChild(slot(el));
     });
     fit();
   }

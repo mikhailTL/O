@@ -1,6 +1,6 @@
 'use strict';
 // O AI: Electron main process.
-// Owns the pet window, the prompt panel, the tray icon, settings, and the
+// Owns the Island window (status capsule + command bar), the panel, the tray icon, settings, and the
 // Claude Code agent, which keeps running in the background while windows hide.
 const path = require('path');
 const {
@@ -12,7 +12,6 @@ const { LinkServer } = require('./link');
 const shortcuts = require('./shortcuts');
 const { ChatStore, deleteClaudeTranscripts } = require('./chats');
 const { Settings } = require('./settings');
-const { createPhysics } = require('./physics');
 const { createUpdater } = require('./updater');
 let createEvolveHost = null;
 try { ({ createEvolveHost } = require('./evolve')); } catch (err) { console.error('[o] could not load evolve:', err.message); }
@@ -29,7 +28,12 @@ let briefMod = null;   // the welcome-back overlay window (main/brief.js)
 try { ambientMod = require('./ambient'); } catch (err) { console.error('[o] could not load ambient:', err.message); }
 try { briefMod = require('./brief'); } catch (err) { console.error('[o] could not load the brief overlay:', err.message); }
 
-const PET_SIZE = 200;
+// The Island window: compact while it only shows the status capsule, expanded while the command bar is
+// open. Both share the top edge and the horizontal centre, so swapping bounds never moves what is drawn.
+const ISLAND_COMPACT = { width: 448, height: 60 };
+const ISLAND_EXPANDED = { width: 820, height: 480 };
+const ISLAND_TOP = 4; // px below the top of the work area
+const ISLAND_SHRINK_MS = 460; // the renderer's collapse morph, before the window shrinks back
 const PANEL_W = 440;
 const PANEL_H = 660;
 const ASSETS = path.join(__dirname, '..', 'assets');
@@ -48,17 +52,16 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 
-let petWin = null;
+let islandWin = null;
 let panelWin = null;
 let tray = null;
 let settings = null;
 let agent = null;
 let checkClaudeFn = async () => ({ installed: false, error: 'agent module missing' });
 let quitting = false;
-let wanderSnoozed = false;
-const dragFollow = false; // panel stays put when the pet wanders
-
-let physics = null;
+let commandBarOpen = false; // the Island is showing the command bar (expanded bounds, focused)
+let islandShrinkTimer = null;
+let islandScreenHooked = false;
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
 let updater = null;
@@ -96,7 +99,7 @@ let notifyHideTimer = null;
 // ---------------------------------------------------------------- helpers
 
 function broadcast(ev) {
-  for (const w of [petWin, panelWin]) {
+  for (const w of [islandWin, panelWin]) {
     if (w && !w.isDestroyed()) w.webContents.send('agent:event', ev);
   }
 }
@@ -125,8 +128,8 @@ function workAreaFor(bounds) {
   return display.workArea;
 }
 
-function sendToPet(ev) {
-  if (petWin && !petWin.isDestroyed()) petWin.webContents.send('agent:event', ev);
+function sendToIsland(ev) {
+  if (islandWin && !islandWin.isDestroyed()) islandWin.webContents.send('agent:event', ev);
 }
 
 const THEMES = ['glass', 'light', 'dark'];
@@ -139,7 +142,7 @@ function currentTheme() {
 /** Push a theme change to every window (the notify sidebar persists, so it must be told). */
 function sendTheme(theme) {
   const ev = { type: 'theme', theme };
-  for (const w of [petWin, panelWin, notifyWin]) {
+  for (const w of [islandWin, panelWin, notifyWin]) {
     if (w && !w.isDestroyed()) w.webContents.send('agent:event', ev);
   }
 }
@@ -315,7 +318,7 @@ async function captureScreen({ display } = {}) {
   const thumb = { width: Math.round(dw * scale), height: Math.round(dh * scale) };
 
   // Keep O's own windows out of the picture (works on Windows and macOS).
-  const own = [petWin, panelWin].filter((w) => w && !w.isDestroyed() && w.isVisible());
+  const own = [islandWin, panelWin].filter((w) => w && !w.isDestroyed() && w.isVisible());
   own.forEach((w) => { try { w.setContentProtection(true); } catch (_) {} });
   let sources;
   try {
@@ -326,7 +329,7 @@ async function captureScreen({ display } = {}) {
   }
   const src = (sources || []).find((x) => String(x.display_id) === String(target.id)) || (sources || [])[0];
   if (!src || src.thumbnail.isEmpty()) throw new Error('the system returned no screen image' + (note ? ' (' + note + ')' : ''));
-  sendToPet({ type: 'status', mood: 'browsing', text: 'Reading your screen.' });
+  sendToIsland({ type: 'status', mood: 'browsing', text: 'Reading your screen.' });
   const size = src.thumbnail.getSize();
   return {
     mimeType: 'image/jpeg',
@@ -345,42 +348,86 @@ async function captureScreen({ display } = {}) {
 
 // ---------------------------------------------------------------- windows
 
-function createPetWindow() {
+/** Compact or expanded Island bounds, top centre of the primary display's work area. */
+function islandBounds(expanded) {
   const wa = screen.getPrimaryDisplay().workArea;
-  petWin = new BrowserWindow({
-    width: PET_SIZE,
-    height: PET_SIZE,
-    x: wa.x + wa.width - PET_SIZE - 24,
-    y: wa.y + wa.height - PET_SIZE,
+  const size = expanded ? ISLAND_EXPANDED : ISLAND_COMPACT;
+  return {
+    x: Math.round(wa.x + (wa.width - size.width) / 2),
+    y: Math.round(wa.y + ISLAND_TOP),
+    width: size.width,
+    height: size.height,
+  };
+}
+
+function createIslandWindow() {
+  islandWin = new BrowserWindow({
+    ...islandBounds(false),
     transparent: true,
     frame: false,
     resizable: false,
-    movable: true,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
     hasShadow: false,
     skipTaskbar: true,
     alwaysOnTop: true,
     focusable: true,
     fullscreenable: false,
     backgroundColor: '#00000000',
-    title: 'O AI',
+    title: 'O',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      backgroundThrottling: false, // keep jittering when unfocused
+      backgroundThrottling: false, // the status line keeps up while O works in the background
     },
   });
-  // Never steal focus from what the user is doing.
-  petWin.once('ready-to-show', () => petWin.showInactive());
-  petWin.webContents.on('did-finish-load', () => {
-    if (wanderSnoozed) petWin.webContents.send('agent:event', { type: 'wander', paused: true });
-  });
-  petWin.setAlwaysOnTop(true, 'screen-saver');
-  try { petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
-  petWin.loadFile(path.join(RENDERER, 'index.html'));
-  petWin.on('closed', () => { petWin = null; });
+  // Never steal focus from what the user is doing: only opening the command bar focuses the Island.
+  islandWin.once('ready-to-show', () => islandWin.showInactive());
+  islandWin.setAlwaysOnTop(true, 'screen-saver');
+  try { islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
+  islandWin.loadFile(path.join(RENDERER, 'index.html'));
+  // Spotlight behaviour: clicking anywhere else collapses the command bar.
+  islandWin.on('blur', () => { if (commandBarOpen) closeCommandBar({ notify: true }); });
+  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; });
+  // Displays change (resolution, dock, a monitor unplugged): stay at the top centre.
+  if (!islandScreenHooked) {
+    islandScreenHooked = true;
+    const replace = () => { if (islandWin && !islandWin.isDestroyed()) islandWin.setBounds(islandBounds(commandBarOpen)); };
+    screen.on('display-metrics-changed', replace);
+    screen.on('display-removed', replace);
+  }
+}
+
+/** Expand the Island into the command bar and give it keyboard focus (shortcut, Island click). */
+function openCommandBar({ notify = false } = {}) {
+  if (!islandWin || islandWin.isDestroyed()) createIslandWindow();
+  clearTimeout(islandShrinkTimer);
+  commandBarOpen = true;
+  islandWin.setBounds(islandBounds(true));
+  if (!islandWin.isVisible()) islandWin.showInactive();
+  if (process.platform === 'darwin') { try { app.focus({ steal: true }); } catch (_) {} }
+  islandWin.focus();
+  if (notify) sendToIsland({ type: 'island', open: true });
+}
+
+/** Collapse back to the capsule; the window shrinks once the renderer's morph has played. */
+function closeCommandBar({ notify = false } = {}) {
+  if (!commandBarOpen) return;
+  commandBarOpen = false;
+  if (notify) sendToIsland({ type: 'island', open: false });
+  if (islandWin && !islandWin.isDestroyed() && islandWin.isFocused()) islandWin.blur();
+  clearTimeout(islandShrinkTimer);
+  islandShrinkTimer = setTimeout(() => {
+    if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) islandWin.setBounds(islandBounds(false));
+  }, ISLAND_SHRINK_MS);
+}
+
+function toggleCommandBar() {
+  if (commandBarOpen) closeCommandBar({ notify: true }); else openCommandBar({ notify: true });
 }
 
 // The panel is a rounded glass sheet: a transparent, frameless window whose renderer paints the
@@ -437,17 +484,16 @@ function createPanelWindow() {
   panelWin.webContents.on(HAS_WILL_FRAME_NAVIGATE ? 'will-frame-navigate' : 'did-start-navigation', guardSubFrame);
 }
 
+/** The panel sits at the right of the Island's display, vertically centred, clear of the Island. */
 function positionPanel() {
-  if (!panelWin || !petWin) return;
-  const pb = petWin.getBounds();
-  const wa = workAreaFor(pb);
-  const [w, h] = panelWin.getSize();
-  // Prefer the left of the pet, else the right; align bottoms.
-  let x = pb.x - w - 8;
-  if (x < wa.x) x = pb.x + pb.width + 8;
-  if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
-  let y = pb.y + pb.height - h;
-  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
+  if (!panelWin || panelWin.isDestroyed()) return;
+  const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
+  const [w, h0] = panelWin.getSize();
+  const top = wa.y + ISLAND_TOP + ISLAND_COMPACT.height; // below the capsule
+  const h = Math.min(h0, wa.y + wa.height - top - 12);
+  if (h !== h0) panelWin.setSize(w, Math.max(380, h));
+  const x = wa.x + wa.width - w - 16;
+  const y = Math.max(top, wa.y + Math.round((wa.height - h) / 2));
   panelWin.setPosition(Math.round(x), Math.round(y));
 }
 
@@ -493,7 +539,7 @@ function createNotifyWindow() {
 
 function placeNotify(height) {
   if (!notifyWin || notifyWin.isDestroyed()) return;
-  const wa = workAreaFor(petWin && !petWin.isDestroyed() ? petWin.getBounds() : null);
+  const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
   const h = Math.max(60, Math.min(Math.round(height || 200), wa.height - 40));
   notifyWin.setBounds({ x: wa.x + wa.width - NOTIFY_W - 6, y: wa.y + 12, width: NOTIFY_W, height: h });
 }
@@ -559,9 +605,9 @@ function openActionLog() {
   broadcast({ type: 'open-log' });
 }
 
-function togglePet() {
-  if (!petWin) { createPetWindow(); return; }
-  if (petWin.isVisible()) petWin.hide(); else petWin.showInactive();
+function toggleIsland() {
+  if (!islandWin) { createIslandWindow(); rebuildTrayMenu(); return; }
+  if (islandWin.isVisible()) { closeCommandBar({ notify: true }); islandWin.hide(); } else islandWin.showInactive();
   rebuildTrayMenu();
 }
 
@@ -615,18 +661,15 @@ function createTray() {
 
 function rebuildTrayMenu() {
   if (!tray) return;
-  const petShown = !!(petWin && petWin.isVisible());
+  const islandShown = !!(islandWin && islandWin.isVisible());
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'O AI', enabled: false },
     { type: 'separator' },
-    { label: petShown ? 'Hide O' : 'Show O', click: togglePet },
-    { label: 'Open prompt  (Ctrl/Cmd+Shift+O)', click: showPanel },
+    { label: islandShown ? 'Hide the Island' : 'Show the Island', click: toggleIsland },
+    { label: 'Open command bar  (Ctrl/Cmd+Shift+O)', click: () => openCommandBar({ notify: true }) },
+    { label: 'Open panel', click: () => showPanel() },
     { label: 'Open action log', click: openActionLog },
     ...(ambient && ambient.live.length ? [{ label: `Sensing: ${ambient.live.map((x) => x.label).join(', ')}…`, click: openAmbientSettings }] : []),
-    {
-      label: 'Snooze wandering', type: 'checkbox', checked: wanderSnoozed,
-      click: (item) => { wanderSnoozed = item.checked; broadcast({ type: 'wander', paused: wanderSnoozed }); },
-    },
     { label: tasks && tasks.running().length > 1 ? `Stop all ${tasks.running().length} tasks` : 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
     { type: 'separator' },
     {
@@ -812,7 +855,7 @@ function onTaskEvent(ev) {
     const dropped = tasks.dropQueued();
     logApp('policy', `Approval timed out after 60 s: ${ev.toolName || ev.summary || 'tool'} — task stopped, ${dropped} queued task(s) dropped`,
       { id: ev.id, toolName: ev.toolName, summary: ev.summary, dropped, taskId: ev.taskId });
-    sendToPet({ type: 'status', mood: 'error', text: 'No answer in time. I stopped that task.' });
+    sendToIsland({ type: 'status', mood: 'error', text: 'No answer in time. I stopped that task.' });
   }
   if (chats && ev.taskId && ev.type !== 'status') chats.recordTo(ev.taskId, ev);
   if (ev.type === 'done' || ev.type === 'error') {
@@ -918,42 +961,30 @@ function enqueuePrompt(text, opts) {
 // ---------------------------------------------------------------- IPC
 
 function registerIpc() {
-  ipcMain.on('pet:moveBy', (_e, dx, dy) => {
-    if (!petWin || (physics && physics.active)) return; // flying: physics owns the window
-    const b = petWin.getBounds();
-    const wa = workAreaFor(b);
-    // Allow the pet to peek a little past the left/right edges, never off the bottom.
-    const x = Math.max(wa.x - b.width * 0.4, Math.min(b.x + dx, wa.x + wa.width - b.width * 0.6));
-    const y = Math.max(wa.y, Math.min(b.y + dy, wa.y + wa.height - b.height));
-    petWin.setBounds({ x: Math.round(x), y: Math.round(y), width: PET_SIZE, height: PET_SIZE });
-    if (panelVisible() && dragFollow) positionPanel();
-  });
-  ipcMain.handle('pet:getBounds', () => (petWin ? petWin.getBounds() : { x: 0, y: 0, width: PET_SIZE, height: PET_SIZE }));
-  ipcMain.handle('pet:getWorkArea', () => workAreaFor(petWin ? petWin.getBounds() : null));
+  // Island window. The pet-era channels moveBy/fling/grab are gone (the preload keeps them as no-ops).
+  ipcMain.handle('pet:getBounds', () => (islandWin ? islandWin.getBounds() : islandBounds(false)));
+  ipcMain.handle('pet:getWorkArea', () => workAreaFor(islandWin ? islandWin.getBounds() : null));
   ipcMain.handle('pet:getCursor', () => screen.getCursorScreenPoint());
-  ipcMain.on('pet:fling', (_e, vx, vy) => { if (physics) physics.fling(vx, vy); });
-  ipcMain.on('pet:grab', () => { if (physics) physics.stop('grabbed'); });
   ipcMain.on('pet:setIgnoreMouse', (_e, ignore) => {
-    if (petWin) petWin.setIgnoreMouseEvents(!!ignore, { forward: true });
+    if (islandWin && !islandWin.isDestroyed()) islandWin.setIgnoreMouseEvents(!!ignore, { forward: true });
   });
+  ipcMain.on('island:open', () => openCommandBar());
+  ipcMain.on('island:close', () => closeCommandBar());
 
   ipcMain.on('panel:toggle', togglePanel);
+  ipcMain.on('panel:show', () => showPanel());
   ipcMain.on('panel:hide', hidePanel);
   ipcMain.on('app:quit', () => turnOff());
   ipcMain.on('pet:menu', () => {
-    if (!petWin || petWin.isDestroyed()) return;
+    if (!islandWin || islandWin.isDestroyed()) return;
     Menu.buildFromTemplate([
-      { label: 'Open O', click: () => showPanel() },
+      { label: 'Open panel', click: () => showPanel() },
       { label: 'Open action log', click: () => openActionLog() },
       { label: 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
-      {
-        label: 'Snooze wandering', type: 'checkbox', checked: wanderSnoozed,
-        click: (item) => { wanderSnoozed = item.checked; broadcast({ type: 'wander', paused: wanderSnoozed }); rebuildTrayMenu(); },
-      },
-      { label: 'Hide O (tray icon brings it back)', click: () => togglePet() },
+      { label: 'Hide the Island (the tray icon brings it back)', click: () => toggleIsland() },
       { type: 'separator' },
       { label: 'Turn off O', click: () => turnOff() },
-    ]).popup({ window: petWin });
+    ]).popup({ window: islandWin });
   });
 
   ipcMain.handle('agent:prompt', (_e, text, opts) => enqueuePrompt(text, opts));
@@ -1173,7 +1204,7 @@ function registerIpc() {
     actionLog.markRead();
     clearTimeout(unreadNotifyTimer); unreadNotifyTimer = null;
     broadcast({ type: 'log-unread', count: 0 });
-    sendToPet({ type: 'status', mood: 'success', text: `Here's everything I did — ${n} action${n === 1 ? '' : 's'} since you last looked.` });
+    sendToIsland({ type: 'status', mood: 'success', text: `Here's everything I did — ${n} action${n === 1 ? '' : 's'} since you last looked.` });
     return { ok: true, wasUnread: n };
   });
   ipcMain.handle('log:paths', () => (actionLog ? actionLog.paths() : { jsonl: '', text: '' }));
@@ -1280,7 +1311,7 @@ app.whenReady().then(() => {
         // The engine's circuit breaker (ask mode: denied or 60 s without an answer) destroys the whole queue.
         if (entry && entry.source === 'engine' && entry.detail && entry.detail.queue_destroyed) {
           const dropped = stopTask().dropped;
-          sendToPet({ type: 'status', mood: 'error', text: `Queue destroyed: approval denied or timed out (${dropped} dropped)` });
+          sendToIsland({ type: 'status', mood: 'error', text: `Queue destroyed: approval denied or timed out (${dropped} dropped)` });
         }
       });
     } catch (err) { console.error('[o] action log:', err.message); actionLog = null; }
@@ -1329,16 +1360,11 @@ app.whenReady().then(() => {
   link.start().catch((err) => console.error('[o] O Link:', err.message));
   link.on('status', (st) => {
     broadcast({ type: 'link', ...st });
-    if (st.connected) sendToPet({ type: 'status', mood: 'success', text: 'O Link connected. Your tabs are reachable.' });
+    if (st.connected) sendToIsland({ type: 'status', mood: 'success', text: 'O Link connected. Your tabs are reachable.' });
   });
   link.on('blocked', (b) => {
     broadcast({ type: 'link-blocked', ...b });
-    sendToPet({ type: 'status', mood: 'error', text: 'Payment blocked. O does not make payments.' });
-  });
-  physics = createPhysics({
-    getWindow: () => petWin,
-    getWorkArea: (b) => workAreaFor(b),
-    onEvent: sendToPet,
+    sendToIsland({ type: 'status', mood: 'error', text: 'Payment blocked. O does not make payments.' });
   });
   let lastAnnounced = null;
   updater = createUpdater({
@@ -1369,7 +1395,7 @@ app.whenReady().then(() => {
   setInterval(autoCheck, 6 * 60 * 60 * 1000);
   // Linux transparency bug: create transparent windows a moment after 'ready'.
   setTimeout(() => {
-    createPetWindow();
+    createIslandWindow();
     createPanelWindow();
     createTray();
     updateBadge();
@@ -1378,16 +1404,15 @@ app.whenReady().then(() => {
   // (again when the engine is ready, since its URL is part of the config).
   setTimeout(() => { if (tasks) tasks.prewarm().catch(() => {}); }, 2500).unref();
   try {
-    globalShortcut.register('CommandOrControl+Shift+O', togglePanel);
+    globalShortcut.register('CommandOrControl+Shift+O', toggleCommandBar);
   } catch (_) {}
 });
 
-// A desktop pet keeps living with no windows focused; only quit explicitly.
+// O keeps running with no windows focused; only quit explicitly.
 app.on('window-all-closed', (e) => { if (!quitting) e.preventDefault(); });
 
 app.on('before-quit', () => {
   quitting = true;
-  if (physics) physics.stop('quit');
   try { if (chats) chats.flush(); } catch (_) {}
   try { if (link) link.stop(); } catch (_) {}
   try { if (ambient) ambient.stop(); } catch (_) {}
@@ -1404,7 +1429,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
-// Dev aid: O_SNAPSHOT_DIR=/tmp/x npm start  -> saves pet + panel PNGs a few seconds after launch, then quits.
+// Dev aid: O_SNAPSHOT_DIR=/tmp/x npm start  -> saves island + panel PNGs a few seconds after launch, then quits.
 if (process.env.O_SNAPSHOT_DIR) {
   app.whenReady().then(() => setTimeout(async () => {
     const fs = require('fs');
@@ -1422,7 +1447,7 @@ if (process.env.O_SNAPSHOT_DIR) {
         fs.writeFileSync(require('path').join(dir, 'screen.jpg'), Buffer.from(shot.data, 'base64'));
         console.log('[o] screen capture', shot.width + 'x' + shot.height, 'cursor', JSON.stringify(shot.cursor));
       }
-      for (const [name, w] of [['pet', petWin], ['panel', panelWin]]) {
+      for (const [name, w] of [['island', islandWin], ['panel', panelWin]]) {
         if (!w) continue;
         const img = await w.webContents.capturePage();
         fs.writeFileSync(require('path').join(dir, name + '.png'), img.toPNG());

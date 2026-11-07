@@ -191,7 +191,7 @@
     sendBtn.hidden = running && !hasText;
     sendBtn.disabled = !hasText;
     sendBtn.title = running ? 'Start another task (Enter)' : t ? 'Follow up on this task (Enter)' : 'Start task (Enter)';
-    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up on this task…' : 'Hand O a complex task…';
+    promptEl.placeholder = running ? 'Give O another task…' : t ? 'Follow up on this task…' : 'Only for complex tasks: describe it…';
   }
 
   // ------------------------------------------------------------ agent events
@@ -787,7 +787,7 @@
       const el = $('set-' + k);
       if (!el) continue;
       if (el.type === 'checkbox') el.checked = !!s[k];
-      else if (el.tagName === 'SELECT' && s[k] == null) el.selectedIndex = 0;
+      else if (el.tagName === 'SELECT' && (s[k] == null || ![...el.options].some((op) => op.value === String(s[k])))) el.selectedIndex = 0;
       else el.value = s[k] == null ? '' : s[k];
       // Ask before installing applies at once (no Save needed); the Evolution view follows.
       if (k === 'evolveAskBeforeInstall' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ evolveAskBeforeInstall: el.checked }); if (window.__oEvolve) window.__oEvolve.refresh(); }); }
@@ -1207,6 +1207,7 @@
     }
     await o.setSettings(partial);
     if (partial.theme) { savedTheme = THEMES.includes(partial.theme) ? partial.theme : 'glass'; applyTheme(savedTheme); }
+    refreshAutonomy();
     $('settings-saved').textContent = mcpOk ? 'Saved. Applies to the next task.' : 'Saved, except MCP servers (fix the JSON)';
     setTimeout(() => { $('settings-saved').textContent = ''; }, 2500);
     checkClaude();
@@ -2048,15 +2049,70 @@
   }
   function renderActivity() {
     const ol = $('home-activity');
-    const shown = liveEntries.slice(-3).reverse();
+    const shown = liveEntries.slice(-6).reverse();
     ol.innerHTML = shown.map((e) => `<li data-kind="${escapeHtml(e.kind || '')}"><time>${escapeHtml(entryTime(e).slice(0, 5))}</time><span>${escapeHtml(String(e.summary).split('\n')[0].slice(0, 120))}</span></li>`).join('');
     ol.hidden = !shown.length;
   }
 
+  // O's agenda: every goal O pursues, the ones it set itself first, each with its reasoning ("Why"), its live
+  // status, and what it will do next and when (the last cycle's `next` from goalDetail, the scheduler's nextRun).
   const HOME_GOALS_MAX = 4;
+  const agendaNext = new Map(); // goal id -> { next, at } from the latest cycle
+  async function loadAgendaNext(list) {
+    if (!has('goalDetail')) return;
+    let changed = false;
+    for (const g of list) {
+      const cached = agendaNext.get(g.id);
+      if (cached && Date.now() - cached.at < 5 * 60 * 1000) continue;
+      agendaNext.set(g.id, { next: cached ? cached.next : '', at: Date.now() });
+      let d = null;
+      try { d = await o.goalDetail(g.id); } catch (_) { d = null; }
+      const cyc = d && d.ok !== false && Array.isArray(d.cycles) ? d.cycles : [];
+      const last = cyc[cyc.length - 1];
+      const next = last && last.next ? String(last.next) : '';
+      if (next !== (cached ? cached.next : '')) changed = true;
+      agendaNext.set(g.id, { next, at: Date.now() });
+    }
+    if (changed) renderHome();
+  }
+
+  function whyOf(g) {
+    const why = g.why || g.reason || g.rationale || '';
+    if (why) return String(why);
+    const obj = String(g.objective || '').trim();
+    const same = obj.replace(/[.\s]+$/, '').toLowerCase() === String(g.title || '').trim().replace(/[.\s]+$/, '').toLowerCase();
+    if (g.origin === 'agent') return same || !obj ? 'O set this from how you work.' : obj;
+    return same || !obj ? 'You set this goal.' : `You set this goal. ${obj}`;
+  }
+
+  function agendaEl(g) {
+    const row = goalRowEl(g, { compact: true });
+    row.classList.add('agenda');
+    if (g.origin === 'agent') row.classList.add('self');
+    const text = row.querySelector('.gtext');
+    const why = document.createElement('span');
+    why.className = 'gwhy';
+    why.innerHTML = `<b>Why</b> ${escapeHtml(whyOf(g))}`;
+    text.insertBefore(why, text.querySelector('.gsub'));
+    const gl = row.querySelector('.gline');
+    if (gl) gl.textContent = `Day ${Math.min(g.day || 1, g.horizon_days || 1)} of ${g.horizon_days}${g.pendingCheckpoints ? ` · ${g.pendingCheckpoints} to approve` : ''}`;
+    const t = g.runningTaskId ? tasksById.get(g.runningTaskId) : null;
+    const nx = agendaNext.get(g.id);
+    const next = document.createElement('span');
+    next.className = 'gnext';
+    if (g.status === 'paused') next.innerHTML = '<span class="gstate">Paused</span>';
+    else if (g.runningTaskId) next.innerHTML = `<span class="gstate live">Working now</span><span class="gn-t">${escapeHtml((t && t.statusLine) || 'running this cycle')}</span>`;
+    else next.innerHTML = `<span class="gstate">${g.nextRun ? `Next · ${escapeHtml(shortNext(g.nextRun))}` : 'Next'}</span><span class="gn-t">${escapeHtml((nx && nx.next) || 'Plans the next cycle from the last results')}</span>`;
+    text.appendChild(next);
+    return row;
+  }
+
   function renderHomeGoals() {
-    const live = goalsList.filter((g) => g.status !== 'archived');
-    const items = live.slice(0, HOME_GOALS_MAX).map((g) => ({ key: 'g:' + g.id, el: goalRowEl(g, { compact: true }) }));
+    const live = goalsList.filter((g) => g.status !== 'archived')
+      .sort((a, b) => (a.origin === 'agent' ? 0 : 1) - (b.origin === 'agent' ? 0 : 1) || (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1));
+    const shown = live.slice(0, HOME_GOALS_MAX);
+    loadAgendaNext(shown);
+    const items = shown.map((g) => ({ key: 'g:' + g.id, el: agendaEl(g) }));
     for (const p of liveProposals()) items.push({ key: 'p:' + propKey(p), el: proposalEl(p) });
     if (live.length > HOME_GOALS_MAX) {
       const b = document.createElement('button');
@@ -2069,7 +2125,7 @@
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'link-btn'; b.textContent = 'Propose goals now';
       b.addEventListener('click', () => loadProposals(true));
-      items.push(emptyLine(proposalsNote || 'No goals yet. O proposes its own as it learns how you work. ', has('proposeGoals') ? b : null));
+      items.push(emptyLine(proposalsNote || 'No goals yet. O sets its own as it learns how you work. ', has('proposeGoals') ? b : null));
     }
     fillSection('goals', $('home-goals-list'), items);
   }
@@ -2123,6 +2179,24 @@
   $('home-goals-all').addEventListener('click', openGoals);
   $('home-learning-all').addEventListener('click', () => { if (window.__oEvolve) window.__oEvolve.openSheet(); });
 
+  // ------------------------------------------------------------ autonomy indicator (header)
+  // Existing modes only: 'log' runs without approval prompts and records every step.
+  const AUTONOMY = {
+    log: ['Autonomous', 'full', 'Autonomous: acts without asking, records everything'],
+    auto: ['Auto-approve', 'full', 'Auto-approves everything'],
+    ask: ['Ask first', 'low', 'Ask first'],
+  };
+  async function refreshAutonomy() {
+    let st;
+    try { st = await o.getSettings(); } catch (_) { return; }
+    const [label, level, full] = AUTONOMY[st && st.permissionMode] || AUTONOMY.log;
+    $('autonomy-label').textContent = label;
+    $('autonomy-chip').dataset.level = level;
+    $('autonomy-chip').title = `${full}. Click to change`;
+    $('autonomy-chip').setAttribute('aria-label', `Permission mode: ${full}. Open Settings`);
+  }
+  $('autonomy-chip').addEventListener('click', openSettings);
+
   // ------------------------------------------------------------ init
 
   window.addEventListener('focus', () => promptEl.focus());
@@ -2138,5 +2212,6 @@
   setTimeout(() => loadProposals(false), 1200);
   if (has('logTail')) o.logTail(20).then((t) => { (Array.isArray(t) ? t : (t && t.entries) || []).slice(-6).forEach(pushLive); }).catch(() => {});
   syncNav();
+  refreshAutonomy();
   autosize();
 })();

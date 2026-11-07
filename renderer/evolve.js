@@ -253,7 +253,6 @@
 
   function openSheet() {
     for (const id of OTHER_SHEETS) { const el = $(id); if (el) el.hidden = true; }
-    const scrim = $('scrim'); if (scrim) scrim.hidden = true;
     sheet.hidden = false;
     render();
     refresh();

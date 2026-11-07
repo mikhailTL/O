@@ -1,6 +1,6 @@
 'use strict';
 // Bridge between the renderer windows and the main process.
-// Exposed as window.o in both the pet and the panel windows.
+// Exposed as window.o in the Island, the panel, the notify cards and the brief overlay.
 const { contextBridge, ipcRenderer } = require('electron');
 
 // The saved theme, read synchronously so the renderer can set <html data-theme> before first paint.
@@ -12,15 +12,20 @@ try {
 
 contextBridge.exposeInMainWorld('o', {
   initialTheme,
-  // pet window
-  moveBy: (dx, dy) => ipcRenderer.send('pet:moveBy', Math.round(dx) || 0, Math.round(dy) || 0),
+  // Island window (status capsule + command bar). getBounds/getWorkArea refer to the Island window.
   getBounds: () => ipcRenderer.invoke('pet:getBounds'),
   getWorkArea: () => ipcRenderer.invoke('pet:getWorkArea'),
   getCursor: () => ipcRenderer.invoke('pet:getCursor'),
   togglePanel: () => ipcRenderer.send('panel:toggle'),
+  showPanel: () => ipcRenderer.send('panel:show'),
   setIgnoreMouse: (ignore) => ipcRenderer.send('pet:setIgnoreMouse', !!ignore),
-  fling: (vx, vy) => ipcRenderer.send('pet:fling', Number(vx) || 0, Number(vy) || 0),
-  grab: () => ipcRenderer.send('pet:grab'),
+  // The command bar: expand (bounds + keyboard focus) and collapse back to the capsule.
+  islandOpen: () => ipcRenderer.send('island:open'),
+  islandClose: () => ipcRenderer.send('island:close'),
+  // The desktop pet is gone: these stay as harmless no-ops so older callers keep working.
+  moveBy: () => {},
+  fling: () => {},
+  grab: () => {},
 
   // both windows
   onAgentEvent: (cb) => {
@@ -74,7 +79,7 @@ contextBridge.exposeInMainWorld('o', {
   // extras (panel)
   hidePanel: () => ipcRenderer.send('panel:hide'),
   turnOff: () => ipcRenderer.send('app:quit'),
-  petMenu: () => ipcRenderer.send('pet:menu'),
+  petMenu: () => ipcRenderer.send('pet:menu'), // the Island's right-click menu
   // permission sidebar
   onTheme: (cb) => {
     const handler = (_e, ev) => { if (ev && ev.type === 'theme') cb(ev.theme); };

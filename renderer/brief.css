@@ -1,14 +1,14 @@
 /* The welcome-back brief: one black-glass card at the top centre of the screen. Monochrome; white text.
    The window is transparent and click-through; only the card paints. */
 :root {
-  --card: rgba(10, 10, 12, 0.8);
+  --card: rgba(12, 14, 20, 0.82);
   --line: rgba(255, 255, 255, 0.14);
   --text: #f4f4f6;
   --muted: #b6b6bf;
   --track: rgba(255, 255, 255, 0.12);
   --bar: rgba(255, 255, 255, 0.7);
-  --glass: blur(28px) saturate(140%);
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+  --glass: blur(40px) saturate(180%);
+  --sans: -apple-system, "SF Pro Text", "Segoe UI Variable", Inter, system-ui, sans-serif;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, Cambria, "Times New Roman", serif;
   --in: 260ms;
   --out: 220ms;
@@ -23,7 +23,7 @@ body { padding: 6px 12px 22px; font: 15px/1.5 var(--sans); color: var(--text); -
   box-sizing: border-box;
   width: 100%;
   padding: 14px 20px 16px;
-  border-radius: 22px;
+  border-radius: 18px;
   background: var(--card);
   -webkit-backdrop-filter: var(--glass);
   backdrop-filter: var(--glass);
@@ -31,8 +31,8 @@ body { padding: 6px 12px 22px; font: 15px/1.5 var(--sans); color: var(--text); -
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 10px rgba(255, 255, 255, 0.06), 0 8px 14px rgba(0, 0, 0, 0.4); /* fits the window padding: no clipped shadow edge */
   overflow: hidden;
   opacity: 0;
-  transform: translateY(-10px) scale(0.985);
-  transition: opacity var(--in) cubic-bezier(.2, .8, .2, 1), transform var(--in) cubic-bezier(.2, .8, .2, 1);
+  transform: translateY(-8px);
+  transition: opacity var(--in) cubic-bezier(0.23, 1, 0.32, 1), transform var(--in) cubic-bezier(0.23, 1, 0.32, 1);
 }
 #brief.in { opacity: 1; transform: none; }
 #brief.out { opacity: 0; transform: translateY(-6px); transition-duration: var(--out); transition-timing-function: ease-in; }
@@ -44,7 +44,7 @@ body { padding: 6px 12px 22px; font: 15px/1.5 var(--sans); color: var(--text); -
 
 .b-lines p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text); text-wrap: pretty; }
 .b-lines p + p { margin-top: 4px; }
-.b-lines p:first-child { font: 400 17px/1.4 var(--serif); }
+.b-lines p:first-child { font: 600 15px/1.4 var(--sans); letter-spacing: -0.01em; }
 
 .b-time { position: absolute; left: 20px; right: 20px; bottom: 7px; height: 2px; border-radius: 1px; background: var(--track); overflow: hidden; }
 #b-bar { display: block; height: 100%; width: 100%; background: var(--bar); transform-origin: left center; transform: scaleX(1); }

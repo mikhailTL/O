@@ -37,7 +37,7 @@ function createShortcuts(app, shell, { desktop = true } = {}) {
     target: t.target,
     args: t.args,
     cwd: t.cwd,
-    description: 'O AI, your desktop pet agent',
+    description: 'O AI, a self-directed desktop agent',
     icon: fs.existsSync(icon) ? icon : t.target,
     iconIndex: 0,
     appUserModelId: APP_ID,

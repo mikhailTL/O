@@ -806,3 +806,45 @@ details.group[open] { padding-bottom: 12px; }
 #home .need.cp-card .cp-sum { margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 #home .need.cp-card { box-shadow: var(--highlight); border-color: var(--hairline); }
 .ev-need .ev-review { background: transparent; color: var(--text); border-color: var(--line-strong); box-shadow: none; font-weight: 500; }
+
+/* ---------------------------------------------------------------- autonomy (header) */
+.autonomy {
+  -webkit-app-region: no-drag; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px 0 8px; margin-left: 2px;
+  border-radius: 999px; border: 1px solid var(--hairline); background: rgba(0, 0, 0, 0.18);
+  font: 600 10.5px/1 var(--sans); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); white-space: nowrap; flex: 0 0 auto;
+}
+.autonomy .adot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-bright); box-shadow: 0 0 6px var(--accent); }
+.autonomy[data-level="full"] { color: var(--text); border-color: var(--accent-line); background: linear-gradient(135deg, rgba(58, 107, 255, 0.28), rgba(155, 227, 255, 0.12)); box-shadow: 0 0 14px rgba(76, 141, 255, 0.3); }
+.autonomy[data-level="full"] .adot { background: #9BE3FF; animation: breathe 2.4s ease-in-out infinite; }
+.autonomy[data-level="low"] .adot { background: var(--text-3); box-shadow: none; }
+#titlebar .brand #state-line { max-width: 150px; }
+
+/* ---------------------------------------------------------------- O's agenda */
+.goal-row.agenda { align-items: flex-start; }
+.goal-row.agenda .goal-open { align-items: flex-start; padding: 10px 8px 10px 12px; }
+.goal-row.agenda .goal-pause { margin-top: 6px; }
+.goal-row.agenda.self { border-color: rgba(124, 196, 255, 0.24); box-shadow: var(--highlight), 0 0 20px rgba(76, 141, 255, 0.1); }
+.goal-row.agenda .gttl { font-size: 13px; }
+.gwhy { font-size: 12px; color: var(--text-2); line-height: 1.45; margin: 2px 0 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
+.gwhy b { font: 600 10px/1 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-right: 4px; }
+.gnext { display: flex; align-items: baseline; gap: 8px; margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--hairline); font-size: 11.5px; color: var(--text-2); min-width: 0; }
+.gnext { white-space: nowrap; overflow: hidden; }
+.gn-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gstate { flex: 0 0 auto; font: 600 10.5px/16px var(--sans); color: var(--accent-bright); font-variant-numeric: tabular-nums; }
+.gstate.live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; vertical-align: 1px; background: var(--accent-bright); box-shadow: 0 0 6px var(--accent); animation: soft 1.4s ease-in-out infinite; }
+
+/* ---------------------------------------------------------------- Live stream */
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px rgba(91, 224, 166, 0.8); animation: soft 1.8s ease-in-out infinite; }
+#home-now .activity {
+  margin: 2px 0 0; padding: 8px 12px; gap: 3px;
+  background: rgba(0, 0, 0, 0.22); border: 1px solid var(--hairline); border-radius: var(--r-card);
+  font-family: var(--mono);
+}
+#home-now .activity li { grid-template-columns: 40px 1fr; font: 11px/1.6 var(--mono); }
+#home-now .activity li:first-child span { color: var(--text); }
+#home-now .activity li:first-child time { color: var(--accent-bright); }
+
+/* the composer is secondary on Home: quieter until used */
+body:not(.chatting) .inputwrap:not(:focus-within) { background: rgba(255, 255, 255, 0.02); box-shadow: var(--highlight); }
+body:not(.chatting) #prompt { font-size: 12.5px; }
+

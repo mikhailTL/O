@@ -87,7 +87,7 @@ button:focus { outline: none; }
   gap: 9px;
   white-space: nowrap;
   transform: translateX(-50%);
-  transition: opacity 160ms linear;
+  transition: opacity 180ms linear 170ms; /* back after the bar has mostly shrunk */
 }
 .line { display: inline-flex; align-items: baseline; gap: 6px; max-width: 330px; overflow: hidden; line-height: 1; letter-spacing: -0.003em; }
 .line .k { font-weight: 600; color: var(--ol-text); flex: none; }
@@ -156,7 +156,7 @@ button:focus { outline: none; }
   transition: opacity var(--ol-hover) linear;
 }
 #bar:focus-within .bar-rim::after { opacity: 1; }
-.bar-ring, #input, .keys { position: relative; opacity: 0; transition: opacity 160ms linear; }
+.bar-ring, #input, .keys { position: relative; opacity: 0; transition: opacity 80ms linear; }
 .bar-ring { width: 16px; height: 16px; flex: none; }
 .bar-ring svg { display: block; overflow: visible; filter: drop-shadow(0 0 4px rgba(76, 141, 255, 0.8)); }
 .bar-ring circle { fill: none; stroke: url(#o-ring-grad); stroke-width: 1.75; }

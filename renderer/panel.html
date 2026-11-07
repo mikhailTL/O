@@ -25,6 +25,7 @@
       <span id="logo" class="ring" aria-hidden="true"></span>
       <strong class="wordmark">O</strong>
       <span id="state-line">idle</span>
+      <button id="autonomy-chip" class="autonomy" type="button" title="Permission mode (click to change)"><span class="adot" aria-hidden="true"></span><span id="autonomy-label">Autonomous</span></button>
       <button id="sensing-glyph" class="sensing-glyph" type="button" hidden aria-label="Sensing is on. Open Ambient settings"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="1.8"/><path d="M6.6 6.6a4.8 4.8 0 0 0 0 6.8M13.4 6.6a4.8 4.8 0 0 1 0 6.8"/><path d="M4.2 4.2a8.2 8.2 0 0 0 0 11.6M15.8 4.2a8.2 8.2 0 0 1 0 11.6"/></svg></button>
     </div>
     <div class="spacer"></div>
@@ -71,11 +72,12 @@
       <label class="row">
         <span>Permissions</span>
         <select id="set-permissionMode">
-          <option value="log">Log everything, never ask (default)</option>
-          <option value="ask">Ask me before shell/file changes</option>
+          <option value="log">Autonomous: acts without asking, records everything (default)</option>
+          <option value="ask">Ask first</option>
           <option value="auto">Auto-approve everything (risky)</option>
         </select>
       </label>
+      <p class="hint">Payments, new accounts and consent rules always come to you, in every mode.</p>
       <label class="row check">
         <input type="checkbox" id="set-evolveAskBeforeInstall" aria-describedby="evolve-ask-hint">
         <span>Ask before installing new tools and upgrades</span>
@@ -533,6 +535,11 @@
         <span id="home-sub" class="home-sub"></span>
       </div>
 
+      <section class="hsec" id="home-goals" aria-labelledby="hgoals-h">
+        <h2 class="hsec-h" id="hgoals-h">O's agenda<button id="home-goals-all" class="hlink" type="button">All goals</button></h2>
+        <div id="home-goals-list" class="hlist" role="list"></div>
+      </section>
+
       <section class="hsec need-sec" id="home-needs" aria-labelledby="hn-h" hidden>
         <h2 class="hsec-h" id="hn-h">Needs you<span id="home-needs-count" class="hcount"></span></h2>
         <div id="home-needs-list" class="hlist"></div>
@@ -540,14 +547,9 @@
       </section>
 
       <section class="hsec" id="home-now" aria-labelledby="hnow-h">
-        <h2 class="hsec-h" id="hnow-h">Now<button id="home-now-all" class="hlink" type="button">All tasks</button></h2>
+        <h2 class="hsec-h" id="hnow-h"><span class="live-dot" aria-hidden="true"></span>Live<button id="home-now-all" class="hlink" type="button">All tasks</button></h2>
         <div id="home-now-list" class="hlist" role="list"></div>
-        <ol id="home-activity" class="activity" aria-label="Live activity"></ol>
-      </section>
-
-      <section class="hsec" id="home-goals" aria-labelledby="hgoals-h">
-        <h2 class="hsec-h" id="hgoals-h">Goals<button id="home-goals-all" class="hlink" type="button">All goals</button></h2>
-        <div id="home-goals-list" class="hlist" role="list"></div>
+        <ol id="home-activity" class="activity" aria-label="What O is doing on its own"></ol>
       </section>
 
       <section class="hsec" id="home-learning" aria-labelledby="hlearn-h">
@@ -565,7 +567,7 @@
       <span class="offer-note">Daily work, approvals only at checkpoints</span>
     </div>
     <div class="inputwrap">
-      <textarea id="prompt" rows="1" placeholder="Hand O a complex task…" aria-label="Give O a task"></textarea>
+      <textarea id="prompt" rows="1" placeholder="Only for complex tasks: describe it…" aria-label="Give O a task"></textarea>
       <button id="mode-chip" class="chip" type="button" title="O Link add-on is connected (click for settings)" hidden><span class="dot"></span><span id="mode-label">O Link</span></button>
       <button id="btn-stop" title="Stop now (Ctrl+.)" aria-label="Stop" hidden><svg viewBox="0 0 20 20"><rect x="6" y="6" width="8" height="8" rx="1.5"/></svg></button>
       <button id="btn-send" title="Send (Enter)" aria-label="Send" disabled><svg viewBox="0 0 20 20"><path d="M10 15V5M5.5 9.5L10 5l4.5 4.5"/></svg></button>

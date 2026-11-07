@@ -191,9 +191,6 @@
         if (ev.state === 'available') setFlash('Update ready', 'Tray menu, Update O now', 'attention', 6000);
         else if (ev.state === 'restarting') setFlash('Updating', 'Back in a moment', 'working', 4000);
         break;
-      case 'panel':
-        if (ev.open && isOpen) close();
-        break;
       case 'island':
         if (ev.open) open(); else close();
         break;
@@ -536,7 +533,12 @@
     L.retract([gSide, side], { dx: -84, duration: 200, scale: 0.9, fade: [side, gSide] });
     input.blur();
     closeTimer = setTimeout(() => body.classList.remove('open'), recs.length ? 110 : 40);
-    setTimeout(() => { if (!isOpen) body.classList.remove('ext'); }, 420);
+    setTimeout(() => {
+      if (isOpen) return;
+      body.classList.remove('ext');
+      input.value = '';
+      bar.classList.remove('has-text');
+    }, 420);
     renderIsland();
   }
 
