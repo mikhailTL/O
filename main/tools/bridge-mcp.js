@@ -1028,13 +1028,21 @@ function luhnOk(digits) {
   return sum % 10 === 0;
 }
 
-/** True when the text holds a 13–19 digit Luhn-valid number (spaces and dashes allowed between digits). */
+/**
+ * True when the text holds a 13–19 digit Luhn-valid number (spaces and dashes allowed between digits).
+ * A run of digit groups ("2 4242 4242 4242 4242") is checked as every contiguous span of whole groups, never
+ * an arbitrary slice of one group, so long plain numbers are not taken for cards by chance.
+ */
 function hasCardNumber(text) {
   const runs = String(text || '').match(/\d(?:[ -]*\d)*/g) || [];
   for (const run of runs) {
-    const d = run.replace(/[^\d]/g, '').slice(0, 64);
-    for (let len = 13; len <= 19 && len <= d.length; len++) {
-      for (let s = 0; s + len <= d.length; s++) if (luhnOk(d.slice(s, s + len))) return true;
+    const groups = run.split(/[ -]+/).slice(0, 32);
+    for (let i = 0; i < groups.length; i++) {
+      let d = '';
+      for (let j = i; j < groups.length && d.length < 19; j++) {
+        d += groups[j];
+        if (d.length >= 13 && d.length <= 19 && luhnOk(d)) return true;
+      }
     }
   }
   return false;
