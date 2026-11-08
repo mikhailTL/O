@@ -136,6 +136,10 @@ class EngineSettings(BaseModel):
     docker_network: str = "bridge"
     swarm: bool = True
     web_prefer: str = "browser-use"
+    # O's OpenAI-compatible API proxy (main/proxy.js): browser-use's model when vLLM does not answer
+    proxy_url: str = ""  # O_PROXY_URL, e.g. http://127.0.0.1:8787/v1 ("" when the proxy is off)
+    proxy_token: str = ""  # O_PROXY_TOKEN
+    fast_model: str = "haiku"  # O_FAST_MODEL: the Claude model the proxy runs for browser-use
     # ---- Phase 3 (GenUI) ----
     genui: bool = True  # O_GENUI: emit GenUI frames at all
     ui_url: str | None = None  # O_UI_URL: the app endpoint every GenUI frame is pushed to (optional)
@@ -197,6 +201,9 @@ class EngineSettings(BaseModel):
             "docker_network": _env("O_DOCKER_NETWORK", "bridge"),
             "swarm": _truthy_env("O_SWARM", True),
             "web_prefer": _env("O_WEB_PREFER", "browser-use"),
+            "proxy_url": _env("O_PROXY_URL", ""),
+            "proxy_token": _env("O_PROXY_TOKEN", ""),
+            "fast_model": _env("O_FAST_MODEL", "haiku") or "haiku",
             # Phase 3
             "genui": _truthy_env("O_GENUI", True),
             "ui_url": _env("O_UI_URL") or None,
@@ -545,7 +552,8 @@ class EngineDeps:
         if scripted:
             return PlaywrightDomRunner(display=display)
         s = self.settings
-        return get_web_runner(s.web_prefer, s.vllm_url, s.vllm_model, display=display)
+        return get_web_runner(s.web_prefer, s.vllm_url, s.vllm_model, display=display,
+                              proxy_url=s.proxy_url, proxy_token=s.proxy_token, fast_model=s.fast_model)
 
 
 def build_learning(settings: EngineSettings, interfaces: Any = None, procedures: Any = None) -> Any:
@@ -691,6 +699,33 @@ def probe_cu_backend() -> dict[str, Any]:
     return {"name": name, "available": available, "reason": str(reason)}
 
 
+def probe_accessibility_trusted() -> bool | None:
+    """macOS: ``AXIsProcessTrusted()`` for the engine process (True/False); None elsewhere or when pyobjc's
+    ApplicationServices is missing. The permission attaches to the responsible app (O, or Terminal)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from .cu.backends.ax import accessibility_trusted
+
+        return accessibility_trusted()
+    except Exception:
+        return None
+
+
+def accessibility_report() -> dict[str, Any]:
+    """``{cu_backend, accessibility_trusted, hint}``: the cheap subset of /health the app and bridge poll."""
+    backend = probe_cu_backend()
+    trusted = probe_accessibility_trusted()
+    hint = ""
+    if trusted is False:
+        from .cu.backends.ax import ACCESSIBILITY_HINT
+
+        hint = ACCESSIBILITY_HINT
+    elif not backend["available"] and backend["name"] == "ax":
+        hint = "O's macOS accessibility backend is not installed. Re-run the installer: bash install/install.sh"
+    return {"cu_backend": backend, "accessibility_trusted": trusted, "hint": hint}
+
+
 def verify_target(target: VerifyTarget) -> dict:
     from .verify import verify_target as _vt
 
@@ -792,6 +827,7 @@ def health_report(settings: EngineSettings, deps: Any = None) -> dict[str, Any]:
         "xvfb": shutil.which("Xvfb") is not None,
         "playwright": _probe_playwright(),
         "cu_backend": probe_cu_backend(),
+        "accessibility_trusted": probe_accessibility_trusted(),
         "cu_displays": cu_display_status(settings, deps),
         **phase2_health(settings),
     }
@@ -1298,6 +1334,11 @@ def create_app(
     @app.get("/computer/interfaces", dependencies=guarded)
     def computer_interfaces() -> dict[str, Any]:
         return {"apps": interface_rows(deps().cu_interfaces)}
+
+    @app.get("/computer/access", dependencies=guarded)
+    def computer_access() -> dict[str, Any]:
+        # cheap: no display is started and no tree is read
+        return accessibility_report()
 
     @app.get("/computer/tree", dependencies=guarded)
     def computer_tree(window: str | None = None) -> dict[str, Any]:

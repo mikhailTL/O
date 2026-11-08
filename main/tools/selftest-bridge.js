@@ -64,6 +64,7 @@ const server = http.createServer(async (req, res) => {
       steps: [{ index: 0, command: 'launch cmd=\'libreoffice --calc\'', cwd: '', exit_code: 0, stdout_tail: '', stderr_tail: '', elapsed_ms: 5 }],
     });
   }
+  if (req.method === 'GET' && u.pathname === '/computer/access') { stub.accessCalls = (stub.accessCalls || 0) + 1; if (stub.access) return json(res, 200, stub.access); }
   if (req.method === 'POST' && u.pathname === '/computer/find') { stub.findBodies.push(body); return json(res, 200, { found: true, node: { id: 'n1', role: body.target.role, name: 'A1' } }); }
   if (req.method === 'GET' && u.pathname === '/computer/tree') { stub.treeWindows.push(u.searchParams.get('window')); return json(res, 200, { window: u.searchParams.get('window'), nodes: [{ id: 'n0', role: 'frame', name: 'Calc', children: [] }] }); }
   if (req.method === 'GET' && u.pathname === '/tools/list') return json(res, 200, { tools: [{ server: 'fs', name: 'read_file', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] });
@@ -375,6 +376,69 @@ async function main() {
     } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} }
   }
 
+  // ---- browser-internal pages: straight to computer use (accessibility tree), never JavaScript / Playwright
+  console.log('bridge tab_act on browser-internal pages (mocked darwin)');
+  {
+    const fs = require('fs');
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'o-selftest-int-'));
+    const preload = path.join(dir, 'mock-darwin-internal.js');
+    const callLog = path.join(dir, 'osascript-calls.jsonl');
+    fs.writeFileSync(preload, [
+      "'use strict';",
+      "const fs = require('fs');",
+      "Object.defineProperty(process, 'platform', { value: 'darwin' });",
+      "const cp = require('child_process');",
+      `const LOG = ${JSON.stringify(callLog)};`,
+      "cp.execFile = function (file, args, opts, cb) {",
+      "  fs.appendFileSync(LOG, JSON.stringify({ file, op: args[5], script: String(args[3] || '').slice(0, 40) }) + '\\n');",
+      "  const out = file === 'osascript' && args[5] === 'info'",
+      "    ? JSON.stringify({ ok: true, app: args[6], title: 'Extensions', url: 'chrome://extensions/', active: true, window_title: 'Extensions' })",
+      "    : JSON.stringify({ ok: false, error: 'mock: no JavaScript or navigation by osascript expected (' + args[5] + ')' });",
+      "  setImmediate(() => cb(null, out, ''));",
+      "};",
+    ].join('\n'));
+    const ops = () => { try { return fs.readFileSync(callLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).op); } catch (_) { return []; } };
+    try {
+      await runWith({ ...env, O_PERMISSION_MODE: 'log', O_GOAL_ID: '', O_GOAL_URL: '' }, async (rpc) => {
+        await rpc('initialize', { protocolVersion: '2024-11-05' });
+        stub.access = { cu_backend: { name: 'ax', available: true, reason: '' }, accessibility_trusted: true, hint: '' };
+        const act = (args) => rpc('tools/call', { name: 'tab_act', arguments: { app: 'Google Chrome', tab: 1, ...args } }, 15000);
+        let before = stub.computerBodies.length;
+        const cl = await act({ action: 'click', target: 'the Developer mode toggle' });
+        let last = stub.computerBodies[stub.computerBodies.length - 1];
+        check(!cl.result.isError && stub.computerBodies.length === before + 1 && last.app === 'Google Chrome' && /chrome:\/\/extensions/.test(last.goal) && /only the accessibility tree/.test(last.goal),
+          'tab_act click on chrome://extensions → /computer/run with app=Google Chrome and an accessibility-only goal');
+        check(ops().every((op) => op === 'info'), 'tab_act on an internal page runs no osascript JavaScript (only the tab info lookup): ' + ops().join(','));
+        before = stub.computerBodies.length;
+        fs.writeFileSync(callLog, '');
+        const nv = await act({ action: 'navigate', url: 'chrome://extensions/?id=abc' });
+        last = stub.computerBodies[stub.computerBodies.length - 1];
+        check(!nv.result.isError && stub.computerBodies.length === before + 1 && last.app === 'Google Chrome' && /set the address bar to "chrome:\/\/extensions\/\?id=abc"/.test(last.goal),
+          'tab_act navigate to chrome://extensions → /computer/run (not refused as non-http, no AppleScript URL set)');
+        check(!ops().includes('navigate') && !ops().includes('text'), 'internal navigate: no osascript navigate / JavaScript call');
+        fs.writeFileSync(callLog, '');
+        const rd = await rpc('tools/call', { name: 'tab_read', arguments: { app: 'Google Chrome', tab: 1 } }, 15000);
+        check(!ops().includes('text'), 'tab_read on an internal page never asks for JavaScript from Apple Events');
+        check(/accessibility/.test(text(rd)), 'tab_read on an internal page answers from / points to the accessibility tree');
+        // Accessibility permission off: one clear line, no job, no blame on the browser
+        stub.access = { cu_backend: { name: 'ax', available: false, reason: 'accessibility permission needed' }, accessibility_trusted: false, hint: '' };
+        before = stub.computerBodies.length;
+        const off = await act({ action: 'click', target: 'the Developer mode toggle' });
+        let j = {};
+        try { j = JSON.parse(text(off)); } catch (_) {}
+        check(off.result.isError === true && j.accessibility === false && /^Accessibility access is off for O\. Turn it on in System Settings > Privacy & Security > Accessibility/.test(j.error) && stub.computerBodies.length === before,
+          'Accessibility off → tab_act returns the one-line Accessibility message and posts no job');
+        check(!/won.t let|doesn.t allow|Chrome/i.test(j.error), 'the Accessibility message does not blame the browser');
+        const cr = await rpc('tools/call', { name: 'computer_run', arguments: { goal: 'open chrome://extensions', app: 'Google Chrome' } }, 15000);
+        check(cr.result.isError === true && /Accessibility access is off for O/.test(text(cr)) && stub.computerBodies.length === before, 'Accessibility off → computer_run returns the same line, no job');
+        stub.access = { cu_backend: { name: 'ax', available: false, reason: 'accessibility backend not importable (re-run install/install.sh): atomacos: ModuleNotFoundError' }, accessibility_trusted: null, hint: '' };
+        const ni = await rpc('tools/call', { name: 'computer_run', arguments: { goal: 'x', app: 'Finder' } }, 15000);
+        check(ni.result.isError === true && /accessibility backend is not installed/.test(text(ni)) && /install\.sh/.test(text(ni)), 'backend not importable → computer_run says to re-run the installer');
+      }, ['--require', preload]);
+    } finally { stub.access = null; try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} }
+  }
+
   // ---- tools/native-tabs.js with osascript / child_process mocked
   console.log('native-tabs with a mocked execFile');
   {
@@ -470,6 +534,22 @@ async function main() {
     check(/^In Google Chrome, in the tab titled "Form" \(https:\/\/f\.example\/\), type "hello" into the Name box, then press Enter\.$/.test(g.goal), 'tab_act type builds a computer_run goal for that browser and tab');
     r = await mac.readTab({ app: 'Netscape', tab: 1 });
     check(r.ok === false && /app must be one of/.test(r.error), 'unknown browser → clean error');
+
+    // internal pages in the native module itself
+    {
+      const { isInternalUrl, accessProblem, ACCESSIBILITY_OFF } = require('./native-tabs');
+      check(['chrome://extensions', 'edge://settings', 'brave://flags', 'arc://x', 'about:blank', 'chrome-extension://abc/popup.html', 'https://chromewebstore.google.com/detail/x', 'https://chrome.google.com/webstore/category'].every(isInternalUrl) &&
+        !['https://example.com/', 'https://chrome.google.com/search', 'http://localhost:3000'].some(isInternalUrl), 'isInternalUrl: browser schemes and the web stores, not ordinary pages');
+      check(accessProblem({ accessibility_trusted: false }) === ACCESSIBILITY_OFF && accessProblem({ accessibility_trusted: true, cu_backend: { name: 'ax', available: true } }) === '' && accessProblem(null) === '', 'accessProblem: untrusted → the one line; trusted or unknown → ""');
+      calls.length = 0;
+      answer = (f, args) => (args[5] === 'info'
+        ? { stdout: JSON.stringify({ ok: true, app: 'Google Chrome', title: 'Extensions', url: 'chrome://extensions/', active: false }) }
+        : { stdout: JSON.stringify({ ok: false, js_error: true, error: 'should not be called' }) });
+      r = await mac.readTab({ app: 'Google Chrome', tab: 1 });
+      check(r.ok === false && r.internal === true && /accessibility tree/.test(r.error) && /computer_run/.test(r.error) && calls.every((c) => c.args[5] === 'info'), 'tab_read on chrome://extensions (background tab) → points to computer_run, no JavaScript call');
+      const gi = mac.actGoal(mac.browserFor('Google Chrome'), { title: 'Extensions', url: 'chrome://extensions/' }, { action: 'click', target: 'Developer mode' });
+      check(gi.internal === true && /only the accessibility tree/.test(gi.goal) && /menu bar/.test(gi.goal), 'actGoal on an internal page: accessibility-only goal with the menu-bar fallback');
+    }
 
     // non-mac platforms
     const lin = createNative({ platform: 'linux', execFile });

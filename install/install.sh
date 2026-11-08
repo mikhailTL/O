@@ -385,6 +385,47 @@ step_required_packages() {
   done
 }
 
+# macOS computer use (required on macOS): the Accessibility API backend (engine/o_engine/cu/backends/ax.py).
+# atomacos + pyobjc come from engine/pyproject.toml (sys_platform == 'darwin' markers); this step installs them
+# again explicitly (an older venv may predate them), import-checks them, and reports the Accessibility
+# permission. The permission belongs to the app that runs the engine: O (and Terminal when O runs from Terminal).
+MAC_AX_PKGS="atomacos>=3.3 pyobjc-core>=10.0 pyobjc-framework-Cocoa>=10.0 pyobjc-framework-Quartz>=10.0 pyobjc-framework-ApplicationServices>=10.0"
+MAC_AX_CHECK='import sys
+from o_engine.cu.backends import ax
+if ax._IMPORT_ERROR:
+    print("import-failed", ax._IMPORT_ERROR); sys.exit(1)
+print(ax.AX_IMPL, "trusted" if ax.accessibility_trusted() else "untrusted")'
+step_macos_ax() {
+  [ "$OS" = "Darwin" ] || return 0
+  if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
+    fail "macos accessibility backend" "skipped: engine venv missing"
+    return
+  fi
+  local fix="run '$VENV_PY -m pip install $MAC_AX_PKGS' and read its errors"
+  # shellcheck disable=SC2086
+  if ! run "$VENV_PY" -m pip install $MAC_AX_PKGS; then
+    fail "macos accessibility backend" "$fix"
+    return
+  fi
+  if [ "$DRY" = "1" ]; then
+    echo "  [dry] $VENV_PY -c '<import o_engine.cu.backends.ax; AXIsProcessTrusted()>'"
+    ok "macos accessibility backend"
+    return
+  fi
+  local out
+  if ! out="$(cd "$ROOT/engine" && "$VENV_PY" -W ignore -c "$MAC_AX_CHECK" 2>&1)"; then
+    fail "macos accessibility backend" "it does not import ($(echo "$out" | tail -n1)); $fix"
+    return
+  fi
+  ok "macos accessibility backend (${out%% *})"
+  case "$out" in
+    *untrusted*)
+      echo "  note: Accessibility access is not granted yet. Open System Settings → Privacy & Security → Accessibility"
+      echo "        and turn on O (and Terminal, if you start O from Terminal). O asks for it on its first start."
+      ;;
+  esac
+}
+
 # open-interpreter: required, installed on its own. Its release pins anthropic<0.38 and psutil<6, while
 # browser-use needs psutil>=7 and a newer anthropic, so pip cannot resolve both. It is installed with
 # --no-deps plus its runtime dependencies unpinned; setuptools<81 keeps pkg_resources, which it imports.
@@ -495,6 +536,7 @@ step_vllm
 step_screenpipe
 step_xvfb
 step_required_packages
+step_macos_ax
 step_open_interpreter
 step_ambient
 step_docker
