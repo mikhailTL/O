@@ -31,7 +31,7 @@ try { briefMod = require('./brief'); } catch (err) { console.error('[o] could no
 // The Island window: compact while it only shows the status capsule, expanded while the command bar is
 // open. Both share the anchor edges (top edge, or bottom edge for the bottom positions; the horizontal centre,
 // or the corner's side), so swapping bounds never moves what is drawn. Placement: renderer/islandgeom.js.
-const ISLAND_SHRINK_MS = 460; // the renderer's collapse morph, before the window shrinks back
+const ISLAND_SHRINK_MS = 460; // the renderer's collapse morph (the window itself never resizes)
 const PANEL_W = 440;
 const PANEL_H = 660;
 const ASSETS = path.join(__dirname, '..', 'assets');
@@ -566,7 +566,8 @@ function openCommandBar({ notify = false } = {}) {
   if (notify) sendToIsland({ type: 'island', open: true });
 }
 
-/** Collapse back to the capsule; the window shrinks once the renderer's morph has played. */
+/** Collapse back to the capsule. The window is not resized (it already spans both states); the timer only
+ * re-applies the Linux capsule shape and hides a 'hidden'-position Island once the morph has played. */
 function closeCommandBar({ notify = false } = {}) {
   if (!commandBarOpen) return;
   commandBarOpen = false;
@@ -583,14 +584,15 @@ function closeCommandBar({ notify = false } = {}) {
   }, ISLAND_SHRINK_MS);
 }
 
-// Linux has no click-through with forwarded mouse moves, so the transparent strip of the compact window
-// around the capsule (448x60 window, 220-420x36 capsule; 448x56 at the bottom) would swallow clicks. There the window is shaped to
-// the capsule rect the renderer reports (island:shape); while the bar is open the shape is the whole window.
-// "Cleared" is a full-window rect rather than [], since an empty list can mean "no region" on X11.
-// macOS and Windows keep setIgnoreMouseEvents with forwarding instead.
+// The Island window is the full command-bar footprint in both states and is never resized on open/close, so
+// most of it is transparent while the capsule alone is drawn. Linux has no click-through with forwarded mouse
+// moves, so there the window is shaped to the capsule rect the renderer reports (island:shape) while compact,
+// and to the whole window while the bar is open. "Cleared" is a full-window rect rather than [], since an empty
+// list can mean "no region" on X11. macOS and Windows keep setIgnoreMouseEvents with forwarding instead.
 function applyIslandShape() {
   if (process.platform !== 'linux' || !islandWin || islandWin.isDestroyed() || typeof islandWin.setShape !== 'function') return;
-  const full = { x: 0, y: 0, width: ISLAND_EXPANDED.width, height: ISLAND_EXPANDED.height };
+  const { width, height } = currentIslandLayout().compact;
+  const full = { x: 0, y: 0, width, height };
   try { islandWin.setShape([commandBarOpen || !islandShape ? full : islandShape]); } catch (_) {}
 }
 
@@ -615,11 +617,14 @@ function islandReserve(wa, x0, x1) {
   if (!islandWin || islandWin.isDestroyed() || !islandWin.isVisible()) return out;
   const L = currentIslandLayout();
   if (L.mode !== 'float') return out; // in the menu bar / on the notch: the work area is all free
+  // The window spans the whole command-bar footprint; only the capsule is solid, so reserve by its rect.
   const c = L.compact;
-  if (x1 <= c.x || x0 >= c.x + c.width) return out;
+  const rect = IslandGeom.capsuleRect(L, L.maxW);
+  const cx0 = c.x + rect.x, cx1 = cx0 + rect.width;
+  if (x1 <= cx0 || x0 >= cx1) return out;
   out.reserved = true;
-  if (L.dir === 'up') out.bottom = Math.min(out.bottom, c.y + c.height - L.gap - L.ih - 8);
-  else out.top = Math.max(out.top, c.y + c.height);
+  if (L.dir === 'up') out.bottom = Math.min(out.bottom, c.y + rect.y - 8);
+  else out.top = Math.max(out.top, c.y + rect.y + rect.height);
   return out;
 }
 

@@ -37,7 +37,9 @@
   let SZ = G.sizes(LY.ih);
   // The capsule top inside the expanded window (bubbles are only placed while it is open).
   const openTop = () => (LY.dir === 'up' ? G.C.EXP_H - LY.gap - LY.ih : LY.top);
-  const barTop = () => (LY.dir === 'up' ? openTop() + LY.ih - BAR_H : openTop());
+  // The opened bar drops below the capsule by G.barDrop (the menu-bar strip on mac/notch, else 0); the capsule
+  // itself stays put. Bubbles are measured from the bar, so they follow the drop.
+  const barTop = () => (LY.dir === 'up' ? openTop() + LY.ih - BAR_H : openTop() + G.barDrop(LY));
   const slotTop = (i) => (LY.dir === 'up'
     ? barTop() - FIRST_GAP - BUB_H - i * (BUB_H + BUB_GAP)
     : barTop() + BAR_H + FIRST_GAP + i * (BUB_H + BUB_GAP));
@@ -216,6 +218,7 @@
     root.style.setProperty('--gap', `${SZ.gap}px`);
     root.style.setProperty('--bsy', String(0.62 * LY.ih / G.C.BASE_H));
     root.style.setProperty('--notch', `${LY.notchW || 0}px`);
+    root.style.setProperty('--drop', `${G.barDrop(LY)}px`); // how far the opened bar drops below the capsule
     body.classList.toggle('up', LY.dir === 'up');
     body.classList.toggle('mb', LY.mode === 'menubar' || LY.mode === 'notch');
     body.classList.toggle('notch', LY.mode === 'notch');

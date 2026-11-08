@@ -111,8 +111,9 @@
         L.maxW = L.notchW + 2 * Math.max(L.maxWing, C.RING_ONLY_WING);
         L.minW = L.notchW + 2 * C.RING_ONLY_WING;
         L.ringOnly = L.maxWing < C.RING_ONLY_WING;
-        const w = Math.max(C.COMPACT_W, L.maxW + 16);
-        L.compact = { x: r(bounds.x + (bounds.width - w) / 2), y: bounds.y, width: w, height: mb };
+        // One window for both states (never resized on open/close, so nothing can jump): it spans the menu-bar
+        // strip (capsule, at L.top) and the EXP_H drop region below it (the opened bar). Centred on the notch.
+        L.compact = { x: r(bounds.x + bounds.width / 2 - C.EXP_W / 2), y: bounds.y, width: C.EXP_W, height: mb + C.EXP_H };
         return L;
       }
       // Non-notch: the capsule lives in the gap between the left (app menus) and right (status items) zones,
@@ -138,18 +139,20 @@
         L.ih = C.BASE_H; L.top = C.TOP;
       }
       if (L.mode === 'menubar') {
-        const w = Math.max(C.COMPACT_W, L.maxW + 16);
-        L.compact = { x: r(gapCenter - w / 2), y: bounds.y, width: w, height: mb };
+        // One window for both states, centred on the gap (see the notch branch).
+        L.compact = { x: r(gapCenter - C.EXP_W / 2), y: bounds.y, width: C.EXP_W, height: mb + C.EXP_H };
         return L;
       }
       // fall through to the float layout with pos = 'bottom'
     }
 
-    // Floating positions, inside the work area.
+    // Floating positions, inside the work area. The window is the full EXP_W x EXP_H footprint in both states
+    // (never resized on open/close), with the capsule at the top (top positions) or bottom (bottom positions);
+    // open/close is a pure CSS morph within it, so the capsule never moves on screen.
     L.maxW = Math.min(C.MAX_W, wa.width - 2 * C.EDGE);
     L.ringOnly = false;
     L.minW = Math.min(L.minW, L.maxW);
-    const w = C.COMPACT_W;
+    const w = C.EXP_W;
     const bottom = pos === 'bottom' || pos === 'bottom-left' || pos === 'bottom-right';
     L.anchor = /-left$/.test(pos) ? 'left' : /-right$/.test(pos) ? 'right' : 'center';
     let x;
@@ -159,29 +162,22 @@
     if (bottom) {
       L.dir = 'up';
       L.gap = C.BOTTOM_GAP;
-      const h = C.TOP + L.ih + C.BOTTOM_GAP;
       L.top = C.TOP;
-      L.compact = { x, y: wa.y + wa.height - h, width: w, height: h };
+      L.compact = { x, y: wa.y + wa.height - C.EXP_H, width: w, height: C.EXP_H };
     } else {
-      L.compact = { x, y: wa.y + C.FLOAT_Y, width: w, height: C.COMPACT_H };
+      L.compact = { x, y: wa.y + C.FLOAT_Y, width: w, height: C.EXP_H };
     }
     return L;
   }
 
-  /** The expanded (command bar) window: same top edge (down) or bottom edge (up), same anchor edge. */
-  function expandedBounds(L) {
-    const c = L.compact;
-    let x;
-    if (L.anchor === 'left') x = c.x;
-    else if (L.anchor === 'right') x = c.x + c.width - C.EXP_W;
-    else x = r(c.x + c.width / 2 - C.EXP_W / 2);
-    // In the menu bar (and on a notch), the opened bar must drop below the menu-bar strip so the
-    // notch never slices its top row; the compact capsule stays in the strip above it.
-    let y;
-    if (L.dir === 'up') y = c.y + c.height - C.EXP_H;
-    else if (L.mode === 'menubar' || L.mode === 'notch') y = c.y + L.menuBarH;
-    else y = c.y;
-    return { x, y, width: C.EXP_W, height: C.EXP_H };
+  // The Island is a single window that is never resized between the compact (capsule) and expanded (command
+  // bar) states: both are drawn inside the same fixed window by CSS, so the capsule keeps its exact screen
+  // position when the bar opens or closes (no setBounds, no jump). expandedBounds therefore equals the window.
+  function expandedBounds(L) { return { ...L.compact }; }
+
+  /** How far below the capsule the opened command bar sits (the menu-bar strip height on mac; 0 otherwise). */
+  function barDrop(L) {
+    return (L.mode === 'menubar' || L.mode === 'notch') ? Math.max(0, L.menuBarH - L.top) : 0;
   }
 
   /** Capsule centre x inside a window of width winW (the anchor edge is shared by both windows). */
@@ -216,5 +212,5 @@
     };
   }
 
-  return Object.freeze({ C, POSITIONS, menuBarHeight, hasNotch, resolvePosition, layout, expandedBounds, capsuleCx, capsuleRect, distanceToRect, sizes });
+  return Object.freeze({ C, POSITIONS, menuBarHeight, hasNotch, resolvePosition, layout, expandedBounds, barDrop, capsuleCx, capsuleRect, distanceToRect, sizes });
 });

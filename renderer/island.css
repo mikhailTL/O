@@ -16,6 +16,7 @@
   --ring: 14px;
   --gap: 9px;
   --bsy: 0.62;
+  --drop: 0px; /* menu bar / notch: how far the opened bar drops below the capsule (set by app.js) */
   --bar-w: 640px;
   --bar-h: 56px;
   --side: 56px;
@@ -228,6 +229,15 @@ body.open .bar-ring, body.open #input, body.open .keys { opacity: 1; transition-
 body.open .g-cap-l { transform: translateX(calc(var(--dx) + var(--bar-w) / -2 + 4px)); }
 body.open .g-cap-r { transform: translateX(calc(var(--dx) + var(--bar-w) / 2 - 4px)); }
 body.open .g-mid { transform: translateX(var(--dx)) scaleX(calc((640 - var(--ih) * 1.4) / 100)); }
+
+/* menu bar / notch: the window never moves, so the opened bar drops below the strip by --drop while the
+   compact capsule stays in the strip. The capsule parts morph diagonally (out + down) into the bar; closing
+   runs it in reverse, back up into the strip. The capsule's screen position is identical open and closed. */
+body.mb.open .g-cap-l { transform: translate(calc(var(--dx) + var(--bar-w) / -2 + 4px), var(--drop)); }
+body.mb.open .g-cap-r { transform: translate(calc(var(--dx) + var(--bar-w) / 2 - 4px), var(--drop)); }
+body.mb.open .g-mid { transform: translate(var(--dx), var(--drop)) scaleX(calc((640 - var(--ih) * 1.4) / 100)); }
+body.mb.open .g-bar, body.mb.open #bar { transform: translateY(var(--drop)); }
+body.mb .g-side, body.mb #side { top: calc(var(--top) + var(--drop)); }
 
 /* bottom positions: the bar sits on the capsule's bottom edge and buds upward (bubbles stack above it) */
 body.up .g-bar, body.up #bar, body.up .g-side, body.up #side { top: calc(var(--top) + var(--island-h) - var(--bar-h)); }
