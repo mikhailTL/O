@@ -9,9 +9,16 @@ try {
   const t = ipcRenderer.sendSync('settings:theme');
   if (['glass', 'light', 'dark'].includes(t)) initialTheme = t;
 } catch (_) { /* main not ready: the renderer falls back to settings:get */ }
+// The Island's placement (renderer/islandgeom.js layout), read synchronously so the capsule is drawn in the
+// right place on first paint. Only the Island window asks; the other windows get null.
+let initialIslandLayout = null;
+try {
+  if (/\/index\.html$/.test(String(globalThis.location && globalThis.location.pathname || ''))) initialIslandLayout = ipcRenderer.sendSync('island:layout');
+} catch (_) { /* the renderer computes a fallback */ }
 
 contextBridge.exposeInMainWorld('o', {
   initialTheme,
+  initialIslandLayout,
   // Island window (status capsule + command bar). getBounds/getWorkArea refer to the Island window.
   getBounds: () => ipcRenderer.invoke('island:getBounds'),
   getWorkArea: () => ipcRenderer.invoke('island:getWorkArea'),
@@ -19,9 +26,9 @@ contextBridge.exposeInMainWorld('o', {
   togglePanel: () => ipcRenderer.send('panel:toggle'),
   showPanel: () => ipcRenderer.send('panel:show'),
   setIgnoreMouse: (ignore) => ipcRenderer.send('island:setIgnoreMouse', !!ignore),
-  // Linux: the capsule rect (window px) that takes clicks while the Island is compact.
+  // The capsule rect (window px): Linux shapes the compact window to it; every platform fades it on approach.
   setIslandShape: (r) => ipcRenderer.send('island:shape', r && typeof r === 'object'
-    ? { x: Number(r.x) || 0, y: Number(r.y) || 0, width: Number(r.width) || 0, height: Number(r.height) || 0 } : null),
+    ? { x: Number(r.x) || 0, y: Number(r.y) || 0, width: Number(r.width) || 0, height: Number(r.height) || 0, attention: r.attention === true } : null),
   // The command bar: expand (bounds + keyboard focus) and collapse back to the capsule.
   islandOpen: () => ipcRenderer.send('island:open'),
   islandClose: () => ipcRenderer.send('island:close'),

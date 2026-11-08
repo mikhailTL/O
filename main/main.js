@@ -29,15 +29,16 @@ try { ambientMod = require('./ambient'); } catch (err) { console.error('[o] coul
 try { briefMod = require('./brief'); } catch (err) { console.error('[o] could not load the brief overlay:', err.message); }
 
 // The Island window: compact while it only shows the status capsule, expanded while the command bar is
-// open. Both share the top edge and the horizontal centre, so swapping bounds never moves what is drawn.
-const ISLAND_COMPACT = { width: 448, height: 60 };
-const ISLAND_EXPANDED = { width: 820, height: 480 };
-const ISLAND_TOP = 4; // px below the top of the work area
+// open. Both share the anchor edges (top edge, or bottom edge for the bottom positions; the horizontal centre,
+// or the corner's side), so swapping bounds never moves what is drawn. Placement: renderer/islandgeom.js.
 const ISLAND_SHRINK_MS = 460; // the renderer's collapse morph, before the window shrinks back
 const PANEL_W = 440;
 const PANEL_H = 660;
 const ASSETS = path.join(__dirname, '..', 'assets');
 const RENDERER = path.join(__dirname, '..', 'renderer');
+const IslandGeom = require(path.join(RENDERER, 'islandgeom.js')); // shared with the Island renderer
+const ISLAND_EXPANDED = { width: IslandGeom.C.EXP_W, height: IslandGeom.C.EXP_H };
+const ISLAND_PROX_MS = 100; // proximity poll (10 Hz), only while the compact Island is on screen
 
 if (process.platform === 'linux') {
   // Transparent windows on Linux need these.
@@ -62,7 +63,14 @@ let quitting = false;
 let commandBarOpen = false; // the Island is showing the command bar (expanded bounds, focused)
 let islandShrinkTimer = null;
 let islandScreenHooked = false;
-let islandShape = null; // Linux: the capsule rect (window px) that takes clicks while the Island is compact
+let islandShape = null; // the capsule rect (compact window px) the renderer reports: Linux click shape, proximity fade
+let islandL = null; // the current layout (IslandGeom.layout): position, mode, compact bounds
+let islandAttention = false; // the capsule asks for the user (an approval): it never fades then
+let islandFaded = false; // proximity fade: 25% opacity and click-through
+let islandRevealed = false; // the user dwelt on the capsule: fully shown and clickable until the cursor leaves
+let islandDwellSince = 0;
+let islandProxTimer = null;
+let rendererIgnore = true; // what the renderer's own hit test wants (macOS/Windows click-through)
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
 let updater = null;
@@ -349,16 +357,121 @@ async function captureScreen({ display } = {}) {
 
 // ---------------------------------------------------------------- windows
 
-/** Compact or expanded Island bounds, top centre of the primary display's work area. */
+/** The Island layout for the primary display and the islandPosition setting (renderer/islandgeom.js). */
+function computeIslandLayout() {
+  const s = settings ? settings.get() : {};
+  // O_ISLAND_NOTCH=1|0 forces the notch layout on or off (Electron exposes no notch inset to detect it with).
+  const env = process.env.O_ISLAND_NOTCH;
+  const forceNotch = env === '1' ? true : env === '0' ? false : undefined;
+  return IslandGeom.layout({ platform: process.platform, display: screen.getPrimaryDisplay(), position: s.islandPosition, notchWidth: s.islandNotchWidth, forceNotch });
+}
+
+function currentIslandLayout() {
+  if (!islandL) islandL = computeIslandLayout();
+  return islandL;
+}
+
+/** Compact or expanded Island bounds: in the macOS menu bar, above the taskbar, or where the setting says. */
 function islandBounds(expanded) {
-  const wa = screen.getPrimaryDisplay().workArea;
-  const size = expanded ? ISLAND_EXPANDED : ISLAND_COMPACT;
-  return {
-    x: Math.round(wa.x + (wa.width - size.width) / 2),
-    y: Math.round(wa.y + ISLAND_TOP),
-    width: size.width,
-    height: size.height,
-  };
+  const L = currentIslandLayout();
+  return expanded ? IslandGeom.expandedBounds(L) : { ...L.compact };
+}
+
+/** macOS menu bar / notch: above the menu bar (NSStatusWindowLevel); everywhere else above other windows. */
+function applyIslandLevel() {
+  if (!islandWin || islandWin.isDestroyed()) return;
+  const L = currentIslandLayout();
+  const inMenuBar = process.platform === 'darwin' && (L.mode === 'menubar' || L.mode === 'notch');
+  try { islandWin.setAlwaysOnTop(true, inMenuBar ? 'status' : 'screen-saver'); } catch (_) {}
+}
+
+/** Re-place the Island (a setting changed, a display changed) and tell the renderer its new geometry. */
+function relayoutIsland() {
+  if (!islandWin || islandWin.isDestroyed()) { islandL = null; return; }
+  const was = islandL;
+  islandL = computeIslandLayout();
+  sendToIsland({ type: 'island-layout', layout: islandL });
+  islandWin.setBounds(islandBounds(commandBarOpen));
+  applyIslandShape();
+  applyIslandLevel();
+  if (islandL.hidden && !commandBarOpen) { if (islandWin.isVisible()) islandWin.hide(); }
+  else if (was && was.hidden && !islandL.hidden && !islandWin.isVisible()) islandWin.showInactive();
+  syncIslandProximity();
+  rebuildTrayMenu();
+}
+
+/** Persist a new Island position from the menus (the panel goes through settings:set). */
+function setIslandPosition(pos) {
+  if (!settings || !IslandGeom.POSITIONS.includes(pos)) return;
+  const before = settings.get().islandPosition;
+  settings.set({ islandPosition: pos });
+  if (before !== pos && actionLog) {
+    try { actionLog.record({ kind: 'settings', summary: 'Settings changed: islandPosition', detail: { keys: ['islandPosition'] } }); } catch (_) {}
+  }
+  relayoutIsland();
+}
+
+// ---- never in the way: the proximity fade
+// While the compact Island is on screen, main polls the cursor at 10 Hz. Within 40 px of the capsule it fades
+// to 25% and lets clicks through to whatever is under it (a tab, a menu), unless the cursor dwells on the
+// capsule itself for 350 ms: then it is fully shown and clickable until the cursor moves away. An Island that
+// is asking for the user (an approval) never fades. The poll stops whenever the compact Island is not shown.
+function islandCompactShown() {
+  return !!(islandWin && !islandWin.isDestroyed() && islandWin.isVisible() && !commandBarOpen);
+}
+
+function syncIslandProximity() {
+  const want = islandCompactShown();
+  if (want && !islandProxTimer) {
+    islandProxTimer = setInterval(islandProximityTick, ISLAND_PROX_MS);
+    if (islandProxTimer.unref) islandProxTimer.unref();
+  } else if (!want && islandProxTimer) {
+    clearInterval(islandProxTimer);
+    islandProxTimer = null;
+  }
+  if (!want) { islandDwellSince = 0; islandRevealed = false; setIslandFaded(false); }
+}
+
+/** The capsule in screen coordinates. */
+function islandCapsuleScreenRect() {
+  const L = currentIslandLayout();
+  const b = islandWin.getBounds();
+  const r = islandShape || IslandGeom.capsuleRect(L, L.minW);
+  return { x: b.x + r.x, y: b.y + r.y, width: r.width, height: r.height };
+}
+
+function islandProximityTick() {
+  if (!islandCompactShown()) { syncIslandProximity(); return; }
+  let p;
+  try { p = screen.getCursorScreenPoint(); } catch (_) { return; }
+  const d = IslandGeom.distanceToRect(p, islandCapsuleScreenRect());
+  if (d > IslandGeom.C.FADE_NEAR) { islandDwellSince = 0; islandRevealed = false; setIslandFaded(false); return; }
+  if (islandAttention) { setIslandFaded(false); return; }
+  if (d === 0) {
+    if (!islandDwellSince) islandDwellSince = Date.now();
+    if (Date.now() - islandDwellSince >= IslandGeom.C.DWELL_MS) islandRevealed = true;
+  } else if (!islandRevealed) islandDwellSince = 0;
+  setIslandFaded(!islandRevealed);
+}
+
+function setIslandFaded(v) {
+  if (v === islandFaded) return;
+  islandFaded = v;
+  sendToIsland({ type: 'island-fade', faded: v });
+  applyIslandIgnore();
+}
+
+/** Click-through: faded always passes clicks on; otherwise the renderer's hit test decides (macOS/Windows). */
+function applyIslandIgnore() {
+  if (!islandWin || islandWin.isDestroyed()) return;
+  const faded = islandFaded && !commandBarOpen;
+  if (process.platform === 'linux') {
+    // No forwarded mouse moves on Linux: faded = an empty input region, otherwise the capsule shape.
+    try { islandWin.setIgnoreMouseEvents(faded); } catch (_) {}
+    if (!faded) applyIslandShape();
+    return;
+  }
+  try { islandWin.setIgnoreMouseEvents(faded || rendererIgnore, { forward: true }); } catch (_) {}
 }
 
 // macOS focus return, Spotlight style: the Island is created as an NSPanel-like window (type: 'panel',
@@ -372,9 +485,13 @@ function islandBounds(expanded) {
 const ISLAND_IS_PANEL = process.platform === 'darwin';
 
 function createIslandWindow() {
+  islandL = computeIslandLayout();
   islandWin = new BrowserWindow({
     ...islandBounds(false),
     ...(ISLAND_IS_PANEL ? { type: 'panel' } : {}),
+    // macOS: a frameless window with this flag is placed exactly where asked, including over the menu bar
+    // (otherwise AppKit's constrainFrameRect pushes it below the bar).
+    ...(process.platform === 'darwin' ? { enableLargerThanScreen: true } : {}),
     transparent: true,
     frame: false,
     resizable: false,
@@ -398,20 +515,30 @@ function createIslandWindow() {
     },
   });
   // Never steal focus from what the user is doing: only opening the command bar focuses the Island.
-  islandWin.once('ready-to-show', () => islandWin.showInactive());
-  islandWin.setAlwaysOnTop(true, 'screen-saver');
-  try { islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
+  islandWin.once('ready-to-show', () => {
+    if (!currentIslandLayout().hidden || commandBarOpen) {
+      islandWin.showInactive();
+      // macOS may constrain a window as it is first ordered in: put it back in the menu bar strip.
+      if (process.platform === 'darwin') islandWin.setBounds(islandBounds(commandBarOpen));
+    }
+    syncIslandProximity();
+  });
+  applyIslandLevel();
+  // Not on fullscreen Spaces: a fullscreen app (video, game, presentation) has the screen to itself.
+  try { islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false }); } catch (_) {}
   islandWin.loadFile(path.join(RENDERER, 'index.html'));
   applyIslandShape();
   // Spotlight behaviour: clicking anywhere else collapses the command bar.
   islandWin.on('blur', () => { if (commandBarOpen) closeCommandBar({ notify: true }); });
-  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; });
-  // Displays change (resolution, dock, a monitor unplugged): stay at the top centre.
+  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; syncIslandProximity(); });
+  islandWin.on('hide', () => syncIslandProximity());
+  islandWin.on('show', () => syncIslandProximity());
+  // Displays change (resolution, the menu bar or the Dock, a monitor plugged or unplugged): lay out again.
   if (!islandScreenHooked) {
     islandScreenHooked = true;
-    const replace = () => { if (islandWin && !islandWin.isDestroyed()) islandWin.setBounds(islandBounds(commandBarOpen)); };
-    screen.on('display-metrics-changed', replace);
-    screen.on('display-removed', replace);
+    screen.on('display-metrics-changed', relayoutIsland);
+    screen.on('display-removed', relayoutIsland);
+    screen.on('display-added', relayoutIsland);
   }
 }
 
@@ -420,6 +547,8 @@ function openCommandBar({ notify = false } = {}) {
   if (!islandWin || islandWin.isDestroyed()) createIslandWindow();
   clearTimeout(islandShrinkTimer);
   commandBarOpen = true;
+  syncIslandProximity(); // no fade while the bar is open
+  applyIslandIgnore();
   islandWin.setBounds(islandBounds(true));
   applyIslandShape(); // Linux: the whole bar takes clicks while open
   if (!islandWin.isVisible()) islandWin.showInactive();
@@ -436,12 +565,17 @@ function closeCommandBar({ notify = false } = {}) {
   if (islandWin && !islandWin.isDestroyed() && islandWin.isFocused()) islandWin.blur();
   clearTimeout(islandShrinkTimer);
   islandShrinkTimer = setTimeout(() => {
-    if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) { islandWin.setBounds(islandBounds(false)); applyIslandShape(); }
+    if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) {
+      islandWin.setBounds(islandBounds(false));
+      applyIslandShape();
+      if (currentIslandLayout().hidden) islandWin.hide(); // 'hidden': only the bar was shown
+      syncIslandProximity();
+    }
   }, ISLAND_SHRINK_MS);
 }
 
 // Linux has no click-through with forwarded mouse moves, so the transparent strip of the compact window
-// around the capsule (448x60 window, 220-420x36 capsule) would swallow clicks. There the window is shaped to
+// around the capsule (448x60 window, 220-420x36 capsule; 448x56 at the bottom) would swallow clicks. There the window is shaped to
 // the capsule rect the renderer reports (island:shape); while the bar is open the shape is the whole window.
 // "Cleared" is a full-window rect rather than [], since an empty list can mean "no region" on X11.
 // macOS and Windows keep setIgnoreMouseEvents with forwarding instead.
@@ -457,9 +591,27 @@ function cleanIslandShape(r) {
   const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : NaN);
   const x = n(r.x), y = n(r.y), width = n(r.width), height = n(r.height);
   if ([x, y, width, height].some(Number.isNaN) || width <= 0 || height <= 0) return null;
-  const cx = Math.max(0, Math.min(ISLAND_COMPACT.width - 1, x));
-  const cy = Math.max(0, Math.min(ISLAND_COMPACT.height - 1, y));
-  return { x: cx, y: cy, width: Math.min(width, ISLAND_COMPACT.width - cx), height: Math.min(height, ISLAND_COMPACT.height - cy) };
+  const { width: W, height: H } = currentIslandLayout().compact;
+  const cx = Math.max(0, Math.min(W - 1, x));
+  const cy = Math.max(0, Math.min(H - 1, y));
+  return { x: cx, y: cy, width: Math.min(width, W - cx), height: Math.min(height, H - cy) };
+}
+
+/**
+ * The vertical band other windows (panel, notify cards) keep clear of the Island, for a window spanning
+ * [x0, x1] on this work area: nothing when the Island is in the menu bar or does not overlap horizontally.
+ */
+function islandReserve(wa, x0, x1) {
+  const out = { top: wa.y, bottom: wa.y + wa.height, reserved: false };
+  if (!islandWin || islandWin.isDestroyed() || !islandWin.isVisible()) return out;
+  const L = currentIslandLayout();
+  if (L.mode !== 'float') return out; // in the menu bar / on the notch: the work area is all free
+  const c = L.compact;
+  if (x1 <= c.x || x0 >= c.x + c.width) return out;
+  out.reserved = true;
+  if (L.dir === 'up') out.bottom = Math.min(out.bottom, c.y + c.height - L.gap - L.ih - 8);
+  else out.top = Math.max(out.top, c.y + c.height);
+  return out;
 }
 
 function toggleCommandBar() {
@@ -525,13 +677,18 @@ function positionPanel() {
   if (!panelWin || panelWin.isDestroyed()) return;
   const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
   const [w, h0] = panelWin.getSize();
-  const top = wa.y + ISLAND_TOP + ISLAND_COMPACT.height; // below the capsule
+  const x = wa.x + wa.width - w - 16;
+  // Clear of the capsule when it shares the panel's column (top/bottom positions, the right corners); in the
+  // menu bar the whole work area is free.
+  const res = islandReserve(wa, x, x + w);
+  const top = res.top > wa.y ? res.top : wa.y + 12;
+  const bottom = res.bottom - 12;
   // On a short screen the height is clamped; place the panel by the height it ends up with (never below the
   // 380 px minimum), so it is centred and its top stays clear of the Island.
-  const h = Math.max(380, Math.min(h0, wa.y + wa.height - top - 12));
+  const h = Math.max(380, Math.min(h0, bottom - top));
   if (h !== h0) panelWin.setSize(w, h);
-  const x = wa.x + wa.width - w - 16;
-  const y = Math.max(top, wa.y + Math.round((wa.height - h) / 2));
+  let y = Math.max(top, wa.y + Math.round((wa.height - h) / 2));
+  if (y + h > bottom) y = Math.max(top, bottom - h);
   panelWin.setPosition(Math.round(x), Math.round(y));
 }
 
@@ -578,8 +735,11 @@ function createNotifyWindow() {
 function placeNotify(height) {
   if (!notifyWin || notifyWin.isDestroyed()) return;
   const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
-  const h = Math.max(60, Math.min(Math.round(height || 200), wa.height - 40));
-  notifyWin.setBounds({ x: wa.x + wa.width - NOTIFY_W - 6, y: wa.y + 12, width: NOTIFY_W, height: h });
+  const x = wa.x + wa.width - NOTIFY_W - 6;
+  const res = islandReserve(wa, x, x + NOTIFY_W); // below a top-right Island, above a bottom-right one
+  const y = res.top > wa.y ? res.top + 4 : wa.y + 12;
+  const h = Math.max(60, Math.min(Math.round(height || 200), res.bottom - y - 28));
+  notifyWin.setBounds({ x, y, width: NOTIFY_W, height: h });
 }
 
 function pendingList() {
@@ -643,9 +803,26 @@ function openActionLog() {
   broadcast({ type: 'open-log' });
 }
 
+/** Right-click → Position: one radio item per islandPosition value. */
+function islandPositionMenu() {
+  const mac = process.platform === 'darwin';
+  const cur = currentIslandLayout().position;
+  const items = [
+    ['auto', mac ? 'Automatic (in the menu bar)' : 'Automatic (above the taskbar)'],
+    ...(mac ? [['menubar', 'Menu bar']] : []),
+    ['top', 'Top centre'], ['bottom', 'Bottom centre'],
+    ['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right'],
+    ['hidden', 'Hidden (the shortcut still opens the bar)'],
+  ];
+  return items.map(([value, label]) => ({ label, type: 'radio', checked: cur === value, click: () => setIslandPosition(value) }));
+}
+
 function toggleIsland() {
   if (!islandWin) { createIslandWindow(); rebuildTrayMenu(); return; }
-  if (islandWin.isVisible()) { closeCommandBar({ notify: true }); islandWin.hide(); } else islandWin.showInactive();
+  if (islandWin.isVisible()) { closeCommandBar({ notify: true }); islandWin.hide(); }
+  else if (currentIslandLayout().hidden) { setIslandPosition('auto'); if (!islandWin.isVisible()) islandWin.showInactive(); }
+  else islandWin.showInactive();
+  syncIslandProximity();
   rebuildTrayMenu();
 }
 
@@ -1004,13 +1181,18 @@ function registerIpc() {
   ipcMain.handle('island:getBounds', () => (islandWin ? islandWin.getBounds() : islandBounds(false)));
   ipcMain.handle('island:getWorkArea', () => workAreaFor(islandWin ? islandWin.getBounds() : null));
   ipcMain.handle('island:getCursor', () => screen.getCursorScreenPoint());
+  ipcMain.on('island:layout', (e) => { e.returnValue = currentIslandLayout(); }); // preload, synchronously
+  ipcMain.handle('island:getLayout', () => currentIslandLayout());
   ipcMain.on('island:setIgnoreMouse', (_e, ignore) => {
-    if (islandWin && !islandWin.isDestroyed()) islandWin.setIgnoreMouseEvents(!!ignore, { forward: true });
+    rendererIgnore = !!ignore;
+    applyIslandIgnore();
   });
   ipcMain.on('island:shape', (_e, rect) => {
     const r = cleanIslandShape(rect);
     if (!r) return;
     islandShape = r;
+    islandAttention = !!(rect && rect.attention === true);
+    if (islandAttention) setIslandFaded(false);
     applyIslandShape();
   });
   ipcMain.on('island:open', () => openCommandBar());
@@ -1026,6 +1208,7 @@ function registerIpc() {
       { label: 'Open panel', click: () => showPanel() },
       { label: 'Open action log', click: () => openActionLog() },
       { label: 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
+      { label: 'Position', submenu: islandPositionMenu() },
       { label: 'Hide the Island (the tray icon brings it back)', click: () => toggleIsland() },
       { type: 'separator' },
       { label: 'Turn off O', click: () => turnOff() },
@@ -1225,6 +1408,7 @@ function registerIpc() {
     }
     if (proxy && keys.some((k) => PROXY_KEYS.includes(k))) restartProxy();
     if (keys.includes('theme')) sendTheme(currentTheme());
+    if (keys.includes('islandPosition') || keys.includes('islandNotchWidth')) relayoutIsland();
     if (ambient && keys.some((k) => AMBIENT_KEYS.includes(k))) { ambient.onSettings(); broadcastAmbient(); }
     return { ok: true, settings: r };
   }
@@ -1491,6 +1675,10 @@ if (process.env.O_SNAPSHOT_DIR) {
         const shot = await captureScreen({});
         fs.writeFileSync(require('path').join(dir, 'screen.jpg'), Buffer.from(shot.data, 'base64'));
         console.log('[o] screen capture', shot.width + 'x' + shot.height, 'cursor', JSON.stringify(shot.cursor));
+      }
+      if (islandWin && !islandWin.isDestroyed()) {
+        const L = currentIslandLayout();
+        console.log('[o] island', JSON.stringify({ position: L.position, resolved: L.resolved, mode: L.mode, dir: L.dir, bounds: islandWin.getBounds(), workArea: screen.getPrimaryDisplay().workArea }));
       }
       for (const [name, w] of [['island', islandWin], ['panel', panelWin]]) {
         if (!w) continue;

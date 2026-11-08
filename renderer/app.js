@@ -25,14 +25,24 @@
   $('mod-key').textContent = isMac ? '⌘↵' : 'Ctrl ↵';
   const shownKey = isMac ? '⌘↵' : 'Ctrl ↵';
 
-  // Geometry shared with island.css.
-  const TOP = 12, BAR_H = 56, BUB_H = 48, BUB_GAP = 16, FIRST_GAP = 18;
+  // Geometry shared with island.css; placement (menu bar, notch, bottom, corners) from islandgeom.js.
+  const G = window.OIslandGeom;
+  const BAR_H = 56, BUB_H = 48, BUB_GAP = 16, FIRST_GAP = 18;
   const MAX_BUBBLES = 6;
-  const slotTop = (i) => TOP + BAR_H + FIRST_GAP + i * (BUB_H + BUB_GAP);
-  const ISLAND_MIN = 220, ISLAND_MAX = 420, ISLAND_PAD = 32;
-  const ISLAND_H = 36; // --island-h
-  const COMPACT_W = 448; // main.js ISLAND_COMPACT.width: the window the capsule shape is relative to
   const SHAPE_PAD = 2; // keeps the capsule's antialiased edge inside the Linux window shape
+  const root = document.documentElement;
+  // The layout main computed for this display and setting; a fallback that matches the old top-centre one.
+  let LY = (bridge.initialIslandLayout && bridge.initialIslandLayout.compact) ? bridge.initialIslandLayout
+    : G.layout({ platform: bridge.platform, display: { bounds: { x: 0, y: 0, width: 1440, height: 900 }, workArea: { x: 0, y: 0, width: 1440, height: 900 } }, position: 'top' });
+  let SZ = G.sizes(LY.ih);
+  // The capsule top inside the expanded window (bubbles are only placed while it is open).
+  const openTop = () => (LY.dir === 'up' ? G.C.EXP_H - LY.gap - LY.ih : LY.top);
+  const barTop = () => (LY.dir === 'up' ? openTop() + LY.ih - BAR_H : openTop());
+  const slotTop = (i) => (LY.dir === 'up'
+    ? barTop() - FIRST_GAP - BUB_H - i * (BUB_H + BUB_GAP)
+    : barTop() + BAR_H + FIRST_GAP + i * (BUB_H + BUB_GAP));
+  const originTop = () => barTop() + 4; // where a bubble starts when it streams out of the bar
+  const nextDy = () => (LY.dir === 'up' ? 1 : -1) * (BUB_H + BUB_GAP); // budding off the bubble before it
 
   // ------------------------------------------------------------ state fed by agent events
   let tasks = [];
@@ -130,31 +140,88 @@
     metaEl.textContent = s.meta || '';
     if (key === lastKey) return;
     lastKey = key;
-    const html = lineHtml(s.k, clip(s.v, 80));
+    let html = lineHtml(s.k, clip(s.v, 80));
     measure.innerHTML = html;
-    const textW = Math.min(330, measure.offsetWidth);
-    const metaW = s.meta ? 60 : 0;
-    const w = Math.round(Math.max(ISLAND_MIN, Math.min(ISLAND_MAX, textW + 14 + 9 + metaW + ISLAND_PAD)));
+    lastText = { textW: Math.min(330, measure.offsetWidth), meta: !!s.meta };
+    lastTone = s.tone;
+    let w = islandWidth();
+    // A notch wing too narrow for "Key · value": the key alone (the tooltip has the whole line).
+    if (LY.mode === 'notch' && s.v) {
+      measure.innerHTML = lineHtml(s.k, '');
+      const kW = measure.offsetWidth;
+      if (lineRoom(w) - kW < 56) { html = lineHtml(s.k, ''); lastText.textW = kW; w = islandWidth(); }
+    }
     setIslandWidth(w);
     lineEl.innerHTML = html;
     lineEl.classList.remove('swap');
     void lineEl.offsetWidth; // restart the crossfade
     lineEl.classList.add('swap');
+    const full = `${s.k}${s.v ? ' · ' + s.v : ''}`;
+    island.title = full; // the whole line, also when the capsule only has room for the ring
     island.setAttribute('aria-label', `${s.k}${s.v ? ', ' + s.v : ''}. Open the command bar`);
   }
 
+  let lastText = { textW: 0, meta: false };
+  let lastTone = 'idle';
+  let lastW = 0;
+
+  /** The capsule width for the current line and layout. */
+  function islandWidth() {
+    const { textW, meta } = lastText;
+    const metaW = meta ? 52 : 0;
+    if (LY.mode === 'notch') {
+      // Symmetric wings so the capsule stays centred on the notch.
+      const inset = Math.round(LY.ih * 0.42);
+      const left = inset + SZ.ring + (meta ? SZ.gap + 44 : 0) + inset;
+      const right = 8 + Math.min(textW, 240) + inset;
+      const wing = LY.ringOnly ? G.C.RING_ONLY_WING : Math.max(G.C.RING_ONLY_WING, Math.min(LY.maxWing, Math.max(left, right)));
+      return LY.notchW + 2 * wing;
+    }
+    if (LY.ringOnly) return LY.maxW;
+    return Math.round(Math.max(LY.minW, Math.min(LY.maxW, textW + SZ.ring + SZ.gap + metaW + SZ.pad)));
+  }
+
+  /** Room for the line inside a capsule of width w (the line clips with an ellipsis beyond it). */
+  function lineRoom(w) {
+    if (LY.mode === 'notch') return Math.max(0, Math.round(w / 2 - LY.notchW / 2 - 8 - LY.ih * 0.42));
+    return Math.max(0, Math.round(w - SZ.pad - SZ.ring - SZ.gap - (lastText.meta ? 44 + SZ.gap : 0)));
+  }
+
   function setIslandWidth(w) {
+    lastW = w;
     stage.style.setProperty('--w', String(w));
+    stage.style.setProperty('--line-max', `${Math.min(330, lineRoom(w))}px`);
     stage.style.setProperty('--bsx', String(Math.max(0.2, (w - 6) / 640)));
-    // Linux: shape the compact window to the capsule so the transparent strip around it passes clicks on.
-    if (bridge.platform === 'linux' && typeof bridge.setIslandShape === 'function') {
+    const pad = G.C.PAD + w / 2;
+    root.style.setProperty('--cx', LY.anchor === 'left' ? `${pad}px` : LY.anchor === 'right' ? `calc(100vw - ${pad}px)` : '50vw');
+    // The capsule rect (compact window px): main shapes the window to it on Linux (so the transparent strip
+    // around it passes clicks on) and fades the capsule when the cursor comes near it (every platform).
+    if (typeof bridge.setIslandShape === 'function') {
+      const r = G.capsuleRect(LY, w);
       bridge.setIslandShape({
-        x: Math.round(COMPACT_W / 2 - w / 2) - SHAPE_PAD,
-        y: TOP - SHAPE_PAD,
-        width: Math.round(w) + 2 * SHAPE_PAD,
-        height: ISLAND_H + 2 * SHAPE_PAD,
+        x: r.x - SHAPE_PAD, y: r.y - SHAPE_PAD, width: r.width + 2 * SHAPE_PAD, height: r.height + 2 * SHAPE_PAD,
+        attention: lastTone === 'attention',
       });
     }
+  }
+
+  /** Apply a layout from main: CSS variables and body classes, then re-measure the capsule. */
+  function applyLayout(next) {
+    if (next && next.compact) LY = next;
+    SZ = G.sizes(LY.ih);
+    root.style.setProperty('--ih', String(LY.ih));
+    root.style.setProperty('--top', LY.dir === 'up' ? `calc(100vh - ${LY.gap + LY.ih}px)` : `${LY.top}px`);
+    root.style.setProperty('--fs', `${SZ.fs}px`);
+    root.style.setProperty('--ring', `${SZ.ring}px`);
+    root.style.setProperty('--gap', `${SZ.gap}px`);
+    root.style.setProperty('--bsy', String(0.62 * LY.ih / G.C.BASE_H));
+    root.style.setProperty('--notch', `${LY.notchW || 0}px`);
+    body.classList.toggle('up', LY.dir === 'up');
+    body.classList.toggle('mb', LY.mode === 'menubar' || LY.mode === 'notch');
+    body.classList.toggle('notch', LY.mode === 'notch');
+    body.classList.toggle('ring-only', !!LY.ringOnly);
+    lastKey = '';
+    if (lineEl) renderIsland();
   }
 
   setInterval(() => { if (running().length || (flash && flash.until <= Date.now())) renderIsland(); }, 1000);
@@ -205,6 +272,12 @@
         break;
       case 'island':
         if (ev.open) open(); else close();
+        break;
+      case 'island-layout':
+        applyLayout(ev.layout);
+        break;
+      case 'island-fade':
+        body.classList.toggle('faded', !!ev.faded);
         break;
       default:
         break;
@@ -369,7 +442,7 @@
       if (keys.has(key)) continue;
       live.delete(key);
       retire(rec);
-      const dy = rec.slot === 0 ? -(slotTop(0) - (TOP + 4)) : -(BUB_H + BUB_GAP);
+      const dy = rec.slot === 0 ? originTop() - slotTop(0) : nextDy();
       L.retract([rec.blob, rec.el], { dy, duration: 220, delay: gone++ * 30, fade: [rec.el, rec.blob] }).then(() => { rec.el.remove(); rec.blob.remove(); });
     }
     // stay + new
@@ -408,7 +481,7 @@
       goo.appendChild(rec.blob);
       bubblesEl.appendChild(rec.el);
       // On open, every bubble streams out of the bar; later arrivals bud off the bubble above.
-      const dy = first || i === 0 ? -(slotTop(i) - (TOP + 4)) : -(BUB_H + BUB_GAP);
+      const dy = first || i === 0 ? originTop() - slotTop(i) : nextDy();
       const delay = born++ * step;
       L.bud([rec.blob, rec.el], { dy, delay, duration: first ? 300 + i * 26 : 300, scale: 0.94, fade: [rec.el] });
     });
@@ -548,6 +621,7 @@
     live.clear();
     sel = -1;
     body.classList.add('open', 'ext');
+    body.classList.remove('faded');
     L.bud([gSide, side], { dx: -84, delay: 90, duration: 300, scale: 0.9, fade: [side] });
     requestAnimationFrame(() => input.focus());
     setTimeout(() => input.focus(), 60);
@@ -565,7 +639,7 @@
     live.clear();
     recs.forEach(retire);
     recs.forEach((rec, i) => {
-      L.retract([rec.blob, rec.el], { dy: -(slotTop(rec.slot) - (TOP + 4)), duration: 220, delay: i * 25, fade: [rec.el, rec.blob] })
+      L.retract([rec.blob, rec.el], { dy: originTop() - slotTop(rec.slot), duration: 220, delay: i * 25, fade: [rec.el, rec.blob] })
         .then(() => { rec.el.remove(); rec.blob.remove(); });
     });
     L.retract([gSide, side], { dx: -84, duration: 200, scale: 0.9, fade: [side, gSide] });
@@ -628,7 +702,8 @@
   });
   setIgnore(true);
 
-  setIslandWidth(ISLAND_MIN);
+  applyLayout(LY);
+  setIslandWidth(islandWidth());
   renderIsland();
   boot();
 })();

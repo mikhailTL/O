@@ -769,7 +769,7 @@
 
   // ------------------------------------------------------------ settings
 
-  const FIELDS = ['theme', 'openAtLogin', 'maxParallelTasks', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
+  const FIELDS = ['theme', 'islandPosition', 'openAtLogin', 'maxParallelTasks', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
     'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'proxyEnabled', 'proxyPort', 'proxyConcurrency', 'proxyMode',
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',
@@ -791,6 +791,8 @@
       else el.value = s[k] == null ? '' : s[k];
       // Ask before installing applies at once (no Save needed); the Evolution view follows.
       if (k === 'evolveAskBeforeInstall' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ evolveAskBeforeInstall: el.checked }); if (window.__oEvolve) window.__oEvolve.refresh(); }); }
+      // The Island moves at once, so the pick can be judged in place (Save keeps it too).
+      if (k === 'islandPosition' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', () => { o.setSettings({ islandPosition: el.value }).catch(() => {}); }); }
       if (k === 'browserMode' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ browserMode: el.value }); refreshExtension(); }); }
     }
   }

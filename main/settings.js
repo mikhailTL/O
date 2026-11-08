@@ -6,6 +6,10 @@ const os = require('os');
 
 const DEFAULTS = Object.freeze({
   theme: 'glass', // 'glass' (translucent near-black, default) | 'light' | 'dark' (opaque fallbacks)
+  // Where the Island sits: 'auto' (inside the macOS menu bar / on the notch; bottom centre above the taskbar on
+  // Windows and Linux) | 'menubar' | 'top' | 'bottom' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'hidden'
+  islandPosition: 'auto',
+  islandNotchWidth: 185, // 80..400 pt: the notch the Island grows out of on notched MacBooks
   permissionMode: 'log', // 'log' (record everything, never ask) | 'ask' (blocking card, 60 s) | 'auto'
   browserHeadless: true, // invisible by default so no window ever pops up over a game
   cwd: os.homedir(),
@@ -108,6 +112,7 @@ function deriveEvolve(d) {
 }
 
 const MODES = ['log', 'ask', 'auto'];
+const ISLAND_POSITIONS = ['auto', 'menubar', 'top', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right', 'hidden'];
 const THEMES = ['glass', 'light', 'dark'];
 
 class Settings {
@@ -174,6 +179,11 @@ class Settings {
 function sanitize(obj) {
   const out = {};
   if (THEMES.includes(obj.theme)) out.theme = obj.theme;
+  if (ISLAND_POSITIONS.includes(obj.islandPosition)) out.islandPosition = obj.islandPosition;
+  if (obj.islandNotchWidth !== undefined && obj.islandNotchWidth !== null && obj.islandNotchWidth !== '') {
+    const n = parseInt(obj.islandNotchWidth, 10);
+    if (Number.isFinite(n)) out.islandNotchWidth = Math.max(80, Math.min(400, n));
+  }
   if (MODES.includes(obj.permissionMode)) out.permissionMode = obj.permissionMode;
   if (typeof obj.browserHeadless === 'boolean') out.browserHeadless = obj.browserHeadless;
   if (typeof obj.cwd === 'string' && obj.cwd.trim()) out.cwd = obj.cwd.trim();
@@ -257,4 +267,4 @@ function sanitize(obj) {
   return out;
 }
 
-module.exports = { Settings, DEFAULTS, deriveEvolve, BROWSER_MODES };
+module.exports = { Settings, DEFAULTS, deriveEvolve, BROWSER_MODES, ISLAND_POSITIONS };

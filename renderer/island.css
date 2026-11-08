@@ -1,10 +1,21 @@
 /* O: the Island (status capsule) and the Command bar. Tokens come from liquid.css.
    Geometry: everything hangs from the horizontal centre of the window and a shared top edge, so the
    main process can swap the window between its compact and expanded bounds without moving anything.
-   --w is the island width in px (unitless, set by app.js); --bsx is the bar's closed scale. */
+   --w is the island width in px (unitless, set by app.js); --bsx/--bsy are the bar's closed scale.
+   Placement comes from islandgeom.js through app.js: --top (capsule top; for bottom positions a
+   calc() from 100vh, so it holds while the window swaps height), --ih (capsule height, unitless: 20-34 in
+   the macOS menu bar, 36 elsewhere), --cx (capsule centre x: 50vw, or pinned to a corner edge; never a %, since transforms use it too), --fs/--ring/
+   --gap (type and ring scaled with the capsule). The bar and bubbles stay at the window's horizontal centre. */
 :root {
   --top: 12px;
-  --island-h: 36px;
+  --ih: 36;
+  --island-h: calc(var(--ih) * 1px);
+  --cx: 50vw;
+  --dx: calc(50vw - var(--cx)); /* capsule centre -> bar centre */
+  --fs: 13px;
+  --ring: 14px;
+  --gap: 9px;
+  --bsy: 0.62;
   --bar-w: 640px;
   --bar-h: 56px;
   --side: 56px;
@@ -20,7 +31,7 @@ html, body {
   background: transparent;
   color: var(--ol-text);
   font-family: var(--ol-font);
-  font-size: 13px;
+  font-size: var(--fs);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
@@ -29,7 +40,9 @@ html, body {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
 button:focus { outline: none; }
 
-#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; }
+#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; transition: opacity 160ms linear; }
+/* Proximity fade (main.js): the cursor is near the capsule but has not dwelt on it, so it steps aside. */
+body.faded:not(.open) #stage { opacity: 0.25; }
 #goo { position: absolute; inset: 0; }
 
 /* ------------------------------------------------------------------ island: three parts, so its width
@@ -37,27 +50,27 @@ button:focus { outline: none; }
 .g-cap, .g-mid, .rim {
   position: absolute;
   top: var(--top);
-  left: 50%;
+  left: var(--cx);
   height: var(--island-h);
   transition: transform var(--ol-morph) var(--ol-ease-out), opacity 160ms linear;
 }
 /* Goo blobs with straight edges sit 2px inside the crisp rims: the threshold grows them by about that much.
    Round caps are not inset: at that curvature the blur erodes about as much as the threshold grows. */
 .g-mid { top: calc(var(--top) + 2px); height: calc(var(--island-h) - 4px); }
-.g-cap { width: 36px; border-radius: 18px; }
+.g-cap { width: var(--island-h); border-radius: calc(var(--island-h) / 2); }
 .g-cap-l { transform: translateX(calc(var(--w) * -0.5px)); }
-.g-cap-r { margin-left: -36px; transform: translateX(calc(var(--w) * 0.5px)); }
-.g-mid { width: 100px; margin-left: -50px; transform: scaleX(calc((var(--w) - 30) / 100)); }
+.g-cap-r { margin-left: calc(var(--island-h) * -1); transform: translateX(calc(var(--w) * 0.5px)); }
+.g-mid { width: 100px; margin-left: -50px; transform: scaleX(calc((var(--w) - var(--ih) + 6) / 100)); }
 
 .rim { border: 1px solid var(--ol-line); box-shadow: var(--ol-highlight); pointer-events: none; }
-.rim-l { width: 18px; border-right: 0; border-radius: 18px 0 0 18px; transform: translateX(calc(var(--w) * -0.5px)); }
-.rim-r { width: 18px; margin-left: -18px; border-left: 0; border-radius: 0 18px 18px 0; transform: translateX(calc(var(--w) * 0.5px)); }
-.rim-m { width: 100px; margin-left: -50px; border-left: 0; border-right: 0; transform: scaleX(calc((var(--w) - 36) / 100)); }
+.rim-l { width: calc(var(--island-h) / 2); border-right: 0; border-radius: calc(var(--island-h) / 2) 0 0 calc(var(--island-h) / 2); transform: translateX(calc(var(--w) * -0.5px)); }
+.rim-r { width: calc(var(--island-h) / 2); margin-left: calc(var(--island-h) / -2); border-left: 0; border-radius: 0 calc(var(--island-h) / 2) calc(var(--island-h) / 2) 0; transform: translateX(calc(var(--w) * 0.5px)); }
+.rim-m { width: 100px; margin-left: -50px; border-left: 0; border-right: 0; transform: scaleX(calc((var(--w) - var(--ih)) / 100)); }
 
 #island {
   position: absolute;
   top: var(--top);
-  left: 50%;
+  left: var(--cx);
   width: calc(var(--w) * 1px);
   height: var(--island-h);
   margin-left: calc(var(--w) * -0.5px);
@@ -78,26 +91,44 @@ body.open #island { box-shadow: none; }
   height: var(--island-h);
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--gap);
   white-space: nowrap;
   transform: translateX(-50%);
   transition: opacity 180ms linear 170ms; /* back after the bar has mostly shrunk */
 }
-.line { display: inline-flex; align-items: baseline; gap: 6px; max-width: 330px; overflow: hidden; line-height: 1; letter-spacing: -0.003em; }
+.line { display: inline-flex; align-items: baseline; gap: 6px; max-width: var(--line-max, 330px); overflow: hidden; line-height: 1; letter-spacing: -0.003em; }
 .line .k { font-weight: 600; color: var(--ol-text); flex: none; }
 .line .sep { color: var(--ol-text-2); flex: none; }
 .line .v { color: var(--ol-text-2); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .line.swap { animation: o-swap 220ms var(--ol-ease-out) both; }
 @keyframes o-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-.meta { font-size: 12px; color: var(--ol-text-2); font-variant-numeric: tabular-nums; line-height: 1; }
+.meta { font-size: max(12px, calc(var(--fs) - 1px)); color: var(--ol-text-2); font-variant-numeric: tabular-nums; line-height: 1; }
 .meta:empty { display: none; }
 
-#measure { position: absolute; left: -9999px; top: -9999px; visibility: hidden; white-space: nowrap; font-size: 13px; letter-spacing: -0.003em; }
+#measure { position: absolute; left: -9999px; top: -9999px; visibility: hidden; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; /* as .line */ font-size: var(--fs); letter-spacing: -0.003em; }
+
+/* Too little room (a narrow menu bar): the ring only; the status is in the tooltip. */
+body.ring-only .line, body.ring-only .meta { display: none; }
+
+/* ------------------------------------------------------------------ the notch extension (notched MacBooks)
+   The capsule is centred on the notch, so its middle sits behind the hardware cutout; the glass is opaque
+   black there so the wings read as the notch itself grown sideways. Ring + meta on the left wing, the line on
+   the right wing; --notch is the notch width. */
+body.notch:not(.open) .ol-goo { opacity: 1; }
+body.notch .ol-goo { --ol-glass-rgb: 0, 0, 0; transition: opacity 160ms linear; }
+body.notch .island-row { left: 0; width: calc(var(--w) * 1px); transform: none; display: block; }
+body.notch .ring { position: absolute; top: 50%; left: calc(var(--island-h) * 0.42); margin-top: calc(var(--ring) / -2); }
+body.notch .meta { position: absolute; top: 50%; transform: translateY(-50%); left: calc(var(--island-h) * 0.42 + var(--ring) + var(--gap)); }
+body.notch .line { position: absolute; top: 50%; transform: translateY(-50%); left: calc(var(--w) * 0.5px + var(--notch) / 2 + 8px); max-width: var(--line-max); }
+body.notch .line.swap { animation-name: o-swap-notch; }
+@keyframes o-swap-notch { from { opacity: 0; transform: translateY(calc(-50% + 3px)); } to { opacity: 1; transform: translateY(-50%); } }
+body.notch.ring-only .line { display: none; }
+body.notch.ring-only .meta { display: none; }
 #measure .k { font-weight: 600; }
 
 /* ------------------------------------------------------------------ the ring glyph */
-.ring { position: relative; width: 14px; height: 14px; flex: none; }
-.ring svg { position: absolute; inset: 0; overflow: visible; filter: drop-shadow(0 0 2.5px rgba(255, 255, 255, 0.7)); }
+.ring { position: relative; width: var(--ring); height: var(--ring); flex: none; }
+.ring svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 2.5px rgba(255, 255, 255, 0.7)); }
 .ring circle { fill: none; stroke-width: 1.75; }
 .ring-base { stroke: var(--ol-text); transition: opacity 200ms linear; }
 .ring-arc { stroke: var(--ol-text); stroke-linecap: round; stroke-dasharray: 8 25; opacity: 0; }
@@ -130,7 +161,8 @@ body.open #island { box-shadow: none; }
   margin-left: calc(var(--bar-w) / -2);
   border-radius: var(--ol-r-bar);
   transform-origin: 50% 0;
-  transform: scale(var(--bsx), 0.62);
+  /* closed: shrunk onto the capsule (which may sit off centre in a corner position) */
+  transform: translateX(calc(var(--cx) - 50vw)) scale(var(--bsx), var(--bsy));
   transition: transform var(--ol-morph) var(--ol-ease-out), opacity 120ms linear;
 }
 .g-bar { opacity: 0; top: calc(var(--top) + 2px); width: calc(var(--bar-w) - 4px); height: calc(var(--bar-h) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); border-radius: 20px; }
@@ -193,9 +225,14 @@ body.open .bar-rim { opacity: 1; transition-delay: 70ms; }
 body.open .bar-ring, body.open #input, body.open .keys { opacity: 1; transition-delay: 130ms; }
 
 /* open: the island stretches into the bar and its rim and text go */
-body.open .g-cap-l { transform: translateX(calc(var(--bar-w) / -2 + 4px)); }
-body.open .g-cap-r { transform: translateX(calc(var(--bar-w) / 2 - 4px)); }
-body.open .g-mid { transform: scaleX(5.9); }
+body.open .g-cap-l { transform: translateX(calc(var(--dx) + var(--bar-w) / -2 + 4px)); }
+body.open .g-cap-r { transform: translateX(calc(var(--dx) + var(--bar-w) / 2 - 4px)); }
+body.open .g-mid { transform: translateX(var(--dx)) scaleX(calc((640 - var(--ih) * 1.4) / 100)); }
+
+/* bottom positions: the bar sits on the capsule's bottom edge and buds upward (bubbles stack above it) */
+body.up .g-bar, body.up #bar, body.up .g-side, body.up #side { top: calc(var(--top) + var(--island-h) - var(--bar-h)); }
+body.up .g-bar, body.up .g-side { top: calc(var(--top) + var(--island-h) - var(--bar-h) + 2px); }
+body.up .g-bar, body.up #bar { transform-origin: 50% 100%; }
 body.open .rim { opacity: 0; transition-duration: var(--ol-morph), 100ms; }
 body.open .island-row { opacity: 0; transition: opacity 90ms linear; }
 body.open #island { pointer-events: none; }
