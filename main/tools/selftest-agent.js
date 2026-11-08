@@ -63,6 +63,23 @@ function ok(cond, label) {
     ok(statuses.length >= 10 && !statuses.some((t) => /!|Ooh|Mulling|Hmm|Oops|Oh dear|Righto/.test(t)), 'status lines are calm: ' + JSON.stringify(statuses.filter((t) => /!|Ooh|Mulling|Hmm/.test(t))));
     ok(buildPersona({}).includes('If computer_run fails, read its error and call it again with a corrected goal rather than driving the display yourself.'), 'persona: retry computer_run instead of driving the display');
   }
+  {
+    // 2026-11-08 user report: "Chrome won't let me click through its own pages" on macOS.
+    const { INTERNAL_PAGES } = require('../agent');
+    for (const mode of ['auto', 'link', 'mine', 'separate']) {
+      for (const linked of [false, true]) {
+        const p = buildPersona({ browserMode: mode }, { linked });
+        ok(p.includes(INTERNAL_PAGES) && !p.includes('{{'), `persona (${mode}${linked ? ', linked' : ''}): internal-page rules present, no placeholder left`);
+      }
+    }
+    const p = buildPersona({});
+    ok(/chrome:\/\/, edge:\/\/, brave:\/\/, arc:\/\/.*about:, chrome-extension:\/\/ pages and the Chrome Web Store/.test(p), 'persona: lists the browser-internal schemes and the Chrome Web Store');
+    ok(/never try the Playwright browser tools, JavaScript or O Link: go straight to mcp__o__computer_run with app set to that browser/.test(p), 'persona: internal pages go straight to computer_run with app = the browser');
+    ok(/1\) mcp__o__computer_run with app = the browser or app \(accessibility tree\); 2\) .*menu bar.*keyboard shortcut; 3\) .*O's own browser/.test(p), 'persona: fallback order AX → menu/shortcut → O\'s own browser');
+    ok(/Report a failure only after every path failed/.test(p) && /Never write "Chrome won't let me"/.test(p), 'persona: bans "Chrome won\'t let me" and reports only after all paths fail');
+    ok(p.includes('"Accessibility access is off for O. Turn it on in System Settings > Privacy & Security > Accessibility."') && /do not blame the browser/.test(p), 'persona: one-line Accessibility message when computer use is unavailable');
+    ok(/macOS: each app's accessibility tree/.test(p), 'persona: computer use on macOS is the accessibility tree, not an isolated display');
+  }
   ok(typeof childEnv === 'function' && typeof fullPath === 'function', 'childEnv and fullPath exported');
   ok(!SAFE_TOOLS.includes('mcp__o__provision') && SAFE_TOOLS.includes('mcp__o__workspace_context'), 'provision is not a safe tool; workspace_context is');
   ok(ENGINE_TOOLS.length === 6, 'six engine tools');

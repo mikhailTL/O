@@ -23,6 +23,15 @@ dependencies = [
   "crewai>=0.100",
   "browser-use>=0.1.40",
   "numpy>=1.26",
+  # macOS computer use (o_engine/cu/backends/ax.py): the Accessibility API. atomacos 3.3.0 pulls pyobjc-core,
+  # -Cocoa, -Quartz, -ApplicationServices, -CoreText and old pyautogui/pyscreeze/pygetwindow sdists (all build
+  # on 3.12/3.13). The pyobjc frameworks are listed too: ax.py falls back to them directly (ax_pyobjc.py) if
+  # atomacos does not import, and AXIsProcessTrusted() comes from ApplicationServices.
+  "atomacos>=3.3; sys_platform == 'darwin'",
+  "pyobjc-core>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

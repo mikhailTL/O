@@ -192,12 +192,24 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
     try { p = JSON.parse(body || '{}'); } catch { return sendError(res, 400, 'body is not JSON'); }
     if (!Array.isArray(p.messages) || !p.messages.length) return sendError(res, 400, 'messages[] is required');
     const model = MODELS.includes(p.model) ? p.model : 'o-ai';
-    // Stagehand's uncached web steps (main/tools/stagehand-mcp.js): a cheap model and no tools for the nested claude -p.
-    const stagehandCall = req.headers['x-o-caller'] === 'stagehand';
+    // Stagehand's uncached web steps (main/tools/stagehand-mcp.js) and the engine's headless browser-use agent
+    // (engine/o_engine/web.py, when no vLLM answers): a cheap model and no tools for the nested claude -p.
+    const caller = String(req.headers['x-o-caller'] || '');
+    const stagehandCall = caller === 'stagehand' || caller === 'browser-use';
     if (stagehandCall) s = { ...s, model: (getSettings && getSettings() || {}).fastModel || 'haiku' };
-    const jsonOnly = model === 'o-ai-code' || !!(p.response_format && p.response_format.type === 'json_object');
+    const rf = p.response_format && typeof p.response_format === 'object' ? p.response_format : null;
+    const jsonOnly = model === 'o-ai-code' || !!(rf && (rf.type === 'json_object' || rf.type === 'json_schema'));
     const promptMode = jsonOnly || s.mode === 'code' ? 'code' : 'chat';
-    const { system, prompt, lastUser } = flatten(p.messages);
+    const flat = flatten(p.messages);
+    const { prompt, lastUser } = flat;
+    let system = flat.system;
+    // json_schema: claude -p has no schema parameter, so the schema goes into the system prompt.
+    const schema = rf && rf.type === 'json_schema' && rf.json_schema ? (rf.json_schema.schema || rf.json_schema) : null;
+    if (schema) {
+      let text = '';
+      try { text = JSON.stringify(schema); } catch (_) { text = ''; }
+      if (text) system = `${system ? system + '\n\n' : ''}Answer with ONE JSON object that matches this JSON Schema, and nothing else (no prose, no code fences):\n${text.slice(0, 60000)}`;
+    }
     const id = 'chatcmpl-' + crypto.randomBytes(8).toString('hex');
     const created = Math.floor(Date.now() / 1000);
     const stream = !!p.stream;

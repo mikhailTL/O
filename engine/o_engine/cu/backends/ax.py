@@ -1,4 +1,9 @@
-"""macOS backend over the Accessibility API (``atomacos``).
+"""macOS backend over the Accessibility API (``atomacos``, else pyobjc ApplicationServices directly).
+
+``atomacos`` is used when it imports; otherwise ``ax_pyobjc`` (the same surface over pyobjc's HIServices
+bindings). ``O_AX_IMPL=pyobjc`` forces the pyobjc path. The process that calls the AX API must be allowed in
+System Settings > Privacy & Security > Accessibility (for O's engine that is O itself, or Terminal when O was
+started from Terminal): ``available`` is False with ``ACCESSIBILITY_NEEDED`` as the reason until it is.
 
 ``AXPress`` / ``AXSetValue`` first; pixel clicks and synthetic keystrokes via
 ``pyautogui`` only when ``allow_pixels`` is set. Screenshots use ``screencapture``.
@@ -9,19 +14,53 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
 from ..schema import Target
 from .base import BackendError, CUBackend, Node, Rect, find_in
 
-try:
-    import atomacos  # type: ignore
+ACCESSIBILITY_NEEDED = "accessibility permission needed"
+ACCESSIBILITY_HINT = ("Accessibility access is off for O. Turn it on in System Settings > Privacy & Security > "
+                      "Accessibility (O, or Terminal if O was started from Terminal).")
 
-    _IMPORT_ERROR: str | None = None
-except Exception as _e:  # noqa: BLE001
-    atomacos = None  # type: ignore
-    _IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+def _load_impl() -> tuple[Any, str, str | None]:
+    """(module, implementation name, import error). atomacos first unless O_AX_IMPL=pyobjc; then pyobjc."""
+    errors: list[str] = []
+    if os.environ.get("O_AX_IMPL", "").strip().lower() != "pyobjc":
+        try:
+            import atomacos as mod  # type: ignore
+
+            return mod, "atomacos", None
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"atomacos: {type(e).__name__}: {e}")
+    try:
+        from . import ax_pyobjc as mod  # type: ignore
+
+        return mod, "pyobjc", None
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"pyobjc ApplicationServices: {type(e).__name__}: {e}")
+    return None, "", "; ".join(errors)
+
+
+atomacos, AX_IMPL, _IMPORT_ERROR = _load_impl()
+
+
+def accessibility_trusted() -> bool | None:
+    """``AXIsProcessTrusted()`` for this process: True/False on macOS, None when it cannot be asked
+    (another OS, or pyobjc ApplicationServices missing). Live: a grant made while O runs shows up at once."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from ApplicationServices import AXIsProcessTrusted  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return bool(AXIsProcessTrusted())
+    except Exception:  # noqa: BLE001
+        return None
 
 MAX_DEPTH = 40
 MAX_NODES = 20_000
@@ -61,17 +100,35 @@ class AxBackend(CUBackend):
     def __init__(self, allow_pixels: bool = False, display: str | None = None) -> None:
         super().__init__(allow_pixels=allow_pixels, display=display)
         self._handles: dict[str, Any] = {}
-        self.reason = f"atomacos not importable: {_IMPORT_ERROR}" if _IMPORT_ERROR else ""
+        self.impl = AX_IMPL
+
+    @property
+    def trusted(self) -> bool | None:
+        return accessibility_trusted()
 
     @property
     def available(self) -> bool:
-        return _IMPORT_ERROR is None
+        return _IMPORT_ERROR is None and self.trusted is not False
+
+    @property
+    def reason(self) -> str:
+        if _IMPORT_ERROR:
+            return f"accessibility backend not importable (re-run install/install.sh): {_IMPORT_ERROR}"
+        if self.trusted is False:
+            return ACCESSIBILITY_NEEDED
+        return ""
+
+    @reason.setter
+    def reason(self, _value: str) -> None:  # CUBackend.__init__ assigns ""; the reason is always computed
+        pass
 
     def env(self) -> dict[str, str]:
         return {}
 
     def _require(self) -> None:
         if not self.available:
+            if self.reason == ACCESSIBILITY_NEEDED:
+                raise BackendError(f"ax backend unavailable: {ACCESSIBILITY_NEEDED}. {ACCESSIBILITY_HINT}")
             raise BackendError(f"ax backend unavailable: {self.reason}")
 
     def tree(self, window: str | None = None) -> list[Node]:

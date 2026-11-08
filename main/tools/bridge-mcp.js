@@ -62,7 +62,7 @@
 
 const http = require('http');
 const { classifyAction, CHECKPOINT_KINDS } = require('./checkpoints');
-const { createNative, BROWSER_APPS, wrapUntrusted } = require('./native-tabs');
+const { createNative, BROWSER_APPS, wrapUntrusted, accessProblem, isInternalUrl } = require('./native-tabs');
 
 const PERM_URL = process.env.O_PERM_URL;
 const SCREEN_URL = process.env.O_SCREEN_URL;
@@ -418,7 +418,8 @@ const TOOLS = [
   {
     name: 'computer_run',
     description: 'Drive a desktop application through the O engine (context → plan → ground → execute → judge → heal → store). ' +
-      'Accessibility-API actions on an isolated display, every step judged and logged; a solved goal is stored as a replayable procedure. ' +
+      'Accessibility-API actions (Linux: an isolated display; macOS: the app\'s accessibility tree, the user\'s mouse untouched), every step judged and logged; a solved goal is stored as a replayable procedure. ' +
+      'This is the path for browser-internal pages (chrome://extensions, settings, the Chrome Web Store): set app to that browser. ' +
       'Blocks until the job finishes and returns the final JobState (phase, steps, procedure_id, scores).',
     inputSchema: COMPUTER_RUN_SCHEMA,
   },
@@ -569,7 +570,8 @@ const TOOLS = [
   {
     name: 'tab_act',
     description: 'Act in one of the user\'s tabs (from tabs_list) without their mouse or keyboard: navigate {url}, click {target}, or type {text, target?, submit?}. ' +
-      'Click and type run through O\'s computer use for that browser; navigate sets the tab\'s address. Payment sites are blocked.',
+      'Click and type run through O\'s computer use for that browser; navigate sets the tab\'s address. Browser-internal pages (chrome://, edge://, brave://, arc://, about:, ' +
+      'chrome-extension://, the Chrome Web Store) go through computer use (the accessibility tree) for every action, navigate included. Payment sites are blocked.',
     inputSchema: TAB_ACT_SCHEMA,
   },
   {
@@ -886,11 +888,28 @@ function provision(args) {
   return runJob('/provision', { ...args, priority: TASK_PRIORITY }, 'provision');
 }
 
-function computerRun(args) {
+// macOS: computer use needs the Accessibility permission. GET /computer/access is cheap (AXIsProcessTrusted,
+// no display, no tree), so it is asked before every computer-use call: a grant or a revocation shows at once.
+async function cuAccessProblem() {
+  if (!ENGINE_URL || process.platform !== 'darwin') return '';
+  try { return accessProblem(await engine('GET', '/computer/access', undefined, 5000)); } catch (_) { return ''; /* older engine or down: let the job report */ }
+}
+
+function accessResult(problem, tool) {
+  fireAndForgetLog({ kind: 'note', summary: `${tool}: computer use unavailable: ${problem}`.slice(0, 240), detail: { tool, accessibility: false } });
+  return textResult(pretty({ ok: false, accessibility: false, error: problem, tell_user: problem,
+    note: 'Say this one line to the user. Do not blame the browser or the app.' }), true);
+}
+
+async function computerRun(args) {
+  const problem = await cuAccessProblem();
+  if (problem) return accessResult(problem, 'computer_run');
   return runJob('/computer/run', args, 'computer_run');
 }
 
-function computerReplay(args) {
+async function computerReplay(args) {
+  const problem = await cuAccessProblem();
+  if (problem) return accessResult(problem, 'computer_replay');
   return runJob('/computer/replay', { procedure_id: args && args.procedure_id }, 'computer_replay');
 }
 
@@ -1081,6 +1100,21 @@ async function tabAct(args) {
       return textResult(pretty({ ok: false, blocked: true, error: 'Blocked by O: O never makes payments. The user can do that part themselves.' }), true);
     }
   }
+  // Browser-internal pages (chrome://, edge://, about:, chrome-extension://, the web stores) refuse extensions,
+  // CDP and JavaScript from Apple Events: they go straight to computer use for that browser (accessibility tree).
+  if (action === 'navigate' && isInternalUrl(a.url)) {
+    if (native.platform !== 'darwin') return nativeResult(native.unsupported('Opening a browser-internal page in a tab by number'));
+    const { b, info } = await native.tabInfo(a);
+    if (!info.ok) return nativeResult(info);
+    const g = native.actGoal(b, info, a);
+    if (g.error) return textResult('tab_act: ' + g.error, true);
+    const held = await checkpointHold('mcp__playwright__browser_navigate', { url: String(a.url) });
+    if (held) return textResult(held, true);
+    const problem = await cuAccessProblem();
+    if (problem) return accessResult(problem, 'tab_act');
+    note(`tab_act navigate (internal page, computer use) in ${b.app}: ${String(a.url).slice(0, 160)}`, { url: a.url, internal: true, goal: g.goal });
+    return runJob('/computer/run', { goal: g.goal, app: b.app }, 'tab_act');
+  }
   if (action === 'navigate') {
     const problem = native.urlProblem(a.url);
     if (problem) return textResult(pretty({ ok: false, blocked: /^Blocked by O/.test(problem), error: problem }), true);
@@ -1103,7 +1137,9 @@ async function tabAct(args) {
     ? await checkpointHold('mcp__playwright__browser_click', { element: String(a.target || '') })
     : await checkpointHold('mcp__playwright__browser_type', { element: String(a.target || ''), text: String(a.text || ''), submit: !!a.submit });
   if (held) return textResult(held, true);
-  note(`tab_act ${action} in ${b.app}: ${String(a.target || a.text || '').slice(0, 120)}`, { url: info.url, title: info.title, goal: g.goal });
+  const problem = await cuAccessProblem();
+  if (problem) return accessResult(problem, 'tab_act');
+  note(`tab_act ${action} in ${b.app}${g.internal ? ' (internal page)' : ''}: ${String(a.target || a.text || '').slice(0, 120)}`, { url: info.url, title: info.title, goal: g.goal, internal: g.internal || undefined });
   return runJob('/computer/run', { goal: g.goal, app: b.app }, 'tab_act');
 }
 
@@ -1129,10 +1165,16 @@ async function callTool(name, args) {
       return computerRun(args);
     case 'computer_replay':
       return computerReplay(args);
-    case 'computer_find':
+    case 'computer_find': {
+      const problem = await cuAccessProblem();
+      if (problem) return accessResult(problem, 'computer_find');
       return enginePost('/computer/find', { target: args.target });
-    case 'computer_tree':
+    }
+    case 'computer_tree': {
+      const problem = await cuAccessProblem();
+      if (problem) return accessResult(problem, 'computer_tree');
       return engineGet('/computer/tree' + (args && args.window ? '?window=' + encodeURIComponent(String(args.window)) : ''));
+    }
     case 'mcp_tools':
       return engineGet('/tools/list');
     case 'mcp_call':

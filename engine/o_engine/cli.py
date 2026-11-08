@@ -99,6 +99,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         ("playwright", report["playwright"], "chromium", True),
         ("xvfb", report["xvfb"], "Xvfb on PATH", platform.system() == "Linux"),
     ]
+    if sys.platform == "darwin":
+        cu = report.get("cu_backend") or {}
+        importable = not str(cu.get("reason", "")).startswith("accessibility backend not importable")
+        rows.append(("ax backend", importable, "atomacos / pyobjc ApplicationServices", True))
+        rows.append(("accessibility", report.get("accessibility_trusted") is True,
+                     "System Settings > Privacy & Security > Accessibility (O, or Terminal)", False))
     print(f"o-engine {report['version']}")
     missing = False
     for name, ok, where, required in rows:

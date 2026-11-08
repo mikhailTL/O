@@ -77,6 +77,18 @@ function resolvePython(setting) {
   return null;
 }
 
+/** O_PROXY_URL / O_PROXY_TOKEN / O_FAST_MODEL for the engine, from the same settings main/proxy.js reads. */
+function proxyEnv(s) {
+  const on = s.proxyEnabled !== false && !!String(s.proxyToken || '');
+  const n = Number(s.proxyPort);
+  const port = Number.isFinite(n) && s.proxyPort !== '' && s.proxyPort !== undefined && s.proxyPort !== null ? n : 8787;
+  return {
+    O_PROXY_URL: on ? `http://127.0.0.1:${port}/v1` : '',
+    O_PROXY_TOKEN: on ? String(s.proxyToken) : '',
+    O_FAST_MODEL: typeof s.fastModel === 'string' && s.fastModel.trim() ? s.fastModel.trim() : 'haiku',
+  };
+}
+
 class EngineProcess extends EventEmitter {
   /**
    * @param {object} opts
@@ -141,6 +153,9 @@ class EngineProcess extends EventEmitter {
       O_UI_URL: this.uiUrl || '',
       O_VLLM_URL: s.vllmUrl || 'http://127.0.0.1:8000/v1',
       O_VLLM_MODEL: s.vllmModel || '',
+      // O's API proxy (main/proxy.js): the engine's headless browser-use agent runs on it, with the fast model,
+      // when no vLLM answers. Same URL and token rules as proxy.js; '' when the proxy is switched off.
+      ...proxyEnv(s),
       O_SCREENPIPE_DB: s.screenpipeDb || '',
       O_SANDBOX_ROOT: s.sandboxRoot || '',
       O_PERMISSION_MODE: s.permissionMode || 'log',
@@ -383,4 +398,4 @@ class EngineProcess extends EventEmitter {
   }
 }
 
-module.exports = { EngineProcess, resolvePython, freePort, killTree };
+module.exports = { EngineProcess, resolvePython, freePort, killTree, proxyEnv };

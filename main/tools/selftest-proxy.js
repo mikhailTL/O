@@ -35,8 +35,10 @@ async function main() {
   let spawnedAtOnce = 0, liveChildren = 0;
   const systemsSeen = [];
   let spawnCount = 0;
+  let lastArgs = [];
   const spawnImpl = (cmd, args, opts) => {
     spawnCount++;
+    lastArgs = args;
     const sfIdx = args.findIndex((a) => /system-prompt-file$/.test(a));
     try { systemsSeen.push(fs.readFileSync(args[sfIdx + 1], 'utf8')); } catch (_) { systemsSeen.push(null); }
     const child = spawn(process.execPath, [FAKE, ...args], { ...opts, env: { ...opts.env, ...fakeEnv } });
@@ -147,6 +149,37 @@ async function main() {
   spawnCount = 0;
   r = await request(port, 'POST', '/v1/run', { objective: 'set up the project' }, 'secret-token');
   ok(r.status === 200 && r.json.cached === true && spawnCount === 0, `/v1/run repeat objective is served from the cache with no model call (spawns=${spawnCount})`);
+
+  // engine's headless browser-use (engine/o_engine/web.py): x-o-caller browser-use → fast model, no tools, schema in the system prompt
+  {
+    settings.fastModel = 'haiku';
+    fakeEnv = { FAKE_SIMPLE: '1', FAKE_TEXT: '{"action":[{"done":{"text":"ok"}}]}' };
+    const before = systemsSeen.length;
+    const body = JSON.stringify({ model: 'o-ai-code', messages: [{ role: 'system', content: 'You are a browser agent.' }, { role: 'user', content: 'open example.com' }],
+      response_format: { type: 'json_schema', json_schema: { name: 'AgentOutput', schema: { type: 'object', properties: { action: { type: 'array' } }, required: ['action'] } } } });
+    const res = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json', authorization: 'Bearer secret-token', 'x-o-caller': 'browser-use', 'content-length': Buffer.byteLength(body) } }, (rs) => {
+        const chunks = []; rs.on('data', (c) => chunks.push(c)); rs.on('end', () => { let j = null; try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (_) {} resolve({ status: rs.statusCode, json: j }); });
+      });
+      req.on('error', reject); req.end(body);
+    });
+    const mi = lastArgs.indexOf('--model');
+    ok(mi >= 0 && lastArgs[mi + 1] === 'haiku', 'browser-use caller: runs the fast model (--model haiku)');
+    const sysp = systemsSeen.slice(before).pop() || '';
+    ok(res.status === 200 && res.json && /"action"/.test(res.json.choices[0].message.content), 'browser-use caller: JSON answer returned');
+    ok(/matches this JSON Schema/.test(sysp) && /"required":\["action"\]/.test(sysp) && /You are a browser agent\./.test(sysp), 'browser-use caller: json_schema is written into the system prompt');
+    const last = entries.filter((e) => e.kind === 'task' && /chat\/completions/.test(e.summary)).pop();
+    ok(!!last, 'browser-use caller: request is in the action log');
+  }
+
+  // engine env (main/engine.js): the engine learns the proxy URL/token and the fast model; nothing when the proxy is off
+  {
+    const { proxyEnv } = require('../engine');
+    const on = proxyEnv({ proxyToken: 'tk', proxyPort: 9911, fastModel: 'sonnet' });
+    const off = proxyEnv({ proxyEnabled: false, proxyToken: 'tk' });
+    ok(on.O_PROXY_URL === 'http://127.0.0.1:9911/v1' && on.O_PROXY_TOKEN === 'tk' && on.O_FAST_MODEL === 'sonnet', 'engine env: O_PROXY_URL / O_PROXY_TOKEN / O_FAST_MODEL from the proxy settings');
+    ok(off.O_PROXY_URL === '' && off.O_PROXY_TOKEN === '' && proxyEnv({}).O_PROXY_URL === '' && proxyEnv({ proxyToken: 'x' }).O_PROXY_URL === 'http://127.0.0.1:8787/v1' && proxyEnv({}).O_FAST_MODEL === 'haiku', 'engine env: proxy off or no token → empty; default port 8787, default fast model haiku');
+  }
 
   // action log
   const tasks = entries.filter((e) => e.kind === 'task').length, results = entries.filter((e) => e.kind === 'result').length;
