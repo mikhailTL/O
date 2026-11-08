@@ -10,6 +10,10 @@ const DEFAULTS = Object.freeze({
   // Windows and Linux) | 'menubar' | 'top' | 'bottom' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'hidden'
   islandPosition: 'auto',
   islandNotchWidth: 185, // 80..400 pt: the notch the Island grows out of on notched MacBooks
+  // Non-notch menu bar: space reserved for the app menus (left) and status items (right); neither can be
+  // measured from Electron, so the capsule stays in the gap between these zones (never over a menu).
+  islandMenuSafeLeft: 640, // 200..2000 px
+  islandMenuSafeRight: 560, // 200..2000 px
   permissionMode: 'log', // 'log' (record everything, never ask) | 'ask' (blocking card, 60 s) | 'auto'
   browserHeadless: true, // invisible by default so no window ever pops up over a game
   cwd: os.homedir(),
@@ -183,6 +187,12 @@ function sanitize(obj) {
   if (obj.islandNotchWidth !== undefined && obj.islandNotchWidth !== null && obj.islandNotchWidth !== '') {
     const n = parseInt(obj.islandNotchWidth, 10);
     if (Number.isFinite(n)) out.islandNotchWidth = Math.max(80, Math.min(400, n));
+  }
+  for (const k of ['islandMenuSafeLeft', 'islandMenuSafeRight']) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') {
+      const n = parseInt(obj[k], 10);
+      if (Number.isFinite(n)) out[k] = Math.max(200, Math.min(2000, n));
+    }
   }
   if (MODES.includes(obj.permissionMode)) out.permissionMode = obj.permissionMode;
   if (typeof obj.browserHeadless === 'boolean') out.browserHeadless = obj.browserHeadless;

@@ -26,7 +26,13 @@
     BOTTOM_GAP: 8,    // capsule bottom above the work area bottom, bottom positions
     PAD: 4,           // corner positions: capsule edge inside the window edge
     EDGE: 8,          // corner positions: capsule edge from the work area edge
-    MENU_SAFE: 560,   // menu bar: space kept free at each end (app menus left, status items right)
+    MENU_SAFE: 560,   // notch: symmetric space kept free at each end of the bar (the notch is centred)
+    // Non-notch menu bar: the app menus (left) and the status items (right) can't be measured from Electron
+    // and vary by frontmost app, so a generous fixed zone is reserved at each end and the capsule lives in the
+    // gap between them. The left zone is larger because app menus (File Edit View … plus the app name) run wide.
+    MENU_SAFE_LEFT: 640,
+    MENU_SAFE_RIGHT: 560,
+    MENU_MARGIN: 16,  // the capsule keeps at least this clear of each zone
     MAX_W: 420,
     MIN_W: 220,
     NOTCH_W: 185,     // typical notch width in points (MacBook Pro 14/16, MacBook Air 13/15)
@@ -77,14 +83,16 @@
     const bounds = display.bounds;
     const wa = display.workArea;
     const pref = POSITIONS.includes(o.position) ? o.position : 'auto';
-    const pos = resolvePosition(pref, platform);
+    let pos = resolvePosition(pref, platform);
     const L = {
       position: pref, resolved: pos, hidden: pref === 'hidden', platform,
-      mode: 'float', anchor: 'center', dir: 'down',
+      mode: 'float', anchor: 'center', dir: 'down', fallback: null,
       ih: C.BASE_H, top: C.TOP, gap: 0, menuBarH: menuBarHeight(display),
       maxW: Math.min(C.MAX_W, wa.width - 2 * C.EDGE), minW: C.MIN_W, ringOnly: false,
       notchW: 0, maxWing: 0, compact: null, exp: { width: C.EXP_W, height: C.EXP_H },
     };
+    const safeLeft = Math.max(0, r(Number(o.menuSafeLeft) || C.MENU_SAFE_LEFT));
+    const safeRight = Math.max(0, r(Number(o.menuSafeRight) || C.MENU_SAFE_RIGHT));
 
     if (pos === 'menubar') {
       // A hidden menu bar (auto-hide) reports no height: use the nominal strip it slides into.
@@ -93,29 +101,53 @@
       L.ih = Math.max(16, mb - 4);
       L.top = Math.floor((mb - L.ih) / 2);
       const notch = hasNotch(display, platform, o.forceNotch);
-      const room = bounds.width - 2 * C.MENU_SAFE;
+      const ringW = r(L.ih * 2);
       if (notch) {
+        // The notch is centred, so the capsule is centred on the screen with symmetric wings.
         L.mode = 'notch';
         L.notchW = clamp(r(Number(o.notchWidth) || C.NOTCH_W), 80, 400);
-        // Wings stay inside the same safe zone as the plain capsule, and at most MAX_WING each.
+        const room = bounds.width - 2 * C.MENU_SAFE;
         L.maxWing = Math.max(0, Math.min(C.MAX_WING, Math.floor((room - L.notchW) / 2)));
         L.maxW = L.notchW + 2 * Math.max(L.maxWing, C.RING_ONLY_WING);
         L.minW = L.notchW + 2 * C.RING_ONLY_WING;
         L.ringOnly = L.maxWing < C.RING_ONLY_WING;
-      } else {
-        L.mode = 'menubar';
-        L.maxW = Math.min(C.MAX_W, room);
-        L.ringOnly = L.maxW < C.RING_ONLY_BELOW;
-        const ringW = r(L.ih * 2);
-        if (L.ringOnly) L.maxW = ringW;
-        L.minW = L.ringOnly ? ringW : Math.min(L.maxW, r(C.MIN_W * clamp(L.ih / C.BASE_H, 0.6, 1)));
+        const w = Math.max(C.COMPACT_W, L.maxW + 16);
+        L.compact = { x: r(bounds.x + (bounds.width - w) / 2), y: bounds.y, width: w, height: mb };
+        return L;
       }
-      const w = Math.max(C.COMPACT_W, L.maxW + 16);
-      L.compact = { x: r(bounds.x + (bounds.width - w) / 2), y: bounds.y, width: w, height: mb };
-      return L;
+      // Non-notch: the capsule lives in the gap between the left (app menus) and right (status items) zones,
+      // centred in that gap. Its full width must fit the gap with a margin on both sides, else the ring alone
+      // (tiny, in the empty centre of the gap); if even the ring can't clear, drop to the bottom float.
+      const gapW = bounds.width - safeLeft - safeRight;
+      const gapCenter = safeLeft + gapW / 2;
+      const availW = gapW - 2 * C.MENU_MARGIN; // the widest the capsule may be and still keep both margins
+      if (availW >= C.RING_ONLY_BELOW) {
+        L.mode = 'menubar';
+        L.maxW = Math.min(C.MAX_W, availW);
+        L.minW = Math.min(L.maxW, r(C.MIN_W * clamp(L.ih / C.BASE_H, 0.6, 1)));
+      } else if (availW >= ringW) {
+        L.mode = 'menubar';
+        L.ringOnly = true;
+        L.maxW = ringW;
+        L.minW = ringW;
+      } else {
+        // No room for even the ring between the menus: fall back to the bottom-centre float.
+        L.fallback = 'menubar-no-room';
+        pos = 'bottom';
+        L.resolved = 'bottom';
+        L.ih = C.BASE_H; L.top = C.TOP;
+      }
+      if (L.mode === 'menubar') {
+        const w = Math.max(C.COMPACT_W, L.maxW + 16);
+        L.compact = { x: r(gapCenter - w / 2), y: bounds.y, width: w, height: mb };
+        return L;
+      }
+      // fall through to the float layout with pos = 'bottom'
     }
 
     // Floating positions, inside the work area.
+    L.maxW = Math.min(C.MAX_W, wa.width - 2 * C.EDGE);
+    L.ringOnly = false;
     L.minW = Math.min(L.minW, L.maxW);
     const w = C.COMPACT_W;
     const bottom = pos === 'bottom' || pos === 'bottom-left' || pos === 'bottom-right';

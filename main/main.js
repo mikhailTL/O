@@ -363,7 +363,7 @@ function computeIslandLayout() {
   // O_ISLAND_NOTCH=1|0 forces the notch layout on or off (Electron exposes no notch inset to detect it with).
   const env = process.env.O_ISLAND_NOTCH;
   const forceNotch = env === '1' ? true : env === '0' ? false : undefined;
-  return IslandGeom.layout({ platform: process.platform, display: screen.getPrimaryDisplay(), position: s.islandPosition, notchWidth: s.islandNotchWidth, forceNotch });
+  return IslandGeom.layout({ platform: process.platform, display: screen.getPrimaryDisplay(), position: s.islandPosition, notchWidth: s.islandNotchWidth, menuSafeLeft: s.islandMenuSafeLeft, menuSafeRight: s.islandMenuSafeRight, forceNotch });
 }
 
 function currentIslandLayout() {
@@ -1408,7 +1408,7 @@ function registerIpc() {
     }
     if (proxy && keys.some((k) => PROXY_KEYS.includes(k))) restartProxy();
     if (keys.includes('theme')) sendTheme(currentTheme());
-    if (keys.includes('islandPosition') || keys.includes('islandNotchWidth')) relayoutIsland();
+    if (keys.some((k) => ['islandPosition', 'islandNotchWidth', 'islandMenuSafeLeft', 'islandMenuSafeRight'].includes(k))) relayoutIsland();
     if (ambient && keys.some((k) => AMBIENT_KEYS.includes(k))) { ambient.onSettings(); broadcastAmbient(); }
     return { ok: true, settings: r };
   }
@@ -1678,7 +1678,7 @@ if (process.env.O_SNAPSHOT_DIR) {
       }
       if (islandWin && !islandWin.isDestroyed()) {
         const L = currentIslandLayout();
-        console.log('[o] island', JSON.stringify({ position: L.position, resolved: L.resolved, mode: L.mode, dir: L.dir, bounds: islandWin.getBounds(), workArea: screen.getPrimaryDisplay().workArea }));
+        console.log('[o] island', JSON.stringify({ position: L.position, resolved: L.resolved, mode: L.mode, dir: L.dir, fallback: L.fallback, bounds: islandWin.getBounds(), workArea: screen.getPrimaryDisplay().workArea }));
       }
       for (const [name, w] of [['island', islandWin], ['panel', panelWin]]) {
         if (!w) continue;
