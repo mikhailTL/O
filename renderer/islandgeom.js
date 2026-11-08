@@ -175,7 +175,12 @@
     if (L.anchor === 'left') x = c.x;
     else if (L.anchor === 'right') x = c.x + c.width - C.EXP_W;
     else x = r(c.x + c.width / 2 - C.EXP_W / 2);
-    const y = L.dir === 'up' ? c.y + c.height - C.EXP_H : c.y;
+    // In the menu bar (and on a notch), the opened bar must drop below the menu-bar strip so the
+    // notch never slices its top row; the compact capsule stays in the strip above it.
+    let y;
+    if (L.dir === 'up') y = c.y + c.height - C.EXP_H;
+    else if (L.mode === 'menubar' || L.mode === 'notch') y = c.y + L.menuBarH;
+    else y = c.y;
     return { x, y, width: C.EXP_W, height: C.EXP_H };
   }
 
