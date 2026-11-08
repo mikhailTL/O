@@ -67,10 +67,24 @@ function pythonWorks(cmd, args) {
   } catch (_) { return false; }
 }
 
-/** Resolve the python to use: the setting, else python3 / python on PATH (Windows: also `py -3`). */
-function resolvePython(setting) {
+/** The repo-local virtualenv's python, if the engine dir is known. */
+function venvPython(engineDir) {
+  if (!engineDir) return null;
+  return IS_WIN
+    ? path.join(engineDir, '.venv', 'Scripts', 'python.exe')
+    : path.join(engineDir, '.venv', 'bin', 'python');
+}
+
+/**
+ * Resolve the python to use: the explicit setting, then the engine's own .venv (so a fresh
+ * install is found without configuring a path), then python3 / python on PATH (Windows: also `py -3`).
+ * Only a Python 3.10+ is accepted, so a stale system python (e.g. macOS 3.9) is skipped automatically.
+ */
+function resolvePython(setting, engineDir) {
   const candidates = [];
   if (setting && String(setting).trim()) candidates.push({ cmd: String(setting).trim(), args: [] });
+  const vp = venvPython(engineDir);
+  if (vp && fs.existsSync(vp)) candidates.push({ cmd: vp, args: [] });
   if (IS_WIN) candidates.push({ cmd: 'py', args: ['-3'] });
   candidates.push({ cmd: 'python3', args: [] }, { cmd: 'python', args: [] });
   for (const c of candidates) if (pythonWorks(c.cmd, c.args)) return c;
@@ -200,7 +214,7 @@ class EngineProcess extends EventEmitter {
     if (this._disposed || this.child || this._starting) return;
     this._starting = true;
     try {
-      this.python = this.python || resolvePython((this.getSettings() || {}).enginePython);
+      this.python = this.python || resolvePython((this.getSettings() || {}).enginePython, this.engineDir);
       if (!this.python) {
         this.lastError = 'python 3.10+ not found (set enginePython in Settings)';
         this._log(`engine: ${this.lastError}`);
