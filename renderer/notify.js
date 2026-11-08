@@ -127,6 +127,19 @@
     el.className = 'ncard ntask ' + (c.kind === 'done' ? 'is-done' : 'is-needs');
     el.dataset.id = c.id;
     const head = c.kind === 'done' ? 'Done' : 'Needs you';
+    if (c.action === 'accessibility') {
+      // macOS Accessibility (TCC) card from main.js checkAccessibility(): Open Settings opens Privacy → Accessibility
+      el.innerHTML = `
+        <div class="ntask-open" role="group" aria-label="O needs Accessibility access to control apps">
+          <span class="ntask-mark" aria-hidden="true"></span>
+          <span class="ntask-body"><b>O needs Accessibility access to control apps</b><span>System Settings → Privacy &amp; Security → Accessibility</span></span>
+        </div>
+        <button type="button" class="allow ntask-act">Open Settings</button>
+        <button type="button" class="nopen ntask-close" title="Dismiss" aria-label="Dismiss">${CLOSE_ICON}</button>`;
+      el.querySelector('.ntask-act').addEventListener('click', () => { if (o.openTaskFromNotify) o.openTaskFromNotify(c.id); });
+      el.querySelector('.ntask-close').addEventListener('click', () => { if (o.dismissTaskCard) o.dismissTaskCard(c.id); removeTaskCard(c.id); });
+      return el;
+    }
     el.innerHTML = `
       <button type="button" class="ntask-open" aria-label="${esc(head)}: ${esc(c.title)}. Open the task">
         <span class="ntask-mark" aria-hidden="true"></span>

@@ -303,6 +303,15 @@ async function checkRequirements() {
     const ok = !!(h && h[k]);
     rows.push({ name: k, ok, detail: h ? (ok ? 'ready' : 'missing') : 'unknown' + engineNote, fix: ok ? '' : fixes[k] });
   }
+  if (process.platform === 'darwin') {
+    const cu = (h && h.cu_backend) || {};
+    const importable = !!h && !/not importable/.test(String(cu.reason || ''));
+    rows.push({ name: 'ax backend', ok: importable, detail: h ? (importable ? 'ready' : String(cu.reason || 'missing')) : 'unknown' + engineNote,
+      fix: importable ? '' : 'Re-run the installer (bash install/install.sh) to install atomacos and pyobjc, then restart O.' });
+    const trusted = !!h && h.accessibility_trusted === true;
+    rows.push({ name: 'accessibility', ok: trusted, detail: h ? (trusted ? 'allowed' : 'off') : 'unknown' + engineNote,
+      fix: trusted ? '' : 'System Settings → Privacy & Security → Accessibility: turn on O (and Terminal if O runs from Terminal).' });
+  }
   return rows;
 }
 
@@ -1103,6 +1112,49 @@ function onTaskEnd({ task, ok, sessionId, durationMs, result }) {
   rebuildTrayMenu();
 }
 
+// ---------------------------------------------------------------- macOS Accessibility (TCC)
+
+const AX_CARD_ID = 'o:accessibility';
+const AX_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility';
+let axPrompted = false; // the macOS prompt and the card are shown once per run
+
+/**
+ * macOS: computer use (the engine's AX backend) needs Accessibility access for O (or Terminal when O runs from
+ * Terminal). Asks the engine (GET /computer/access, AXIsProcessTrusted in the engine process); falls back to
+ * Electron's own check. When untrusted: macOS's own prompt once, and ONE "Needs you" card with Open Settings.
+ */
+async function checkAccessibility() {
+  if (process.platform !== 'darwin' || axPrompted) return;
+  let trusted = null;
+  try {
+    const r = engine ? await engine.call('GET', '/computer/access', null, 5000) : null;
+    if (r && typeof r.accessibility_trusted === 'boolean') trusted = r.accessibility_trusted;
+  } catch (_) { /* older engine: use Electron's check */ }
+  if (trusted === null) {
+    try { trusted = systemPreferences.isTrustedAccessibilityClient(false); } catch (_) { trusted = null; }
+  }
+  if (trusted !== false) { if (taskCards.delete(AX_CARD_ID)) syncNotify(); return; }
+  axPrompted = true;
+  try { systemPreferences.isTrustedAccessibilityClient(true); } catch (_) {} // macOS shows its own prompt
+  taskCards.set(AX_CARD_ID, { id: AX_CARD_ID, kind: 'needs', action: 'accessibility', title: 'Accessibility access',
+    text: 'O needs Accessibility access to control apps. Open Settings', at: Date.now() });
+  syncNotify();
+  if (actionLog) { try { actionLog.record({ kind: 'note', summary: 'macOS Accessibility access is off for O: computer use is unavailable until it is turned on', detail: { setting: 'Privacy & Security > Accessibility' } }); } catch (_) {} }
+}
+
+function openAccessibilitySettings() {
+  shell.openExternal(AX_SETTINGS_URL).catch(() => {});
+  // the card goes when the grant shows up (checked again a few times), or when the user dismisses it
+  let n = 0;
+  const t = setInterval(async () => {
+    n += 1;
+    let trusted = false;
+    try { trusted = systemPreferences.isTrustedAccessibilityClient(false); } catch (_) {}
+    if (trusted || n >= 40) { clearInterval(t); if (trusted && taskCards.delete(AX_CARD_ID)) syncNotify(); }
+  }, 3000);
+  t.unref();
+}
+
 /** "Done: <title>" / "Needs you: <title>" in the notify sidebar while the panel is closed. */
 function addTaskCard(task, ok) {
   const card = { id: task.id, kind: ok ? 'done' : 'needs', title: task.title, text: ok ? (task.result || 'Finished.') : (task.error || task.statusLine || 'It hit a snag.'), at: Date.now() };
@@ -1374,7 +1426,10 @@ function registerIpc() {
   ipcMain.handle('genui:action', (_e, action, payload) => genuiAction(action, payload));
   ipcMain.on('notify:resize', (_e, h) => placeNotify(h));
   ipcMain.on('notify:openChat', () => showPanel());
-  ipcMain.on('notify:openTask', (_e, id) => { showPanel(); broadcast({ type: 'view-task', taskId: String(id || '') }); });
+  ipcMain.on('notify:openTask', (_e, id) => {
+    if (String(id || '') === AX_CARD_ID) { openAccessibilitySettings(); return; }
+    showPanel(); broadcast({ type: 'view-task', taskId: String(id || '') });
+  });
   ipcMain.on('notify:dismissTask', (_e, id) => { taskCards.delete(String(id || '')); syncNotify(); });
 
   ipcMain.handle('settings:get', () => settings.get());
@@ -1566,6 +1621,7 @@ app.whenReady().then(() => {
         if (goals) goals.refresh().catch((err) => console.error('[o] goals refresh:', err.message));
         if (ambient) ambient.refreshSensors().then(broadcastAmbient).catch(() => {});
         if (evolveHost) evolveHost.onEngineReady().catch(() => {});
+        checkAccessibility().catch(() => {});
       });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
       engine.start();
