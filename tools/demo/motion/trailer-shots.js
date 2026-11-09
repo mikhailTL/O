@@ -159,11 +159,17 @@
       var punch = ms < ST ? 1 + 0.5 * Math.pow(1 - ms / ST, 2) * ((Math.floor(f / 2) % 2) ? 1 : 0.6) : 1;
       drawPlate(ctx, list ? clipFrame(list, ms, o.speed, 'pingpong') : im, { z: lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch }, { seed: f, vignette: 0.6, dim: o.dim || 0, hand: 0.3 });
       // the ring sits on the disc edge (the plate's disc is centred, radius ~ 0.21 of frame height at z = 1)
-      // the clip itself pushes in (~15 % over its length), so the ring follows the disc edge
-      var cz = list ? 1 + (o.clipZoom == null ? 0.15 : o.clipZoom) * clipIndex(list, ms, o.speed, 'pingpong') / (list.length - 1) : 1;
-      var R = H * (o.discR || 0.205) * lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch * cz;
+      // the ring sits on the disc edge. Clip: the disc is 0.266 of frame height at frame 1 and pushes in to 0.335,
+      // centred at (0.485, 0.464); plate: 0.205, centred. Both scaled by the camera zoom about the frame centre.
+      var zc = lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch, cx = 960, cy = 540, R;
+      if (list) { var fi = clipIndex(list, ms, o.speed, 'pingpong') / (list.length - 1); R = H * lerp(0.266, 0.335, fi) * zc; cx = 960 + (0.485 - 0.5) * W * zc; cy = 540 + (0.464 - 0.5) * H * zc; }
+      else R = H * (o.discR || 0.205) * zc;
       var ra = eo(clamp((ms - (o.ringAt == null ? ST : o.ringAt)) / 700));
-      if (ra > 0) ring(ctx, 960, 540, R, ra, ra * 0.8, 10 + ra * 6);
+      if (ra > 0) {
+        ring(ctx, cx, cy, R, ra, ra * 0.5, 10 + ra * 6);
+        ctx.beginPath(); ctx.arc(cx, cy, R - 8, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,.92)'; ctx.fill(); // the disc stays black
+      }
+      w.style.top = (cy - 52) + 'px';
       cv.c.style.filter = ms < ST && (Math.floor(f / 2) % 2 === 1) ? 'invert(1)' : '';
       if (words.length && ms >= WS) {
         var i = Math.min(words.length - 1, Math.floor((ms - WS) / each)), q = (ms - WS - i * each) / each, lastW = i === words.length - 1;
