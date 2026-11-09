@@ -515,30 +515,30 @@ films.trailer = async () => {
   const files = [
     { id: 't1-wake', beats: [
       B('photo', 2600, 'hard', { plate: 'watch', from: { z: 1.0 }, to: { z: 1.22, x: 0.1 }, fadeIn: 900, grade: 'mono' }),
-      B('photo', 3400, 'smear', { plate: 'eye-teal', from: { z: 1.0 }, to: { z: 1.3 }, text: 'Every AI waits to be told.', textAt: 1200 }),
+      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500 }),
       B('strobe', 1100, 'flash', { seq: EYES }),
     ] },
     { id: 't2-wait', beats: [
       B('photo', 1800, 'smear', { plate: 'lens', from: { z: 1.0 }, to: { z: 1.35 }, text: 'For a prompt.', textAt: 300 }),
-      B('photo', 1400, 'flipY', { plate: 'liquid', from: { z: 1.1, x: -0.2 }, to: { z: 1.25, x: 0.2 }, text: 'Then another.', textAt: 100, linear: true }),
+      B('clip', 1400, 'flipY', { clip: 'liquid', from: { z: 1.1 }, to: { z: 1.2 }, text: 'Then another.', textAt: 100, linear: true, speed: 1.5 }),
       B('strobe', 900, 'flash', { seq: THINGS }),
     ] },
     { id: 't3-light', beats: [
       B('photo', 2400, 'smear', { plate: 'moon', from: { z: 1.0, y: 0.1 }, to: { z: 1.18, y: -0.1 }, text: 'One of them stopped waiting.', textAt: 500 }),
-      B('photo', 1700, 'flipX', { plate: 'earth', from: { z: 1.1, x: 0.15 }, to: { z: 1.3, x: -0.1 }, linear: true }),
+      B('clip', 1700, 'flipX', { clip: 'earth', from: { z: 1.05 }, to: { z: 1.15 }, linear: true, speed: 1.2 }),
       B('photo', 1400, 'flipX', { plate: 'galaxy', from: { z: 1.0 }, to: { z: 1.5 } }),
       B('strobe', 800, 'flash', { seq: SPACE }),
-      B('eclipse', 3000, 'flash', { z0: 1.0, z1: 1.14, strobeMs: 0, ringAt: 300, words: [] }),
+      B('eclipse', 3000, 'flash', { clip: 'eclipse', z0: 1.0, z1: 1.14, strobeMs: 0, ringAt: 300, words: [] }),
     ] },
     { id: 't4-work', beats: [
-      B('bar', 3500, 'smear', { plate: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
+      B('bar', 3500, 'smear', { clip: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
       B('panels', 3900, 'flipX', { plate: 'tunnel', each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500, textY: 880,
         items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
       B('strobe', 700, 'flash', { seq: [['prism', 2, 0, 1.3, 'raw'], ['lens', 2, 1], ['white', 1], ['nautilus', 2], ['tunnel', 2, 1], ['watch', 2], ['prism', 2, 1]] }),
     ] },
     { id: 't5-learn', beats: [
       B('claim', 1700, 'smear', { plate: 'nautilus', from: { z: 1.1 }, to: { z: 1.3, rot: 6 }, dim: 0.6, text: 'Then it grades its own work.' }),
-      B('eclipse', 6000, 'flash', { z0: 1.5, z1: 1.2, strobeMs: 1200, ringAt: 1200, wordsAt: 1700, each: 420, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1400 }),
+      B('eclipse', 6000, 'flash', { clip: 'eclipse', z0: 1.5, z1: 1.2, strobeMs: 1200, ringAt: 1200, wordsAt: 1700, each: 420, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1400 }),
     ] },
     { id: 't6-human', beats: [
       B('photo', 1800, 'smear', { plate: 'tunnel', from: { z: 1.0 }, to: { z: 1.6 }, text: 'Not a tool you drive.', textAt: 200 }),

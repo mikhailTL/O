@@ -52,6 +52,15 @@ def cue_tick(seed, bright=1.0):
     x = bandpass(x, 1800 * bright, 7000 * bright) + sine(n, 2600 * bright) * env(n, 1, 40) * 0.25
     return x * 0.55
 
+def clock_tick(seed, tock=False, gain=1.0):
+    """a mechanical escapement: a sharp click, a short metallic ring, a wooden body thunk, a tiny room tail"""
+    n = ms(160); r = np.random.default_rng(seed)
+    click = bandpass(noise(n, seed), 2200, 9000) * env(n, 1, ms(7)) * 1.6
+    ring_ = sine(n, 1180 if not tock else 940) * env(n, 1, ms(45)) * 0.35 + sine(n, 3300 if not tock else 2700) * env(n, 1, ms(18)) * 0.2
+    body = sine(n, 190 if not tock else 150, 120 if not tock else 95) * env(n, 1, ms(38)) * 0.9
+    tail = bandpass(noise(n, seed + 9), 500, 4000) * env(n, ms(2), ms(150)) * 0.08
+    return (click + ring_ + body + tail) * gain
+
 def cue_key(seed):
     n = ms(40); x = bandpass(noise(n, seed), 2500, 9000) * env(n, 1, 30) * 0.35
     return x
@@ -101,29 +110,31 @@ def main(side, out):
     def put(x, t, pan=0.0, gain=1.0):
         s = ms(t); e = min(total, s + len(x)); x = x[:e - s] * gain
         L[s:e] += x * (1 - max(0, pan)); R[s:e] += x * (1 + min(0, pan))
-    # the bed: a sub drone that thickens over the first two thirds, a clock under the first hold and the eclipse
+    # the bed: an intense clock. Tick-tock at 1 Hz under the opening, doubling to 2 Hz when the planets come,
+    # 4 Hz under the strobes and the eclipse, racing to 8 Hz into the last impact, where it stops dead.
     last_impact = max([c['t'] for c in cues if c['k'] == 'impact'] + [0])
-    nb = ms(last_impact); t = np.arange(nb) / SR
-    drone = (np.sin(2 * math.pi * 41.2 * t) * 0.5 + np.sin(2 * math.pi * 82.4 * t) * 0.18 + np.sin(2 * math.pi * 61.7 * t) * 0.1) * (0.35 + 0.65 * (t / t[-1]) ** 1.5)
-    drone += bandpass(noise(nb, 7), 90, 900) * 0.06 * (0.3 + 0.7 * t / t[-1])
-    drone *= env(nb, ms(1500), 0, 1.0, ms(12))  # cuts dead at the last impact
-    put(drone, 0, 0, 0.55)
+    bursts = [(c['t'], c.get('d', 600)) for c in cues if c['k'] == 'riser']
+    t = 0.0; i = 0
+    while t < last_impact - 40:
+        rate = 1.0
+        if t > last_impact * 0.3: rate = 2.0
+        for (bt, bd) in bursts:
+            if bt <= t < bt + bd: rate = 4.0 + 4.0 * (t - bt) / max(1, bd)
+        if t > last_impact - 1500: rate = 8.0
+        gain = 0.8 + 0.5 * min(1.0, t / max(1, last_impact))
+        put(clock_tick(int(t) + 11, tock=(i % 2 == 1), gain=gain), t, -0.35 if i % 2 else 0.35, 0.95)
+        t += 1000.0 / rate; i += 1
     for c in cues:
         k, tt, seed = c['k'], c['t'], int(c['t'] * 7 + 3)
-        if k == 'tick': put(cue_tick(seed, 1.0 + (seed % 5) * 0.08), tt, ((seed % 7) - 3) / 6, 0.7)
+        if k == 'tick': put(clock_tick(seed, tock=bool(seed % 2), gain=0.55), tt, ((seed % 7) - 3) / 6, 0.7)
         elif k == 'key': put(cue_key(seed), tt, 0.1, 0.6)
         elif k == 'flash': put(cue_flash(seed), tt, 0, 0.75)
         elif k == 'whoosh': put(cue_whoosh(seed), tt - 120, 0.6 if seed % 2 else -0.6, 0.9)
         elif k == 'flip': put(cue_flip(seed), tt - 30, ((seed % 5) - 2) / 4, 0.8)
-        elif k == 'riser': put(cue_riser(seed, c.get('d', 1500)), tt, 0, 0.7)
+        elif k == 'riser': n_ = ms(c.get('d', 1500)); put(sine(n_, 45, 110) * np.linspace(0, 0.35, n_) ** 1.5 * env(n_, ms(50), 0, 1.0, ms(30)), tt, 0, 0.8)
         elif k == 'burn': put(cue_burn(seed, c.get('d', 1500)), tt, 0, 0.6)
         elif k == 'impact': put(cue_impact(seed), tt, 0, 1.0)
         elif k == 'chord': put(cue_chord(seed), tt, 0, 0.8)
-    # clock under the opening hold (until the first flash) and a half-speed one under the eclipse riser
-    first_flash = min([c['t'] for c in cues if c['k'] == 'flash'] + [4000])
-    x = 0
-    while x < first_flash - 200:
-        put(cue_tick(int(x), 0.6), x, -0.3 if (x // 500) % 2 else 0.3, 0.9); x += 500
     # soft master: tanh limiter, -1 dBFS peak
     mix = np.stack([L, R]); mix = np.tanh(mix * 1.1) / math.tanh(1.1)
     mix *= 0.89 / max(1e-6, np.abs(mix).max())

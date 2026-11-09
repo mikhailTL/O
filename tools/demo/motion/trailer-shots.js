@@ -87,7 +87,32 @@
     return { z: lerp(f.z == null ? 1 : f.z, t.z == null ? 1 : t.z, p), x: lerp(f.x || 0, t.x || 0, p), y: lerp(f.y || 0, t.y || 0, p), rot: lerp(f.rot || 0, t.rot || 0, p) };
   }
 
+  /** A motion clip, pre-extracted to JPEG frames (plates/clips/<name>/fNNNN.jpg at 30 fps) so seeks are exact. */
+  var clips = {};
+  function clip(name, frames) {
+    if (clips[name]) return clips[name];
+    var list = [];
+    for (var i = 1; i <= frames; i++) { var im = new Image(); im.src = '/tools/demo/motion/plates/clips/' + name + '/f' + String(i).padStart(4, '0') + '.jpg'; list.push(im); loading.push(new Promise(function (res) { im.onload = res; im.onerror = res; })); }
+    clips[name] = list; return list;
+  }
+  function clipFrame(list, ms, speed, hold) {
+    var i = Math.floor(ms / 1000 * 30 * (speed || 1));
+    if (hold === 'pingpong') { var n = list.length; var k = i % (2 * n - 2); i = k < n ? k : 2 * n - 2 - k; }
+    return list[Math.max(0, Math.min(list.length - 1, i))];
+  }
+
   var beats = {};
+  // A motion hold: a clip plays under the same camera, grade and caption as a photo beat.
+  beats.clip = function (lay, o, dur) {
+    var cv = canvas(lay), ctx = cv.ctx, list = clip(o.clip, o.frames || 150), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
+    return function (ms) {
+      var im = clipFrame(list, ms + (o.offset || 0), o.speed, o.hold);
+      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, hand: o.hand == null ? 0.4 : o.hand });
+      if (o.fadeIn) { var a = 1 - eo(clamp(ms / o.fadeIn)); if (a > 0) { ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, W, H); } }
+      if (o.ring) { var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))); if (rp > 0) ring(ctx, o.ring.x || 960, o.ring.y || 540, o.ring.r || 240, rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw); }
+      showCap(cap, ms, o.textAt == null ? 600 : o.textAt);
+    };
+  };
   // A photographic hold: one plate, a camera move, optional fade from black, optional caption.
   beats.photo = function (lay, o, dur) {
     var cv = canvas(lay), ctx = cv.ctx, im = plate(o.plate), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
@@ -124,14 +149,14 @@
   // The eclipse becomes the O: push into the real eclipse, the ring brightens on the corona, then (o.words) one word
   // at a time inside the dark disc; before the words the frame can strobe inverted while a punch-zoom lands (o.strobeMs).
   beats.eclipse = function (lay, o, dur) {
-    var cv = canvas(lay), ctx = cv.ctx, im = plate('eclipse'), cap = caption(lay, o), words = o.words || [], each = o.each || 420;
+    var cv = canvas(lay), ctx = cv.ctx, im = plate('eclipse'), list = o.clip ? clip(o.clip, o.frames || 150) : null, cap = caption(lay, o), words = o.words || [], each = o.each || 420;
     var w = text(lay, 'tr-word', '', 0, 0); w.style.left = '0'; w.style.right = '0'; w.style.top = (o.wordY || 492) + 'px';
     var ST = o.strobeMs || 0, WS = o.wordsAt == null ? ST + 400 : o.wordsAt, last = -1;
     return function (ms) {
       var f = Math.floor(ms / 1000 * 30);
       var p = eo(clamp(ms / dur));
       var punch = ms < ST ? 1 + 0.5 * Math.pow(1 - ms / ST, 2) * ((Math.floor(f / 2) % 2) ? 1 : 0.6) : 1;
-      drawPlate(ctx, im, { z: lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch }, { seed: f, vignette: 0.6, dim: o.dim || 0 });
+      drawPlate(ctx, list ? clipFrame(list, ms, o.speed, 'pingpong') : im, { z: lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch }, { seed: f, vignette: 0.6, dim: o.dim || 0, hand: 0.3 });
       // the ring sits on the disc edge (the plate's disc is centred, radius ~ 0.21 of frame height at z = 1)
       var R = H * (o.discR || 0.205) * lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch;
       var ra = eo(clamp((ms - (o.ringAt == null ? ST : o.ringAt)) / 700));
@@ -163,7 +188,7 @@
 
   // ------------------------------------------------------------------ O's own surfaces
   beats.bar = function (lay, o, dur) {
-    var cv = canvas(lay), ctx = cv.ctx, bg = o.plate ? plate(o.plate) : null;
+    var cv = canvas(lay), ctx = cv.ctx, bg = o.plate ? plate(o.plate) : null, bgc = o.clip ? clip(o.clip, o.frames || 150) : null;
     var hero = el('div', 'tr-hero'); lay.appendChild(hero); lay = hero;
     var cap = el('div', 'tr-capsule'); var dot = el('div', 'tr-dot'); var status = el('div', 'tr-status', 'Ready'); cap.append(dot, status); lay.appendChild(cap);
     var bar = el('div', 'tr-bar'); var inp = el('div', 'tr-input'); var ph = el('span', 'tr-ph', 'Give O a task'); var typed = el('span', 'tr-typed'); var caret = el('span', 'tr-caret'); inp.append(ph, typed, caret); bar.appendChild(inp); lay.appendChild(bar);
@@ -172,7 +197,8 @@
     var OPEN = o.openAt || 700, TYPE = OPEN + 500, cps = o.cps || 46, prompt = o.prompt || '';
     var typeEnd = TYPE + prompt.length / cps * 1000;
     return function (ms) {
-      if (bg) drawPlate(ctx, bg, { z: 1.05 + 0.04 * ms / dur }, { dim: 0.82, seed: Math.floor(ms / 66), vignette: 0.8, grain: 0.03 });
+      if (bgc) drawPlate(ctx, clipFrame(bgc, ms, 1, 'pingpong'), { z: 1.05 }, { dim: 0.82, seed: Math.floor(ms / 66), vignette: 0.8, grain: 0.03, hand: 0 });
+      else if (bg) drawPlate(ctx, bg, { z: 1.05 + 0.04 * ms / dur }, { dim: 0.82, seed: Math.floor(ms / 66), vignette: 0.8, grain: 0.03 });
       else { ctx.fillStyle = '#030304'; ctx.fillRect(0, 0, W, H); }
       var hg = ctx.createRadialGradient(960, 440, 0, 960, 440, 900); hg.addColorStop(0, 'rgba(255,255,255,.07)'); hg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
       var op = eo(clamp((ms - OPEN) / 420));
