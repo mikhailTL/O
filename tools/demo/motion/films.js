@@ -508,14 +508,15 @@ films.trailer = async () => {
   // rhythm (from the reference reels): a hold of 1-3.5 s with one line and a slow push, then a burst of 2-4 frame
   // plates (the same subject flipping polarity, white flash frames, a solid colour), a whip-smear into the next hold.
   // Pictures are photographic plates (tools/demo/motion/plates), graded to one cinematic look and letterboxed.
-  const EYES = [['eye-teal', 3], ['eye-teal', 2, 1], ['white', 1], ['eye-amber', 3], ['eye-flare', 2, 1], ['black', 1], ['iris', 3], ['eye-ring', 2], ['eye-tear', 2, 1], ['eye-amber', 2, 0, 1.6]];
+  const w = 'warm';
+  const EYES = [['eye-teal', 3, 0, 0, w], ['eye-teal', 2, 1, 0, w], ['white', 1], ['eye-amber', 3, 0, 0, w], ['eye-flare', 2, 1, 0, w], ['black', 1], ['iris', 3, 0, 0, w], ['eye-ring', 2, 0, 0, w], ['eye-tear', 2, 1, 0, w], ['eye-amber', 2, 0, 1.6, w]];
   const SPACE = [['saturn', 3], ['saturn', 2, 1], ['white', 1], ['moon', 3], ['jupiter', 2], ['earth', 2, 1], ['black', 1], ['galaxy', 3], ['flare', 2], ['moon', 2, 1]];
   const THINGS = [['lens', 3], ['lens', 2, 1], ['white', 1], ['watch-modern', 3], ['prism', 2, 0, 1.4, 'raw'], ['liquid', 2, 1], ['black', 1], ['tunnel', 3], ['nautilus', 2], ['candle', 2, 1]];
-  const RINGS = [['eclipse', 2], ['eye-ring', 2], ['eclipse', 2, 1], ['iris', 2, 1], ['white', 1], ['eclipse', 2], ['tunnel', 3], ['eye-ring', 2, 1], ['nautilus', 2], ['eclipse', 2]];
+  const RINGS = [['eclipse', 2], ['eye-ring', 2, 0, 0, w], ['eclipse', 2, 1], ['iris', 2, 1, 0, w], ['white', 1], ['eclipse', 2], ['tunnel', 3], ['eye-ring', 2, 1, 0, w], ['nautilus', 2], ['eclipse', 2]];
   const files = [
     { id: 't1-wake', beats: [
       B('photo', 2600, 'hard', { plate: 'watch-modern', from: { z: 1.0 }, to: { z: 1.24, x: 0.12, y: 0.05 }, fadeIn: 900, sat: 0.2 }),
-      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500, bright: 1.12, sat: 0.55, vignette: 0.45 }),
+      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500, grade: 'warm', bright: 1.08, vignette: 0.45 }),
       B('strobe', 1100, 'flash', { seq: EYES }),
     ] },
     { id: 't2-wait', beats: [
@@ -532,13 +533,13 @@ films.trailer = async () => {
     ] },
     { id: 't4-work', beats: [
       B('bar', 3500, 'smear', { clip: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
-      B('panels', 3900, 'flipX', { plate: 'tunnel', each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500, textY: 880,
+      B('panels', 3900, 'flipX', { plate: 'tunnel', each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500, textY: 800,
         items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
       B('strobe', 700, 'flash', { seq: [['prism', 2, 0, 1.3, 'raw'], ['lens', 2, 1], ['white', 1], ['nautilus', 2], ['tunnel', 2, 1], ['watch-modern', 2], ['prism', 2, 1]] }),
     ] },
     { id: 't5-learn', beats: [
       B('claim', 1700, 'smear', { plate: 'nautilus', from: { z: 1.1 }, to: { z: 1.3, rot: 6 }, dim: 0.6, text: 'Then it grades its own work.' }),
-      B('eclipse', 6000, 'flash', { clip: 'eclipse', z0: 1.5, z1: 1.2, strobeMs: 1200, ringAt: 1200, wordsAt: 1700, each: 420, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1400 }),
+      B('eclipse', 6000, 'flash', { clip: 'eclipse', z0: 1.5, z1: 1.2, strobeMs: 1200, ringAt: 1200, wordsAt: 1700, each: 420, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1400, textY: 862 }),
     ] },
     { id: 't6-human', beats: [
       B('photo', 1800, 'smear', { plate: 'tunnel', from: { z: 1.0 }, to: { z: 1.6 }, text: 'Not a tool you drive.', textAt: 200 }),
@@ -551,7 +552,6 @@ films.trailer = async () => {
       B('claim', 800, 'flipY', { plate: 'nautilus', dim: 0.65, text: 'Learns from itself.' }),
       B('claim', 800, 'flipY', { plate: 'galaxy', dim: 0.5, text: 'Sets its own goals.', invert: true }),
       B('strobe', 600, 'flash', { seq: [['eclipse', 2], ['white', 1], ['eclipse', 2, 1], ['black', 1], ['eclipse', 2], ['eclipse', 2, 1]] }),
-      B('claim', 1800, 'flash', { text: 'Never spends your money.', sub: 'Payments, accounts and passwords stay yours.' }),
     ] },
     { id: 't8-close', beats: [
       B('lockup', 5200, 'flash', { name: 'O AI', text: 'The computer that works while you do.' }),

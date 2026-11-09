@@ -24,7 +24,7 @@
   function text(parent, cls, s, x, y) { var t = el('div', cls, s); t.style.left = x + 'px'; t.style.top = y + 'px'; parent.appendChild(t); return t; }
   function caption(lay, o, cls) {
     if (!o.text) return null;
-    var c = text(lay, cls || 'tr-cap', esc(o.text), 0, 0); c.style.left = '0'; c.style.right = '0'; c.style.top = (o.textY || (cls === 'tr-claim' ? 470 : 880)) + 'px'; c.style.opacity = '0'; return c;
+    var c = text(lay, cls || 'tr-cap', esc(o.text), 0, 0); c.style.left = '0'; c.style.right = '0'; c.style.top = (o.textY || (cls === 'tr-claim' ? 470 : 780)) + 'px'; c.style.opacity = '0'; return c;
   }
   function showCap(c, ms, at, d) { if (c) c.style.opacity = String(eo(clamp((ms - at) / (d || 500)))); }
 
@@ -51,7 +51,7 @@
     // lifts contrast, crushes blacks; 'mono' is black and white; 'raw' keeps the plate.
     var grade = g.grade || 'cine';
     ctx.save();
-    ctx.filter = grade === 'mono' ? 'grayscale(1) contrast(1.35) brightness(.92)' : grade === 'cine' ? 'saturate(' + (g.sat == null ? 0.42 : g.sat) + ') contrast(1.22) brightness(' + (g.bright == null ? 0.9 : g.bright) + ')' : 'none';
+    ctx.filter = grade === 'mono' ? 'grayscale(1) contrast(1.35) brightness(.92)' : grade === 'warm' ? 'saturate(' + (g.sat == null ? 1.0 : g.sat) + ') contrast(1.12) brightness(' + (g.bright == null ? 1.0 : g.bright) + ')' : grade === 'cine' ? 'saturate(' + (g.sat == null ? 0.42 : g.sat) + ') contrast(1.22) brightness(' + (g.bright == null ? 0.9 : g.bright) + ')' : 'none';
     // micro hand-held drift so a hold never sits dead still
     var hd = g.hand == null ? 1 : g.hand, t = (g.seed || 0) / 15;
     ctx.translate(cx + Math.sin(t * 1.7) * 3 * hd + Math.sin(t * 3.1) * 1.5 * hd, cy + Math.cos(t * 1.3) * 2.5 * hd);
@@ -188,7 +188,7 @@
       // pan so the pupil stays centred as the zoom grows (cover-fit: the plate is W*z wide at least)
       var k = z * Math.max(W / im.naturalWidth, H / im.naturalHeight), dw = im.naturalWidth * k, dh = im.naturalHeight * k;
       var x = dw > W + 1 ? -(u - 0.5) * dw / (dw - W) * p : 0, y = dh > H + 1 ? -(v - 0.5) * dh / (dh - H) * p : 0;
-      drawPlate(ctx, im, { z: z, x: x, y: y }, { seed: Math.floor(ms / 66), vignette: 0.6 + 0.4 * p, dim: 0.5 * p, hand: 0.3 });
+      drawPlate(ctx, im, { z: z, x: x, y: y }, { seed: Math.floor(ms / 66), vignette: 0.6 + 0.4 * p, dim: 0.5 * p, hand: 0.3, grade: 'warm' });
       var ra = eo(clamp((ms - (o.ringAt || 1200)) / 700));
       if (ra > 0) ring(ctx, 960, 540, lerp(600, o.ringR || 150, eo(clamp((ms - (o.ringAt || 1200)) / 900))), ra, ra, 8);
       showCap(cap, ms, o.textAt || 1800);
