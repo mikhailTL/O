@@ -496,4 +496,95 @@ films.film4 = async () => {
 };
 films.film4.standalone = true;
 
+/**
+ * The O AI cinematic trailer (docs/videos/o-trailer.mp4): reel-paced hard cuts and flips in the dark-cinema
+ * vocabulary (a waking eye, many eyes cycling, ink pages, silhouettes, a figure dissolving into light, an orb of
+ * words), with O's real surfaces (the island capsule, the command bar) and claims that are true of the code
+ * (any app/browser: main/tools; self-improvement: engine/o_engine/evolve; no payments: main/link.js guard).
+ * `sfx` is the sound cue list tools/demo/motion/trailer-audio.py renders against the finished picture.
+ */
+films.trailer = async () => {
+  const B = (kind, d, cut, extra) => Object.assign({ kind, d, cut }, extra || {});
+  // rhythm (from the reference reels): a hold of 1-3.5 s with one line and a slow push, then a burst of 2-4 frame
+  // plates (the same subject flipping polarity, white flash frames, a solid colour), a whip-smear into the next hold
+  const E3 = [['eye', 3], ['eye', 3, 1], ['white', 1], ['eye', 2], ['eye', 2, 1], ['black', 1], ['eye', 3], ['schematic', 2], ['eye', 2, 1]];
+  const F3 = [['figure', 3], ['figure', 2, 1], ['white', 1], ['figures', 3], ['figure', 2], ['blue', 1], ['figure', 3, 1], ['grid', 2], ['figure', 2]];
+  const R3 = [['eye', 2], ['ring', 2], ['eye', 2, 1], ['ring', 2, 1], ['white', 1], ['eye', 2], ['ring', 3], ['eye', 2, 1], ['schematic', 2], ['ring', 2]];
+  const files = [
+    { id: 't1-wake', beats: [
+      B('wake', 4300, 'hard', { text: 'Every AI waits to be told.', textAt: 2300 }),
+      B('strobe', 1200, 'flash', { seq: E3 }),
+    ] },
+    { id: 't2-wait', beats: [
+      B('inkWait', 2700, 'smear', { text: 'For a prompt. Then another.', textAt: 100, blotAt: 1400 }),
+      B('strobe', 900, 'flash', { seq: F3 }),
+    ] },
+    { id: 't3-light', beats: [
+      B('hall', 3300, 'smear', { text: 'One of them stopped waiting.', textAt: 900, walkAt: 1200 }),
+      B('strobe', 800, 'flash', { seq: [['figure', 2], ['figure', 2, 1], ['arc', 2], ['white', 1], ['figure', 2, 1], ['arc', 2, 1], ['figure', 2], ['arc', 3]] }),
+      B('dissolve', 4200, 'flash', { text: 'O', textY: 440, textAt: 3300, gather: 2000, end: 3200, ringY: 520 }),
+    ] },
+    { id: 't4-work', beats: [
+      B('bar', 4400, 'smear', { prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
+      B('panels', 3900, 'flipX', { each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500,
+        items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
+      B('strobe', 700, 'flash', { seq: [['grid', 2], ['schematic', 2], ['white', 1], ['grid', 2, 1], ['ring', 2], ['schematic', 2, 1], ['ring', 2, 1]] }),
+    ] },
+    { id: 't5-learn', beats: [
+      B('claim', 1700, 'smear', { text: 'Then it grades its own work.' }),
+      B('eclipse', 2600, 'flash', { grow: 1500, text: 'It rewrites its own skills. Keeps only what improved.', textAt: 200 }),
+      B('orb', 3800, 'hard', { each: 400, r: 290, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: '', textAt: 99999 }),
+    ] },
+    { id: 't6-human', beats: [
+      B('reach', 1800, 'smear', { text: 'Not a tool you drive.', textAt: 200 }),
+      B('strobe', 1000, 'flash', { seq: R3 }),
+      B('eyesToRing', 3400, 'hard', { each: 100, n: 12, text: 'The most human AI.', textAt: 600 }),
+    ] },
+    { id: 't7-claims', beats: [
+      B('claim', 800, 'flipY', { text: 'Works in every app.' }),
+      B('claim', 800, 'flipY', { text: 'Every browser.', ink: true }),
+      B('claim', 800, 'flipY', { text: 'Learns from itself.' }),
+      B('claim', 800, 'flipY', { text: 'Sets its own goals.', ink: true }),
+      B('strobe', 600, 'flash', { seq: [['ring', 2], ['white', 1], ['ring', 2, 1], ['black', 1], ['ring', 2], ['ring', 2, 1]] }),
+      B('claim', 1800, 'flash', { text: 'Never spends your money.', sub: 'Payments, accounts and passwords stay yours.' }),
+    ] },
+    { id: 't8-close', beats: [
+      B('lockup', 5200, 'flash', { name: 'O AI', text: 'The computer that works while you do.' }),
+    ] },
+  ];
+  // sound cues at absolute ms: a whoosh on every flip, a flash hit on every flash, ticks under the eye cycles,
+  // a riser into the dissolve, an impact on the ring, keyboard clicks under the typing, a final chord
+  const sfx = []; let t = 0;
+  for (const f of files) {
+    let bt = t;
+    for (const b of f.beats) {
+      if (b.cut === 'flipX' || b.cut === 'flipY') sfx.push({ t: bt, k: 'flip' });
+      if (b.cut === 'flash') sfx.push({ t: bt, k: 'flash' });
+      if (b.cut === 'smear') sfx.push({ t: bt, k: 'whoosh' });
+      if (b.kind === 'strobe') { let f = 0; const total = b.seq.reduce((a, q) => a + q[1], 0); for (let x = 0; x < b.d; ) { const q = b.seq[f % b.seq.length]; sfx.push({ t: bt + x, k: q[0] === 'white' ? 'flash' : 'tick' }); x += q[1] * 1000 / 30; f++; } }
+      if (b.kind === 'eclipse') { sfx.push({ t: bt, k: 'riser', d: b.grow }); for (let x = 0; x < b.grow; x += 133) sfx.push({ t: bt + x, k: 'tick' }); sfx.push({ t: bt + b.grow, k: 'impact' }); sfx.push({ t: bt, k: 'tickclock', d: 0 }); }
+      if (b.kind === 'eyes') for (let x = 0; x < b.d; x += b.each) sfx.push({ t: bt + x, k: 'tick' });
+      if (b.kind === 'eyesToRing') { for (let x = 0; x < b.n * b.each; x += b.each) sfx.push({ t: bt + x, k: 'tick' }); sfx.push({ t: bt + b.n * b.each, k: 'impact' }); }
+      if (b.kind === 'wake') sfx.push({ t: bt, k: 'riser', d: b.d });
+      if (b.kind === 'hall') sfx.push({ t: bt + (b.walkAt || 900), k: 'riser', d: b.d - (b.walkAt || 900) + 1800 });
+      if (b.kind === 'dissolve') { sfx.push({ t: bt, k: 'burn', d: b.gather }); sfx.push({ t: bt + b.end, k: 'impact' }); }
+      if (b.kind === 'bar') { const T = bt + (b.openAt || 700) + 500; for (let i = 0; i < (b.prompt || '').length; i++) sfx.push({ t: T + i * 1000 / b.cps, k: 'key' }); sfx.push({ t: bt + b.openAt, k: 'whoosh' }); }
+      if (b.kind === 'panels') for (let i = 0; i < b.items.length; i++) sfx.push({ t: bt + i * b.each, k: 'flip' });
+      if (b.kind === 'orb') for (let i = 0; i < b.words.length; i++) sfx.push({ t: bt + i * b.each, k: 'tick' });
+      if (b.kind === 'inkWait') sfx.push({ t: bt + (b.blotAt || 1200), k: 'burn', d: 1400 });
+      if (b.kind === 'lockup') sfx.push({ t: bt, k: 'chord' });
+      bt += b.d;
+    }
+    t = bt;
+  }
+  return {
+    title: 'O AI — the most human AI',
+    cues: {},
+    edges: { fadeIn: 1, blur: 1 },
+    files: files.map((f, i) => ({ id: f.id, stills: f.stills || [800, Math.round(f.beats.reduce((a, b) => a + b.d, 0) * 0.6)], edges: i === files.length - 1 ? { fadeIn: 1, blur: 900 } : undefined, film: [{ shot: 'cuts', beats: f.beats }] })),
+    facts: () => ({ sfx, durationMs: t, note: 'Procedural cinematic trailer; the capsule, bar and panels illustrate real O surfaces; results are examples.' }),
+  };
+};
+films.trailer.standalone = true;
+
 module.exports = { films, story, CU_TREE };
