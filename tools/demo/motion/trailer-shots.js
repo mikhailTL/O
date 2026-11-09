@@ -366,7 +366,7 @@
     var typeEnd = TYPE + prompt.length / cps * 1000;
     return function (ms) {
       ctx.fillStyle = '#030304'; ctx.fillRect(0, 0, W, H);
-      var hg = ctx.createRadialGradient(960, 300, 0, 960, 300, 900); hg.addColorStop(0, 'rgba(255,255,255,.08)'); hg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
+      var hg = ctx.createRadialGradient(960, 440, 0, 960, 440, 900); hg.addColorStop(0, 'rgba(255,255,255,.08)'); hg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
       var op = eo(clamp((ms - OPEN) / 420));
       kb.style.opacity = String(ms < OPEN ? eo(clamp(ms / 300)) : 1 - op);
       // the capsule sits top-centre, then the bar buds down out of it

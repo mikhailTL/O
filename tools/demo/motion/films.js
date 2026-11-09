@@ -525,7 +525,7 @@ films.trailer = async () => {
       B('dissolve', 4200, 'flash', { text: 'O', textY: 440, textAt: 3300, gather: 2000, end: 3200, ringY: 520 }),
     ] },
     { id: 't4-work', beats: [
-      B('bar', 4400, 'smear', { prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
+      B('bar', 3500, 'smear', { prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
       B('panels', 3900, 'flipX', { each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500,
         items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
       B('strobe', 700, 'flash', { seq: [['grid', 2], ['schematic', 2], ['white', 1], ['grid', 2, 1], ['ring', 2], ['schematic', 2, 1], ['ring', 2, 1]] }),
