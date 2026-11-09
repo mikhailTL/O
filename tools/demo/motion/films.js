@@ -550,10 +550,10 @@ films.trailer = async () => {
       B('eclipse', 4300, 'flash', { clip: 'eclipse', z0: 1.4, z1: 1.1, strobeMs: 900, ringAt: 900, wordsAt: 1300, each: 330, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1100, textY: 862 }),
     ] },
     { id: 't6-human', beats: [
-      B('clip', 1400, 'smear', { clip: 'hand', fallback: 'hand', from: { z: 1.0 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.5, text: 'Not a tool you drive.', textAt: 200, grade: 'warm', bright: 0.95 }),
-      B('clip', 1100, 'flipY', { clip: 'murmuration', fallback: 'window', from: { z: 1.1 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.6 }),
+      B('clip', 1400, 'smear', { clip: 'hand', fallback: 'hand', offset: 1700, from: { z: 1.0 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.5, text: 'Not a tool you drive.', textAt: 200, grade: 'warm', bright: 1.05 }),
+      B('clip', 1100, 'flipY', { clip: 'murmuration', fallback: 'window', offset: 1200, from: { z: 1.1 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.6, grade: 'raw', bright: 1.15, vignette: 0.3 }),
       B('strobe', 1000, 'flash', { seq: RINGS }),
-      B('clip', 3000, 'flash', { clip: 'iris', fallback: 'iris2', from: { z: 1.0 }, to: { z: 1.6 }, ease: 'ramp', speed: 1.2, grade: 'warm', text: 'The most human AI.', textAt: 1200, claim: true, textY: 470, ring: { at: 900, d: 700, r: 244, lw: 9, glow: 0.5, u: 0.497, v: 0.443, scale: true } }),
+      B('clip', 3000, 'flash', { clip: 'iris', fallback: 'iris2', from: { z: 1.0 }, to: { z: 1.6 }, ease: 'ramp', speed: 1.2, grade: 'warm', text: 'The most human AI.', textAt: 1200, claim: true, textY: 770, ring: { at: 900, d: 700, r: 244, lw: 9, glow: 0.5, u: 0.497, v: 0.443, scale: true } }),
     ] },
     { id: 't7-claims', beats: [
       B('claim', 650, 'flipY', { plate: 'lens', dim: 0.7, text: 'Works in every app.', ease: 'punch', from: { z: 1.3 }, to: { z: 1.1 } }),
