@@ -453,6 +453,29 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  ...(process.platform === 'win32' ? [
+    {
+      name: 'win_powershell',
+      description: 'Run a PowerShell script on this Windows PC through the O engine (NoProfile, NonInteractive, up to 600 s). Returns {ok, exit_code, stdout, stderr}. ' +
+        'Scripts that touch credential stores or turn off Defender, SmartScreen, the firewall, UAC or the execution policy are refused.',
+      inputSchema: { type: 'object', properties: { script: { type: 'string', minLength: 1, maxLength: 20000 }, timeout_s: { type: 'integer', minimum: 1, maximum: 600 } }, required: ['script'], additionalProperties: false },
+    },
+    {
+      name: 'win_open_settings',
+      description: 'Open a Windows Settings page (ms-settings: URI or a page name such as display, bluetooth, network, sound, notifications, personalization). Returns {ok, uri}.',
+      inputSchema: { type: 'object', properties: { page: { type: 'string', maxLength: 200 } }, additionalProperties: false },
+    },
+    {
+      name: 'win_winget_install',
+      description: 'Install a program with winget by exact package id (for example Mozilla.Firefox, Git.Git, Python.Python.3.12), silently, agreements accepted. Returns the winget result.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string', minLength: 1, maxLength: 200 }, source: { type: 'string', maxLength: 50 }, scope: { type: 'string', enum: ['user', 'machine'] }, timeout_s: { type: 'integer', minimum: 1, maximum: 600 } }, required: ['id'], additionalProperties: false },
+    },
+    {
+      name: 'win_set_registry',
+      description: 'Write a Windows registry value (HKCU/HKLM, key path, name, value, type REG_SZ|REG_EXPAND_SZ|REG_DWORD|REG_QWORD|REG_MULTI_SZ|REG_BINARY). Security, credential and UAC keys are refused.',
+      inputSchema: { type: 'object', properties: { hive: { type: 'string', enum: ['HKCU', 'HKLM', 'HKEY_CURRENT_USER', 'HKEY_LOCAL_MACHINE'] }, key: { type: 'string', minLength: 1, maxLength: 1000 }, name: { type: 'string', maxLength: 255 }, value: {}, type: { type: 'string', maxLength: 20 } }, required: ['hive', 'key', 'name', 'value'], additionalProperties: false },
+    },
+  ] : []),
   {
     name: 'mcp_tools',
     description: 'List the tools of every MCP server configured in O (Settings → MCP servers). Returns [{server, name, input_schema}].',
@@ -1175,6 +1198,14 @@ async function callTool(name, args) {
       if (problem) return accessResult(problem, 'computer_tree');
       return engineGet('/computer/tree' + (args && args.window ? '?window=' + encodeURIComponent(String(args.window)) : ''));
     }
+    case 'win_powershell':
+      return enginePost('/win/powershell', { script: args.script, timeout_s: args.timeout_s || 60 }, ((args.timeout_s || 60) + 15) * 1000);
+    case 'win_open_settings':
+      return enginePost('/win/open_settings', { page: args.page || '' }, 15000);
+    case 'win_winget_install':
+      return enginePost('/win/winget', { id: args.id, source: args.source, scope: args.scope, timeout_s: args.timeout_s || 300 }, ((args.timeout_s || 300) + 15) * 1000);
+    case 'win_set_registry':
+      return enginePost('/win/registry', { hive: args.hive, key: args.key, name: args.name, value: args.value, type: args.type || 'REG_SZ' }, 15000);
     case 'mcp_tools':
       return engineGet('/tools/list');
     case 'mcp_call':

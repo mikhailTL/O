@@ -323,7 +323,9 @@ class EngineDeps:
     def cu_backend(self, slot: int = 0) -> Any:
         """One backend per candidate slot. Linux: its own ``IsolatedDisplay`` (``:99 + slot``); pixel
         actions are allowed only when that display is actually running after ``start()`` (no Xvfb, no
-        pixels). Elsewhere: a single host-API backend with ``allow_pixels=False``."""
+        pixels). Windows: the host desktop is the working display (no isolated display, no TCC-style
+        prompts), so the UI Automation backend is built with ``allow_pixels=True``. macOS: a single
+        host-API backend with ``allow_pixels=False``."""
         from .cu.backends import get_backend
 
         with self._cu_lock:
@@ -357,16 +359,27 @@ class EngineDeps:
                                     window_manager=getattr(display, "wm_name", None),
                                     window_manager_note=getattr(display, "wm_reason", "") or None)
                     self._cu[key] = get_backend(display=display.display, allow_pixels=allow_pixels)
+                elif sys.platform == "win32":
+                    backend = get_backend(display=None, allow_pixels=True)
+                    self.log.record("note", "computer-use: Windows host display, UI Automation + pixels enabled",
+                                    display="host", slot=int(slot), allow_pixels=bool(getattr(backend, "allow_pixels", True)),
+                                    backend=str(getattr(backend, "name", "?")),
+                                    available=bool(getattr(backend, "available", True)),
+                                    dpi=getattr(backend, "dpi_mode", None))
+                    self._cu[key] = backend
                 else:
                     self._cu[key] = get_backend(display=None, allow_pixels=False)
             return self._cu[key]
 
     def cu_display_status(self) -> list[dict[str, Any]]:
-        """``[{display, running}]`` per candidate slot; ``running`` is only ever True for an isolated
-        display whose Xvfb is up right now."""
+        """``[{display, running}]`` per candidate slot; ``running`` is True for an isolated display whose Xvfb
+        is up right now, and for the Windows host display (always present: it is the desktop itself)."""
         with self._cu_lock:
             rows = []
             for i, name in enumerate(self.cu_displays):
+                if sys.platform == "win32":
+                    rows.append({"display": name, "running": True})
+                    continue
                 display = self._cu.get(f"display:{i}")
                 rows.append({"display": name, "running": bool(display is not None and display.running)})
             return rows
@@ -815,7 +828,9 @@ def cu_display_status(settings: EngineSettings, deps: Any = None) -> list[dict[s
             return [{"display": str(r.get("display")), "running": bool(r.get("running"))} for r in rows]
         except Exception:
             pass
-    return [{"display": name, "running": False} for name in cu_display_names(settings.cu_candidates)]
+    # The Windows host display is the desktop itself: present before any backend is built.
+    running = sys.platform == "win32"
+    return [{"display": name, "running": running} for name in cu_display_names(settings.cu_candidates)]
 
 
 def health_report(settings: EngineSettings, deps: Any = None) -> dict[str, Any]:
@@ -1872,6 +1887,14 @@ def create_app(
 
     from .evolve.routes import evolve_router  # plan L: self-evolution (status, feed, approvals, rollback)
     app.include_router(evolve_router(settings, guarded, log, ambient=ambient, engine_deps=deps))
+
+    if sys.platform == "win32":
+        # Windows system tools (/win/powershell, /win/open_settings, /win/winget, /win/registry): the host
+        # desktop is the working display, so these act on it directly; o_engine/tools/win_tools.py documents
+        # the routes, the protected-area refusals and the bridge wiring.
+        from .tools.win_tools import win_router
+
+        app.include_router(win_router(guarded, log))
 
     app.state.settings = settings
     app.state.log = log
