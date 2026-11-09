@@ -1,5 +1,6 @@
 'use strict';
-// Easy ways to open O: Desktop + Start menu shortcuts (Windows) and "start when I log in".
+// Easy ways to open O: Desktop + Start menu shortcuts (Windows), "start when I log in", and the global
+// keyboard shortcut that summons the command bar.
 //
 // O usually runs from source (`npm start`), so the shortcuts point at the Electron binary in
 // node_modules with the app folder as its argument. They carry O's AppUserModelID, which
@@ -10,6 +11,44 @@ const path = require('path');
 
 const APP_ID = 'ai.o.agent';
 const NAME = 'O AI';
+
+// ---------------------------------------------------------------- the summon shortcut
+// Cmd/Ctrl+Shift+O everywhere (unchanged). Windows additionally gets a launcher-style combo, tried in order:
+// Alt+Space (PowerToys Run's own; taken when PowerToys has it), then Ctrl+Shift+Space, then Ctrl+Alt+O.
+const BASE_SUMMON = 'CommandOrControl+Shift+O';
+const WIN_SUMMON_CANDIDATES = Object.freeze(['Alt+Space', 'Ctrl+Shift+Space', 'Ctrl+Alt+O']);
+let summonTaken = null; // the Windows combo that registered, or null
+
+/**
+ * Register the global shortcut(s) that toggle the command bar.
+ * @returns {{ base: boolean, summon: string|null, tried: string[] }}
+ */
+function registerSummon(globalShortcut, handler, platform = process.platform) {
+  const out = { base: false, summon: null, tried: [] };
+  try { out.base = !!globalShortcut.register(BASE_SUMMON, handler); } catch (_) {}
+  if (platform !== 'win32') return out;
+  for (const acc of WIN_SUMMON_CANDIDATES) {
+    out.tried.push(acc);
+    let ok = false;
+    try { ok = !!globalShortcut.register(acc, handler) && globalShortcut.isRegistered(acc); } catch (_) { ok = false; }
+    if (ok) { summonTaken = acc; out.summon = acc; break; }
+  }
+  return out;
+}
+
+/** The Electron accelerator that summons the bar (Windows: the combo that registered, else the base one). */
+function summonAccelerator(platform = process.platform) {
+  return platform === 'win32' && summonTaken ? summonTaken : BASE_SUMMON;
+}
+
+/** The hint text for that accelerator: '⌘⇧O' on mac, 'Alt+Space' / 'Ctrl+Shift+Space' / … on Windows. */
+function summonLabel(platform = process.platform) {
+  const acc = summonAccelerator(platform);
+  if (platform === 'darwin') {
+    return acc.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace('Alt', '⌥').replace(/\+/g, '');
+  }
+  return acc.replace('CommandOrControl', 'Ctrl');
+}
 
 function launchTarget(app) {
   const appDir = path.join(__dirname, '..');
@@ -77,4 +116,7 @@ function getOpenAtLogin(app) {
   try { return !!app.getLoginItemSettings({ path: t.target, args: t.argv }).openAtLogin; } catch { return false; }
 }
 
-module.exports = { APP_ID, createShortcuts, shortcutsCurrent, setOpenAtLogin, getOpenAtLogin, launchTarget };
+module.exports = {
+  APP_ID, createShortcuts, shortcutsCurrent, setOpenAtLogin, getOpenAtLogin, launchTarget,
+  BASE_SUMMON, WIN_SUMMON_CANDIDATES, registerSummon, summonAccelerator, summonLabel,
+};

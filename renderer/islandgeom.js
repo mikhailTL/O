@@ -2,8 +2,9 @@
 // O: where the Island sits. Shared by the main process (window bounds, proximity fade) and the Island
 // renderer (capsule size, anchor), so both always agree on the same numbers.
 //
-// Positions (setting islandPosition): 'auto' (the menu bar on macOS, bottom centre elsewhere), 'menubar',
-// 'top', 'bottom', the four corners, 'hidden'. Modes:
+// Positions (setting islandPosition): 'auto' (the menu bar on macOS, a top-centre capsule just below the top
+// of the work area on Windows (PowerToys Run style, clear of the taskbar wherever it is docked), bottom centre
+// on Linux), 'menubar', 'top', 'bottom', the four corners, 'hidden'. Modes:
 //   menubar  macOS: the compact window sits inside the menu bar strip at the top centre; the capsule is
 //            (menu bar height - 4) tall and capped in width so it stays clear of the app menus (left) and
 //            the status items (right).
@@ -67,7 +68,7 @@
 
   function resolvePosition(pref, platform) {
     const p = POSITIONS.includes(pref) ? pref : 'auto';
-    if (p === 'auto' || p === 'hidden') return platform === 'darwin' ? 'menubar' : 'bottom';
+    if (p === 'auto' || p === 'hidden') return platform === 'darwin' ? 'menubar' : platform === 'win32' ? 'top' : 'bottom';
     if (p === 'menubar' && platform !== 'darwin') return 'top';
     return p;
   }
