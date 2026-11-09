@@ -265,7 +265,7 @@
       figs.forEach(function (fg, i) { inkFigure(ctx, fg[0] + (Rn() - 0.5) * 4, 760 + (i % 2) * 40, 260, Rn, fg[1]); });
       for (var a = 0; a < 7; a++) inkArrow(ctx, 200 + a * 260 + (Rn() - 0.5) * 20, 330 + (a % 2) * 60, 90, Math.PI * (0.9 + 0.2 * Rn()), Rn);
       // blots swallow the page
-      if (ink > 0) { for (var b = 0; b < 6; b++) { var R2 = rng(b * 19 + 5); inkBlot(ctx, 200 + R2() * 1500, 200 + R2() * 700, ink * (260 + R2() * 320), Rn, Math.min(1, ink * 1.4)); } }
+      if (ink > 0) { for (var b = 0; b < 16; b++) { var R2 = rng(b * 19 + 5); var bs = clamp((ink - R2() * 0.5) / 0.5); if (bs > 0) inkBlot(ctx, 100 + R2() * 1720, 120 + R2() * 840, eo(bs) * (90 + R2() * 260), Rn, 1); } }
       cap.style.opacity = String(ms > (o.textAt || 150) ? Math.max(0, 1 - ink * 1.2) : 0);
     };
   };
