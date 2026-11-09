@@ -1,5 +1,7 @@
 @echo off
 rem Double-click to start O AI. The first time, it installs what O needs (about a minute).
+rem For the full install (engine, Start menu entry, self-update) run in PowerShell:
+rem   irm https://raw.githubusercontent.com/mikhailTL/O/main/install/windows/Install-O.ps1 | iex
 title O AI
 cd /d "%~dp0"
 
@@ -22,6 +24,7 @@ if errorlevel 1 (
 )
 
 :run
-rem Start O without keeping this window open. If O is already running, this opens its panel.
+rem Pull the latest O quietly, then start it. If O is already running, this opens its panel.
+if exist ".git" start "" /b /min cmd /c "git pull -q --ff-only origin main >nul 2>&1"
 start "" "node_modules\electron\dist\electron.exe" "%~dp0."
 exit /b 0
