@@ -510,11 +510,11 @@ films.trailer = async () => {
   // Pictures are photographic plates (tools/demo/motion/plates), graded to one cinematic look and letterboxed.
   const EYES = [['eye-teal', 3], ['eye-teal', 2, 1], ['white', 1], ['eye-amber', 3], ['eye-flare', 2, 1], ['black', 1], ['iris', 3], ['eye-ring', 2], ['eye-tear', 2, 1], ['eye-amber', 2, 0, 1.6]];
   const SPACE = [['saturn', 3], ['saturn', 2, 1], ['white', 1], ['moon', 3], ['jupiter', 2], ['earth', 2, 1], ['black', 1], ['galaxy', 3], ['flare', 2], ['moon', 2, 1]];
-  const THINGS = [['lens', 3], ['lens', 2, 1], ['white', 1], ['watch', 3], ['prism', 2, 0, 1.4, 'raw'], ['liquid', 2, 1], ['black', 1], ['tunnel', 3], ['nautilus', 2], ['candle', 2, 1]];
+  const THINGS = [['lens', 3], ['lens', 2, 1], ['white', 1], ['watch-modern', 3], ['prism', 2, 0, 1.4, 'raw'], ['liquid', 2, 1], ['black', 1], ['tunnel', 3], ['nautilus', 2], ['candle', 2, 1]];
   const RINGS = [['eclipse', 2], ['eye-ring', 2], ['eclipse', 2, 1], ['iris', 2, 1], ['white', 1], ['eclipse', 2], ['tunnel', 3], ['eye-ring', 2, 1], ['nautilus', 2], ['eclipse', 2]];
   const files = [
     { id: 't1-wake', beats: [
-      B('photo', 2600, 'hard', { plate: 'watch', from: { z: 1.0 }, to: { z: 1.22, x: 0.1 }, fadeIn: 900, grade: 'mono' }),
+      B('photo', 2600, 'hard', { plate: 'watch-modern', from: { z: 1.0 }, to: { z: 1.24, x: 0.12, y: 0.05 }, fadeIn: 900, sat: 0.2 }),
       B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500, bright: 1.12, sat: 0.55, vignette: 0.45 }),
       B('strobe', 1100, 'flash', { seq: EYES }),
     ] },
@@ -534,7 +534,7 @@ films.trailer = async () => {
       B('bar', 3500, 'smear', { clip: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
       B('panels', 3900, 'flipX', { plate: 'tunnel', each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500, textY: 880,
         items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
-      B('strobe', 700, 'flash', { seq: [['prism', 2, 0, 1.3, 'raw'], ['lens', 2, 1], ['white', 1], ['nautilus', 2], ['tunnel', 2, 1], ['watch', 2], ['prism', 2, 1]] }),
+      B('strobe', 700, 'flash', { seq: [['prism', 2, 0, 1.3, 'raw'], ['lens', 2, 1], ['white', 1], ['nautilus', 2], ['tunnel', 2, 1], ['watch-modern', 2], ['prism', 2, 1]] }),
     ] },
     { id: 't5-learn', beats: [
       B('claim', 1700, 'smear', { plate: 'nautilus', from: { z: 1.1 }, to: { z: 1.3, rot: 6 }, dim: 0.6, text: 'Then it grades its own work.' }),
