@@ -530,7 +530,7 @@
       ctx.fillStyle = '#030304'; ctx.fillRect(0, 0, W, H);
       var r = 260 + bloom * 120, a = Math.PI * 2 * p;
       if (bloom > 0) { var g = ctx.createRadialGradient(960, 540, r * 0.2, 960, 540, r * (1.2 + bloom * 3)); g.addColorStop(0, 'rgba(255,255,255,' + bloom + ')'); g.addColorStop(0.25, 'rgba(255,255,255,' + (0.5 * bloom) + ')'); g.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
-      ctx.beginPath(); ctx.arc(960, 540, r, -Math.PI * 1.05 - a / 2, -Math.PI * 1.05 + a / 2); ctx.lineWidth = 26 + bloom * 40; ctx.lineCap = 'round'; ctx.strokeStyle = '#fff'; ctx.shadowColor = '#fff'; ctx.shadowBlur = 50 + bloom * 120; ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(960, 540, r, -Math.PI * 1.05 - a / 2, -Math.PI * 1.05 + a / 2); ctx.lineWidth = 26 + bloom * 40; ctx.lineCap = 'round'; ctx.strokeStyle = '#fff'; ctx.shadowColor = '#fff'; ctx.shadowBlur = 50 + bloom * 120; ctx.stroke(); ctx.shadowBlur = 0; ctx.stroke();
       // corona rays while it forms
       var Rn = rng(f * 7 + 1);
       for (var k = 0; k < 14; k++) { var ang = -Math.PI * 1.05 - a / 2 + a * Rn(); var L0 = r + 10, L1 = r + 30 + Rn() * 70; ctx.beginPath(); ctx.moveTo(960 + Math.cos(ang) * L0, 540 + Math.sin(ang) * L0); ctx.lineTo(960 + Math.cos(ang) * L1, 540 + Math.sin(ang) * L1); ctx.lineWidth = 1 + Rn() * 2; ctx.strokeStyle = 'rgba(255,255,255,' + (0.3 + Rn() * 0.5) + ')'; ctx.stroke(); }
