@@ -20,7 +20,7 @@
 .tr .tr-ph { position: absolute; left: 0; color: var(--w40); }
 .tr .tr-caret { display: inline-block; width: 2px; height: 30px; background: #5B9DFF; margin-left: 4px; box-shadow: 0 0 10px rgba(91, 157, 255, .8); }
 .tr .tr-hint { position: absolute; right: 26px; top: 28px; font: 400 15px/1 var(--sans); color: var(--w40); }
-.tr .tr-kbd { position: absolute; left: 50%; top: 480px; transform: translateX(-50%); display: flex; gap: 10px; }
+.tr .tr-kbd { position: absolute; left: 50%; top: 300px; transform: translateX(-50%); display: flex; gap: 10px; }
 .tr .tr-kbd span { font: 500 26px/1 var(--sans); color: var(--w70); padding: 16px 22px; border-radius: 14px; border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .03); }
 
 /* flipping result panels */
@@ -32,3 +32,9 @@
 
 .tr .tr-hero { position: absolute; inset: 0; transform-origin: 960px 90px; transform: translateY(300px) scale(1.9); }
 .tr .tr-hero > * { position: absolute; }
+
+.tr .tr-cap { text-shadow: 0 2px 18px rgba(0,0,0,.6); }
+.tr .tr-claim { text-shadow: 0 2px 30px rgba(0,0,0,.7); }
+
+.tr .tr-box { position: absolute; left: 0; right: 0; height: 132px; background: #000; z-index: 8; pointer-events: none; }
+.tr .tr-box-top { top: 0; } .tr .tr-box-bot { bottom: 0; }
