@@ -515,7 +515,7 @@ films.trailer = async () => {
   const files = [
     { id: 't1-wake', beats: [
       B('photo', 2600, 'hard', { plate: 'watch', from: { z: 1.0 }, to: { z: 1.22, x: 0.1 }, fadeIn: 900, grade: 'mono' }),
-      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500 }),
+      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500, bright: 1.12, sat: 0.55, vignette: 0.45 }),
       B('strobe', 1100, 'flash', { seq: EYES }),
     ] },
     { id: 't2-wait', beats: [

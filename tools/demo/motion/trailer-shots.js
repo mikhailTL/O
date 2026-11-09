@@ -51,7 +51,7 @@
     // lifts contrast, crushes blacks; 'mono' is black and white; 'raw' keeps the plate.
     var grade = g.grade || 'cine';
     ctx.save();
-    ctx.filter = grade === 'mono' ? 'grayscale(1) contrast(1.35) brightness(.92)' : grade === 'cine' ? 'saturate(' + (g.sat == null ? 0.42 : g.sat) + ') contrast(1.22) brightness(.9)' : 'none';
+    ctx.filter = grade === 'mono' ? 'grayscale(1) contrast(1.35) brightness(.92)' : grade === 'cine' ? 'saturate(' + (g.sat == null ? 0.42 : g.sat) + ') contrast(1.22) brightness(' + (g.bright == null ? 0.9 : g.bright) + ')' : 'none';
     // micro hand-held drift so a hold never sits dead still
     var hd = g.hand == null ? 1 : g.hand, t = (g.seed || 0) / 15;
     ctx.translate(cx + Math.sin(t * 1.7) * 3 * hd + Math.sin(t * 3.1) * 1.5 * hd, cy + Math.cos(t * 1.3) * 2.5 * hd);
@@ -95,11 +95,12 @@
     for (var i = 1; i <= frames; i++) { var im = new Image(); im.src = '/tools/demo/motion/plates/clips/' + name + '/f' + String(i).padStart(4, '0') + '.jpg'; list.push(im); loading.push(new Promise(function (res) { im.onload = res; im.onerror = res; })); }
     clips[name] = list; return list;
   }
-  function clipFrame(list, ms, speed, hold) {
+  function clipIndex(list, ms, speed, hold) {
     var i = Math.floor(ms / 1000 * 30 * (speed || 1));
     if (hold === 'pingpong') { var n = list.length; var k = i % (2 * n - 2); i = k < n ? k : 2 * n - 2 - k; }
-    return list[Math.max(0, Math.min(list.length - 1, i))];
+    return Math.max(0, Math.min(list.length - 1, i));
   }
+  function clipFrame(list, ms, speed, hold) { return list[clipIndex(list, ms, speed, hold)]; }
 
   var beats = {};
   // A motion hold: a clip plays under the same camera, grade and caption as a photo beat.
@@ -107,7 +108,7 @@
     var cv = canvas(lay), ctx = cv.ctx, list = clip(o.clip, o.frames || 150), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
     return function (ms) {
       var im = clipFrame(list, ms + (o.offset || 0), o.speed, o.hold);
-      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, hand: o.hand == null ? 0.4 : o.hand });
+      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, hand: o.hand == null ? 0.4 : o.hand, bright: o.bright, sat: o.sat, grade: o.grade });
       if (o.fadeIn) { var a = 1 - eo(clamp(ms / o.fadeIn)); if (a > 0) { ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, W, H); } }
       if (o.ring) { var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))); if (rp > 0) ring(ctx, o.ring.x || 960, o.ring.y || 540, o.ring.r || 240, rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw); }
       showCap(cap, ms, o.textAt == null ? 600 : o.textAt);
@@ -117,7 +118,7 @@
   beats.photo = function (lay, o, dur) {
     var cv = canvas(lay), ctx = cv.ctx, im = plate(o.plate), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
     return function (ms) {
-      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain });
+      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, bright: o.bright, sat: o.sat, grade: o.grade });
       if (o.fadeIn) { var a = 1 - eo(clamp(ms / o.fadeIn)); if (a > 0) { ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, W, H); } }
       if (o.fadeOut) { var b = ei(clamp((ms - (dur - o.fadeOut)) / o.fadeOut)); if (b > 0) { ctx.fillStyle = 'rgba(0,0,0,' + b + ')'; ctx.fillRect(0, 0, W, H); } }
       if (o.ring) { var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))); if (rp > 0) ring(ctx, o.ring.x || 960, o.ring.y || 540, o.ring.r || 240, rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw); }
@@ -158,7 +159,9 @@
       var punch = ms < ST ? 1 + 0.5 * Math.pow(1 - ms / ST, 2) * ((Math.floor(f / 2) % 2) ? 1 : 0.6) : 1;
       drawPlate(ctx, list ? clipFrame(list, ms, o.speed, 'pingpong') : im, { z: lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch }, { seed: f, vignette: 0.6, dim: o.dim || 0, hand: 0.3 });
       // the ring sits on the disc edge (the plate's disc is centred, radius ~ 0.21 of frame height at z = 1)
-      var R = H * (o.discR || 0.205) * lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch;
+      // the clip itself pushes in (~15 % over its length), so the ring follows the disc edge
+      var cz = list ? 1 + (o.clipZoom == null ? 0.15 : o.clipZoom) * clipIndex(list, ms, o.speed, 'pingpong') / (list.length - 1) : 1;
+      var R = H * (o.discR || 0.205) * lerp(o.z0 || 1.0, o.z1 || 1.18, p) * punch * cz;
       var ra = eo(clamp((ms - (o.ringAt == null ? ST : o.ringAt)) / 700));
       if (ra > 0) ring(ctx, 960, 540, R, ra, ra * 0.8, 10 + ra * 6);
       cv.c.style.filter = ms < ST && (Math.floor(f / 2) % 2 === 1) ? 'invert(1)' : '';
