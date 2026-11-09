@@ -97,6 +97,11 @@ def cue_impact(seed):
     x += bandpass(noise(n, seed), 60, 2400) * env(n, 1, ms(500)) * 0.8
     return x
 
+def cue_hit(seed):
+    n = ms(320); x = sine(n, 120, 45) * env(n, 1, ms(260)) * 1.1
+    x += bandpass(noise(n, seed), 200, 3000) * env(n, 1, ms(60)) * 0.5
+    return x
+
 def cue_chord(seed):
     n = ms(5200); t = np.arange(n) / SR; x = np.zeros(n)
     for f, a in [(110, 0.5), (164.8, 0.35), (220, 0.3), (277.2, 0.18), (329.6, 0.14), (440, 0.08)]:
@@ -134,6 +139,7 @@ def main(side, out):
         elif k == 'riser': n_ = ms(c.get('d', 1500)); put(sine(n_, 45, 110) * np.linspace(0, 0.35, n_) ** 1.5 * env(n_, ms(50), 0, 1.0, ms(30)), tt, 0, 0.8)
         elif k == 'burn': put(cue_burn(seed, c.get('d', 1500)), tt, 0, 0.6)
         elif k == 'impact': put(cue_impact(seed), tt, 0, 1.0)
+        elif k == 'hit': put(cue_hit(seed), tt, 0, 0.8)
         elif k == 'chord': put(cue_chord(seed), tt, 0, 0.8)
     # soft master: tanh limiter, -1 dBFS peak
     mix = np.stack([L, R]); mix = np.tanh(mix * 1.1) / math.tanh(1.1)

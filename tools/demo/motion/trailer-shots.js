@@ -24,7 +24,7 @@
   function text(parent, cls, s, x, y) { var t = el('div', cls, s); t.style.left = x + 'px'; t.style.top = y + 'px'; parent.appendChild(t); return t; }
   function caption(lay, o, cls) {
     if (!o.text) return null;
-    var c = text(lay, cls || 'tr-cap', esc(o.text), 0, 0); c.style.left = '0'; c.style.right = '0'; c.style.top = (o.textY || (cls === 'tr-claim' ? 470 : 780)) + 'px'; c.style.opacity = '0'; return c;
+    var c = text(lay, (cls || 'tr-cap') + (o.textDark ? ' tr-ink' : ''), esc(o.text), 0, 0); c.style.left = '0'; c.style.right = '0'; c.style.top = (o.textY || (cls === 'tr-claim' ? 470 : 780)) + 'px'; c.style.opacity = '0'; return c;
   }
   function showCap(c, ms, at, d) { if (c) c.style.opacity = String(eo(clamp((ms - at) / (d || 500)))); }
 
@@ -56,7 +56,10 @@
     var hd = g.hand == null ? 1 : g.hand, t = (g.seed || 0) / 15;
     ctx.translate(cx + Math.sin(t * 1.7) * 3 * hd + Math.sin(t * 3.1) * 1.5 * hd, cy + Math.cos(t * 1.3) * 2.5 * hd);
     if (cam.rot) ctx.rotate(cam.rot * Math.PI / 180);
-    if (g.split) { // chromatic split on strobe frames
+    if (g.zblur) { // zoom blur: stacked copies at growing scale, fading
+      for (var zi = 1; zi <= 4; zi++) { var zs = 1 + g.zblur * zi * 0.045; ctx.globalAlpha = 0.22; ctx.drawImage(im, -dw / 2 * zs, -dh / 2 * zs, dw * zs, dh * zs); }
+      ctx.globalAlpha = 1; ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
+    } else if (g.split) { // chromatic split on strobe frames
       ctx.globalCompositeOperation = 'source-over'; ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
       ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.5; ctx.drawImage(im, -dw / 2 + g.split, -dh / 2, dw, dh); ctx.globalAlpha = 1;
     } else ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
@@ -83,7 +86,11 @@
   }
   /** Camera interpolation: from -> to over the beat with ease-out (a slow cinematic push by default). */
   function camAt(o, ms, dur) {
-    var f = o.from || { z: 1 }, t = o.to || { z: 1.12 }, p = o.linear ? clamp(ms / dur) : eo(clamp(ms / dur) * 0.98);
+    var f = o.from || { z: 1 }, t = o.to || { z: 1.12 }, u = clamp(ms / dur), p;
+    if (o.ease === 'punch' || o.linear === 'punch') p = 1 - Math.pow(1 - u, 5);        // 80 % of the move in the first fifth
+    else if (o.ease === 'ramp') p = Math.pow(u, 3.2);                                   // speed ramp into the cut
+    else if (o.linear || o.ease === 'linear') p = u;
+    else p = eo(u * 0.98);
     return { z: lerp(f.z == null ? 1 : f.z, t.z == null ? 1 : t.z, p), x: lerp(f.x || 0, t.x || 0, p), y: lerp(f.y || 0, t.y || 0, p), rot: lerp(f.rot || 0, t.rot || 0, p) };
   }
 
@@ -105,12 +112,18 @@
   var beats = {};
   // A motion hold: a clip plays under the same camera, grade and caption as a photo beat.
   beats.clip = function (lay, o, dur) {
-    var cv = canvas(lay), ctx = cv.ctx, list = clip(o.clip, o.frames || 150), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
+    var cv = canvas(lay), ctx = cv.ctx, list = clip(o.clip, o.frames || 150), fb = o.fallback ? plate(o.fallback) : null, cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
     return function (ms) {
       var im = clipFrame(list, ms + (o.offset || 0), o.speed, o.hold);
-      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, hand: o.hand == null ? 0.4 : o.hand, bright: o.bright, sat: o.sat, grade: o.grade });
+      if ((!im || !im.naturalWidth) && fb) im = fb;
+      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, hand: o.hand == null ? 0.4 : o.hand, bright: o.bright, sat: o.sat, grade: o.grade, zblur: o.ease === 'punch' && ms < 140 ? (1 - ms / 140) : 0 });
       if (o.fadeIn) { var a = 1 - eo(clamp(ms / o.fadeIn)); if (a > 0) { ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, W, H); } }
-      if (o.ring) { var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))); if (rp > 0) ring(ctx, o.ring.x || 960, o.ring.y || 540, o.ring.r || 240, rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw); }
+      if (o.ring) {
+        var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))), cz = camAt(o, ms, dur).z;
+        // ring.u/v: a point on the plate (fractions) the ring tracks as the camera zooms about the centre
+        var rx = o.ring.u != null ? 960 + (o.ring.u - 0.5) * W * cz : (o.ring.x || 960), ry = o.ring.v != null ? 540 + (o.ring.v - 0.5) * H * cz : (o.ring.y || 540);
+        if (rp > 0) ring(ctx, rx, ry, (o.ring.r || 240) * (o.ring.scale ? cz : 1), rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw);
+      }
       showCap(cap, ms, o.textAt == null ? 600 : o.textAt);
     };
   };
@@ -118,7 +131,7 @@
   beats.photo = function (lay, o, dur) {
     var cv = canvas(lay), ctx = cv.ctx, im = plate(o.plate), cap = caption(lay, o, o.claim ? 'tr-claim' : 'tr-cap');
     return function (ms) {
-      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, bright: o.bright, sat: o.sat, grade: o.grade });
+      drawPlate(ctx, im, camAt(o, ms, dur), { dim: o.dim || 0, tint: o.tint, seed: Math.floor(ms / 66), vignette: o.vignette, grain: o.grain, bright: o.bright, sat: o.sat, grade: o.grade, zblur: o.ease === 'punch' && ms < 140 ? (1 - ms / 140) : 0 });
       if (o.fadeIn) { var a = 1 - eo(clamp(ms / o.fadeIn)); if (a > 0) { ctx.fillStyle = 'rgba(0,0,0,' + a + ')'; ctx.fillRect(0, 0, W, H); } }
       if (o.fadeOut) { var b = ei(clamp((ms - (dur - o.fadeOut)) / o.fadeOut)); if (b > 0) { ctx.fillStyle = 'rgba(0,0,0,' + b + ')'; ctx.fillRect(0, 0, W, H); } }
       if (o.ring) { var rp = eo(clamp((ms - (o.ring.at || 0)) / (o.ring.d || 800))); if (rp > 0) ring(ctx, o.ring.x || 960, o.ring.y || 540, o.ring.r || 240, rp * (o.ring.a == null ? 1 : o.ring.a), rp * (o.ring.glow == null ? 1 : o.ring.glow), o.ring.lw); }
@@ -130,7 +143,7 @@
   beats.strobe = function (lay, o, dur) {
     var cv = canvas(lay), ctx = cv.ctx, seq = o.seq, last = -1, cap = caption(lay, o);
     if (cap) cap.style.mixBlendMode = 'difference';
-    seq.forEach(function (s) { if (s[0][0] !== '#' && s[0] !== 'white' && s[0] !== 'black') plate(s[0]); });
+    seq.forEach(function (s) { if (s[0][0] !== '#' && s[0] !== 'white' && s[0] !== 'black' && s[0].indexOf('word:') !== 0) plate(s[0]); });
     var total = seq.reduce(function (a, s) { return a + s[1]; }, 0);
     return function (ms) {
       var f = Math.floor(ms / 1000 * 30), fi = f % total, acc = 0, k = 0;
@@ -138,6 +151,12 @@
       var id = Math.floor(f / total) * seq.length + k;
       if (id !== last) {
         last = id; var s = seq[k], Rn = rng(id * 811 + 17);
+        if (s[0].indexOf('word:') === 0) {
+          ctx.fillStyle = s[2] ? '#f4f3ef' : '#030304'; ctx.fillRect(0, 0, W, H);
+          ctx.fillStyle = s[2] ? '#0a0a0a' : '#fff'; ctx.font = '400 150px ' + getComputedStyle(document.body).getPropertyValue('--serif'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(s[0].slice(5), 960, 540); ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+          cv.c.style.filter = ''; return;
+        }
         if (s[0] === 'white') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); }
         else if (s[0] === 'black') { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
         else if (s[0][0] === '#') { ctx.fillStyle = s[0]; ctx.fillRect(0, 0, W, H); }
@@ -241,7 +260,7 @@
     var cv = canvas(lay), ctx = cv.ctx, bg = o.plate ? plate(o.plate) : null;
     var c = text(lay, 'tr-claim', esc(o.text || ''), 0, 0); c.style.left = '0'; c.style.right = '0'; c.style.top = (o.textY || 470) + 'px';
     var s = null; if (o.sub) { s = text(lay, 'tr-cap', esc(o.sub), 0, 0); s.style.left = '0'; s.style.right = '0'; s.style.top = ((o.textY || 470) + 130) + 'px'; }
-    if (o.ink) lay.classList.add('tr-inkpage');
+    if (o.ink || o.invert) lay.classList.add('tr-inkpage');
     return function (ms) {
       if (bg) drawPlate(ctx, bg, camAt(o, ms, dur), { dim: o.dim == null ? 0.55 : o.dim, seed: Math.floor(ms / 66), vignette: 0.8 });
       else { ctx.fillStyle = o.ink ? '#f4f3ef' : '#030304'; ctx.fillRect(0, 0, W, H); }

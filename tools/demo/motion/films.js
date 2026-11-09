@@ -505,56 +505,65 @@ films.film4.standalone = true;
  */
 films.trailer = async () => {
   const B = (kind, d, cut, extra) => Object.assign({ kind, d, cut }, extra || {});
-  // rhythm (from the reference reels): a hold of 1-3.5 s with one line and a slow push, then a burst of 2-4 frame
-  // plates (the same subject flipping polarity, white flash frames, a solid colour), a whip-smear into the next hold.
-  // Pictures are photographic plates (tools/demo/motion/plates), graded to one cinematic look and letterboxed.
+  // Rhythm (from the reference reels, measured): median shot well under half a second, bursts of 2-4 frame plates
+  // every few seconds, everything moving. Holds are 0.6-1.4 s with speed-ramped punch-ins; bursts flip polarity,
+  // flash white and spit single words. Photographic plates and motion clips (tools/demo/motion/plates).
   const w = 'warm';
-  const EYES = [['eye-teal', 3, 0, 0, w], ['eye-teal', 2, 1, 0, w], ['white', 1], ['eye-amber', 3, 0, 0, w], ['eye-flare', 2, 1, 0, w], ['black', 1], ['iris', 3, 0, 0, w], ['eye-ring', 2, 0, 0, w], ['eye-tear', 2, 1, 0, w], ['eye-amber', 2, 0, 1.6, w]];
-  const SPACE = [['saturn', 3], ['saturn', 2, 1], ['white', 1], ['moon', 3], ['jupiter', 2], ['earth', 2, 1], ['black', 1], ['galaxy', 3], ['flare', 2], ['moon', 2, 1]];
-  const THINGS = [['lens', 3], ['lens', 2, 1], ['white', 1], ['watch-modern', 3], ['prism', 2, 0, 1.4, 'raw'], ['liquid', 2, 1], ['black', 1], ['tunnel', 3], ['nautilus', 2], ['candle', 2, 1]];
-  const RINGS = [['eclipse', 2], ['eye-ring', 2, 0, 0, w], ['eclipse', 2, 1], ['iris', 2, 1, 0, w], ['white', 1], ['eclipse', 2], ['tunnel', 3], ['eye-ring', 2, 1, 0, w], ['nautilus', 2], ['eclipse', 2]];
+  const EYES = [['eye-teal', 2, 0, 0, w], ['eye-teal', 2, 1, 0, w], ['white', 1], ['eye-amber', 2, 0, 0, w], ['word:wait.', 2], ['eye-flare', 2, 1, 0, w], ['black', 1], ['iris2', 3, 0, 0, w], ['eye-brown', 2, 0, 0, w], ['word:wait.', 2, 1], ['eye-ring', 2, 1, 0, w], ['eye-tear', 2, 0, 1.5, w]];
+  const THINGS = [['lens', 2], ['glass', 2, 1], ['white', 1], ['circuit', 2], ['word:ask.', 2], ['pixels', 2, 1], ['smoke', 2], ['black', 1], ['metronome', 2], ['word:wait.', 2, 1], ['glass', 2], ['prism', 2, 0, 1.3, 'raw']];
+  const SPACE = [['saturn', 2], ['saturn-edge', 2, 1], ['white', 1], ['moon', 2], ['word:until.', 2], ['jupiter', 2], ['aurora', 2, 1], ['black', 1], ['galaxy', 2], ['flare', 2], ['lightning', 2, 1], ['moon', 2, 1]];
+  const RINGS = [['eclipse', 2], ['iris2', 2, 0, 0, w], ['ripple', 2, 1], ['word:curious.', 2], ['rings', 2], ['white', 1], ['eye-ring', 2, 0, 0, w], ['word:patient.', 2, 1], ['pixels', 2], ['eclipse', 2, 1], ['word:honest.', 2], ['iris2', 2, 1, 0, w]];
   const files = [
     { id: 't1-wake', beats: [
-      B('photo', 2600, 'hard', { plate: 'watch-modern', from: { z: 1.0 }, to: { z: 1.24, x: 0.12, y: 0.05 }, fadeIn: 900, sat: 0.2 }),
-      B('clip', 4200, 'smear', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.22 }, text: 'Every AI waits to be told.', textAt: 2000, fadeIn: 500, grade: 'warm', bright: 1.08, vignette: 0.45 }),
-      B('strobe', 1100, 'flash', { seq: EYES }),
+      B('photo', 900, 'hard', { plate: 'watch-modern', from: { z: 1.3 }, to: { z: 1.08, x: 0.1 }, ease: 'punch', fadeIn: 250, sat: 0.2 }),
+      B('photo', 700, 'flipX', { plate: 'metronome', from: { z: 1.0 }, to: { z: 1.2, y: -0.1 }, ease: 'ramp' }),
+      B('clip', 900, 'smear', { clip: 'hourglass', fallback: 'hourglass', from: { z: 1.1 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.4 }),
+      B('clip', 2600, 'flash', { clip: 'eye', from: { z: 1.0 }, to: { z: 1.3 }, text: 'Every AI waits to be told.', textAt: 1100, grade: 'warm', bright: 1.08, vignette: 0.45, speed: 1.7, ease: 'ramp' }),
+      B('strobe', 1200, 'flash', { seq: EYES }),
     ] },
     { id: 't2-wait', beats: [
-      B('photo', 1800, 'smear', { plate: 'lens', from: { z: 1.0 }, to: { z: 1.35 }, text: 'For a prompt.', textAt: 300 }),
-      B('clip', 1400, 'flipY', { clip: 'liquid', from: { z: 1.1 }, to: { z: 1.2 }, text: 'Then another.', textAt: 100, linear: true, speed: 1.5 }),
-      B('strobe', 900, 'flash', { seq: THINGS }),
+      B('photo', 600, 'smear', { plate: 'lens', from: { z: 1.4 }, to: { z: 1.15 }, ease: 'punch' }),
+      B('clip', 1000, 'smear', { clip: 'ink', fallback: 'ink', offset: 900, from: { z: 1.0 }, to: { z: 1.25 }, ease: 'ramp', speed: 1.6, text: 'For a prompt.', textAt: 100, grade: 'raw', textDark: true }),
+      B('photo', 900, 'flipY', { plate: 'window', from: { z: 1.0 }, to: { z: 1.22 }, ease: 'ramp', text: 'Then another.', textAt: 100 }),
+      B('strobe', 1000, 'flash', { seq: THINGS }),
     ] },
     { id: 't3-light', beats: [
-      B('photo', 2400, 'smear', { plate: 'moon', from: { z: 1.0, y: 0.1 }, to: { z: 1.18, y: -0.1 }, text: 'One of them stopped waiting.', textAt: 500 }),
-      B('clip', 1700, 'flipX', { clip: 'earth', from: { z: 1.05 }, to: { z: 1.15 }, linear: true, speed: 1.2 }),
-      B('photo', 1400, 'flipX', { plate: 'galaxy', from: { z: 1.0 }, to: { z: 1.5 } }),
-      B('strobe', 800, 'flash', { seq: SPACE }),
-      B('eclipse', 3000, 'flash', { clip: 'eclipse', z0: 1.0, z1: 1.14, strobeMs: 0, ringAt: 300, words: [] }),
+      B('clip', 1200, 'smear', { clip: 'lightning', fallback: 'lightning', offset: 2250, from: { z: 1.25 }, to: { z: 1.05 }, ease: 'punch', text: 'One of them stopped waiting.', textAt: 200, speed: 1.3, bright: 1.1 }),
+      B('photo', 600, 'flipX', { plate: 'moon', from: { z: 1.0, y: 0.1 }, to: { z: 1.25, y: -0.05 }, ease: 'ramp' }),
+      B('clip', 900, 'smear', { clip: 'earth', from: { z: 1.05 }, to: { z: 1.2 }, speed: 1.6, ease: 'ramp' }),
+      B('photo', 700, 'flipY', { plate: 'aurora', from: { z: 1.3 }, to: { z: 1.1, x: 0.1 }, ease: 'punch' }),
+      B('clip', 900, 'smear', { clip: 'saturn', fallback: 'saturn-edge', from: { z: 1.0 }, to: { z: 1.2 }, speed: 1.5, ease: 'ramp' }),
+      B('photo', 800, 'flipX', { plate: 'galaxy', from: { z: 1.0 }, to: { z: 1.9 }, ease: 'ramp' }),
+      B('strobe', 900, 'flash', { seq: SPACE }),
+      B('eclipse', 2200, 'flash', { clip: 'eclipse', z0: 1.15, z1: 1.0, strobeMs: 0, ringAt: 250, words: [] }),
     ] },
     { id: 't4-work', beats: [
-      B('bar', 3500, 'smear', { clip: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 46, openAt: 600, status: 'Working · 4 tasks' }),
-      B('panels', 3900, 'flipX', { plate: 'tunnel', each: 380, text: 'In your apps. Any browser. Nothing to install.', textAt: 2500, textY: 800,
+      B('bar', 3000, 'smear', { clip: 'liquid', prompt: 'Plan the Berlin week, book the trains, answer what I owe', cps: 58, openAt: 450, status: 'Working · 4 tasks' }),
+      B('panels', 3100, 'flipX', { plate: 'circuit', each: 300, text: 'In your apps. Any browser. Nothing to install.', textAt: 2000, textY: 800,
         items: [['Calendar', '6 meetings moved'], ['Rail', 'Berlin → Munich · Tue 08:34'], ['Mail', '4 replies drafted'], ['Notes', 'Itinerary written'], ['Slides', 'Pitch deck · 9 slides'], ['Messages', 'Sent “landed, see you at 7”']] }),
-      B('strobe', 700, 'flash', { seq: [['prism', 2, 0, 1.3, 'raw'], ['lens', 2, 1], ['white', 1], ['nautilus', 2], ['tunnel', 2, 1], ['watch-modern', 2], ['prism', 2, 1]] }),
+      B('strobe', 800, 'flash', { seq: [['circuit', 2], ['pixels', 2, 1], ['white', 1], ['glass', 2], ['word:done.', 2], ['ripple', 2, 1], ['lens', 2], ['word:done.', 2, 1], ['pixels', 2], ['circuit', 2, 1]] }),
     ] },
     { id: 't5-learn', beats: [
-      B('claim', 1700, 'smear', { plate: 'nautilus', from: { z: 1.1 }, to: { z: 1.3, rot: 6 }, dim: 0.6, text: 'Then it grades its own work.' }),
-      B('eclipse', 6000, 'flash', { clip: 'eclipse', z0: 1.5, z1: 1.2, strobeMs: 1200, ringAt: 1200, wordsAt: 1700, each: 420, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1400, textY: 862 }),
+      B('claim', 1200, 'smear', { plate: 'nautilus', from: { z: 1.1 }, to: { z: 1.35, rot: 5 }, ease: 'ramp', dim: 0.6, text: 'Then it grades its own work.' }),
+      B('photo', 700, 'flipY', { plate: 'rings', from: { z: 1.4 }, to: { z: 1.15 }, ease: 'punch' }),
+      B('clip', 1000, 'smear', { clip: 'ripple', fallback: 'ripple', offset: 500, from: { z: 1.0 }, to: { z: 1.25 }, ease: 'ramp', speed: 1.5 }),
+      B('eclipse', 4300, 'flash', { clip: 'eclipse', z0: 1.4, z1: 1.1, strobeMs: 900, ringAt: 900, wordsAt: 1300, each: 330, words: ['faster.', 'quieter.', 'kinder.', 'surer.', 'sharper.', 'better.', 'better.', 'better.', 'yours.'], text: 'It rewrites its own skills. Keeps only what improved.', textAt: 1100, textY: 862 }),
     ] },
     { id: 't6-human', beats: [
-      B('photo', 1800, 'smear', { plate: 'tunnel', from: { z: 1.0 }, to: { z: 1.6 }, text: 'Not a tool you drive.', textAt: 200 }),
+      B('clip', 1400, 'smear', { clip: 'hand', fallback: 'hand', from: { z: 1.0 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.5, text: 'Not a tool you drive.', textAt: 200, grade: 'warm', bright: 0.95 }),
+      B('clip', 1100, 'flipY', { clip: 'murmuration', fallback: 'window', from: { z: 1.1 }, to: { z: 1.3 }, ease: 'ramp', speed: 1.6 }),
       B('strobe', 1000, 'flash', { seq: RINGS }),
-      B('pupil', 3400, 'flash', { plate: 'eye-ring', u: 0.665, v: 0.45, zMax: 6.5, zoomMs: 1500, ringAt: 1100, ringR: 150, text: 'The most human AI.', textAt: 1900 }),
+      B('clip', 3000, 'flash', { clip: 'iris', fallback: 'iris2', from: { z: 1.0 }, to: { z: 1.6 }, ease: 'ramp', speed: 1.2, grade: 'warm', text: 'The most human AI.', textAt: 1200, claim: true, textY: 470, ring: { at: 900, d: 700, r: 244, lw: 9, glow: 0.5, u: 0.497, v: 0.443, scale: true } }),
     ] },
     { id: 't7-claims', beats: [
-      B('claim', 800, 'flipY', { plate: 'lens', dim: 0.75, text: 'Works in every app.' }),
-      B('claim', 800, 'flipY', { plate: 'tunnel', dim: 0.5, text: 'Every browser.', invert: true }),
-      B('claim', 800, 'flipY', { plate: 'nautilus', dim: 0.65, text: 'Learns from itself.' }),
-      B('claim', 800, 'flipY', { plate: 'galaxy', dim: 0.5, text: 'Sets its own goals.', invert: true }),
-      B('strobe', 600, 'flash', { seq: [['eclipse', 2], ['white', 1], ['eclipse', 2, 1], ['black', 1], ['eclipse', 2], ['eclipse', 2, 1]] }),
+      B('claim', 650, 'flipY', { plate: 'lens', dim: 0.7, text: 'Works in every app.', ease: 'punch', from: { z: 1.3 }, to: { z: 1.1 } }),
+      B('claim', 650, 'flipY', { plate: 'glass', dim: 0.45, text: 'Every browser.', invert: true, ease: 'punch', from: { z: 1.3 }, to: { z: 1.1 } }),
+      B('claim', 650, 'flipY', { plate: 'rings', dim: 0.6, text: 'Learns from itself.', ease: 'punch', from: { z: 1.3 }, to: { z: 1.1 } }),
+      B('claim', 650, 'flipY', { plate: 'lightning', dim: 0.5, text: 'Sets its own goals.', ease: 'punch', from: { z: 1.3 }, to: { z: 1.1 } }),
+      B('strobe', 700, 'flash', { seq: [['eclipse', 2], ['white', 1], ['eclipse', 2, 1], ['word:O', 2], ['black', 1], ['eclipse', 2], ['word:O', 2, 1], ['eclipse', 2, 1]] }),
     ] },
     { id: 't8-close', beats: [
-      B('lockup', 5200, 'flash', { name: 'O AI', text: 'The computer that works while you do.' }),
+      B('lockup', 4600, 'flash', { name: 'O AI', text: 'The computer that works while you do.' }),
     ] },
   ];
   // sound cues at absolute ms: a whoosh on every flip, a flash hit on every flash, ticks under the eye cycles,
@@ -570,6 +579,8 @@ films.trailer = async () => {
       if (b.kind === 'eclipse') { const g = b.strobeMs || 0; if (g) { sfx.push({ t: bt, k: 'riser', d: g }); for (let x = 0; x < g; x += 133) sfx.push({ t: bt + x, k: 'tick' }); } sfx.push({ t: bt + (b.ringAt || 0), k: 'impact' }); if (b.words) for (let i = 0; i < b.words.length; i++) sfx.push({ t: bt + (b.wordsAt || 0) + i * (b.each || 420), k: 'tick' }); }
       if (b.kind === 'pupil') { sfx.push({ t: bt, k: 'riser', d: b.zoomMs || 1500 }); sfx.push({ t: bt + (b.ringAt || 1200), k: 'impact' }); }
       if (b.kind === 'photo' && b.plate === 'galaxy') sfx.push({ t: bt, k: 'riser', d: b.d + 800 });
+      if ((b.kind === 'photo' || b.kind === 'clip' || b.kind === 'claim') && b.ease === 'punch') sfx.push({ t: bt, k: 'hit' });
+      if (b.kind === 'clip' && b.ring) sfx.push({ t: bt + b.ring.at, k: 'impact' });
       if (b.kind === 'bar') { const T = bt + (b.openAt || 700) + 500; for (let i = 0; i < (b.prompt || '').length; i++) sfx.push({ t: T + i * 1000 / b.cps, k: 'key' }); sfx.push({ t: bt + b.openAt, k: 'whoosh' }); }
       if (b.kind === 'panels') for (let i = 0; i < b.items.length; i++) sfx.push({ t: bt + i * b.each, k: 'flip' });
       if (b.kind === 'lockup') sfx.push({ t: bt, k: 'chord' });
