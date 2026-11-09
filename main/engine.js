@@ -395,6 +395,7 @@ class EngineProcess extends EventEmitter {
     this.child = null;
     this.ready = false;
     this._streak = 0;
+    this.python = null; // re-resolve: a venv created or an enginePython set since the last start is picked up
     if (child) killTree(child);
     this._log('engine restart requested');
     return this.start();

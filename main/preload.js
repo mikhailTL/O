@@ -143,6 +143,15 @@ contextBridge.exposeInMainWorld('o', {
   genuiSurfaces: () => ipcRenderer.invoke('genui:surfaces'),
   genuiAction: (action, payload) => ipcRenderer.invoke('genui:action', String(action || ''), payload && typeof payload === 'object' ? payload : {}),
   checkRequirements: () => ipcRenderer.invoke('requirements:check'),
+  // one-click setup (main/setup.js): the checklist, the run, and its progress lines {step, state, detail}
+  setupStatus: () => ipcRenderer.invoke('setup:status'),
+  setupRun: (step) => ipcRenderer.invoke('setup:run', typeof step === 'string' ? step : ''),
+  onSetupProgress: (cb) => {
+    const handler = (_e, ev) => cb(ev);
+    ipcRenderer.on('setup:progress', handler);
+    return () => ipcRenderer.removeListener('setup:progress', handler);
+  },
+  summonLabel: () => ipcRenderer.invoke('setup:summonLabel'), // the summon shortcut as the OS shows it ('⌘⇧O', 'Alt+Space')
   // API proxy
   logNote: (summary, detail) => ipcRenderer.invoke('log:note', String(summary || ''), detail || {}),
   proxyStatus: () => ipcRenderer.invoke('proxy:status'),

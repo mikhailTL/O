@@ -493,6 +493,24 @@ function applyIslandIgnore() {
 // openCommandBar no longer calls app.focus({ steal: true }) on macOS: activating O is what the panel avoids.
 const ISLAND_IS_PANEL = process.platform === 'darwin';
 
+// Windows: os.release() is 'major.minor.build'; Windows 11 starts at build 22000. Electron 33's
+// backgroundMaterial (acrylic/mica, a DWM system backdrop) exists on 11 only; 10 keeps the plain transparent
+// window, which the renderer's own liquid glass already paints identically.
+const WIN_BUILD = process.platform === 'win32' ? (Number(String(require('os').release()).split('.')[2]) || 0) : 0;
+const WIN11 = process.platform === 'win32' && WIN_BUILD >= 22000;
+
+/**
+ * Windows options for O's frameless transparent overlays (the Island, the notify cards): no WS_THICKFRAME
+ * (a transparent window would otherwise show the system frame edge and its resize animations), DWM rounded
+ * corners, and never on the taskbar. Deliberately NO backgroundMaterial here: the Island window is the whole
+ * 820x480 command-bar footprint and the notify window spans its empty slide-in area, and a DWM backdrop fills
+ * the entire window rect, which would put a blurred rectangle behind the floating capsule. The glass is drawn
+ * by the renderer (liquid.css) on every platform; only the panel, a solid sheet, takes the system material.
+ */
+function win32OverlayOptions() {
+  return process.platform === 'win32' ? { thickFrame: false, roundedCorners: true, skipTaskbar: true } : {};
+}
+
 function createIslandWindow() {
   islandL = computeIslandLayout();
   islandWin = new BrowserWindow({
@@ -501,6 +519,7 @@ function createIslandWindow() {
     // macOS: a frameless window with this flag is placed exactly where asked, including over the menu bar
     // (otherwise AppKit's constrainFrameRect pushes it below the bar).
     ...(process.platform === 'darwin' ? { enableLargerThanScreen: true } : {}),
+    ...win32OverlayOptions(),
     transparent: true,
     frame: false,
     resizable: false,
@@ -532,7 +551,7 @@ function createIslandWindow() {
     }
     syncIslandProximity();
   });
-  applyIslandLevel();
+  applyIslandLevel(); // Windows: 'screen-saver' (float mode), the highest level, so the capsule stays over fullscreen apps where DWM allows
   // Not on fullscreen Spaces: a fullscreen app (video, game, presentation) has the screen to itself.
   try { islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false }); } catch (_) {}
   islandWin.loadFile(path.join(RENDERER, 'index.html'));
@@ -638,7 +657,10 @@ function toggleCommandBar() {
 function glassWindowOptions() {
   const o = { transparent: true, backgroundColor: '#00000000', roundedCorners: true };
   if (process.platform === 'darwin') { o.vibrancy = 'under-window'; o.visualEffectState = 'active'; }
-  else if (process.platform === 'win32') o.backgroundMaterial = 'acrylic';
+  else if (process.platform === 'win32') {
+    o.thickFrame = false; // no system frame edge on a transparent window
+    if (WIN11) o.backgroundMaterial = 'acrylic'; // Windows 10: the plain transparent window (same look, painted by the renderer)
+  }
   return o;
 }
 
@@ -729,6 +751,7 @@ function createNotifyWindow() {
     fullscreenable: false,
     backgroundColor: '#00000000',
     roundedCorners: true,
+    ...win32OverlayOptions(),
     title: 'O needs your OK',
     show: false,
     webPreferences: {
@@ -751,6 +774,15 @@ function placeNotify(height) {
   const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
   const x = wa.x + wa.width - NOTIFY_W - 6;
   const res = islandReserve(wa, x, x + NOTIFY_W); // below a top-right Island, above a bottom-right one
+  if (process.platform === 'win32') {
+    // Windows: cards stack bottom-right, just above the taskbar (the work area excludes it), where the system's
+    // own toasts live; the stack grows upward (re-placed on every notify:resize) and stays below a top-right Island.
+    const top = res.top > wa.y ? res.top + 4 : wa.y + 12;
+    const bottom = res.bottom - 12;
+    const h = Math.max(60, Math.min(Math.round(height || 200), bottom - top));
+    notifyWin.setBounds({ x, y: bottom - h, width: NOTIFY_W, height: h });
+    return;
+  }
   const y = res.top > wa.y ? res.top + 4 : wa.y + 12;
   const h = Math.max(60, Math.min(Math.round(height || 200), res.bottom - y - 28));
   notifyWin.setBounds({ x, y, width: NOTIFY_W, height: h });
@@ -822,7 +854,7 @@ function islandPositionMenu() {
   const mac = process.platform === 'darwin';
   const cur = currentIslandLayout().position;
   const items = [
-    ['auto', mac ? 'Automatic (in the menu bar)' : 'Automatic (above the taskbar)'],
+    ['auto', mac ? 'Automatic (in the menu bar)' : process.platform === 'win32' ? 'Automatic (top centre)' : 'Automatic (above the taskbar)'],
     ...(mac ? [['menubar', 'Menu bar']] : []),
     ['top', 'Top centre'], ['bottom', 'Bottom centre'],
     ['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right'],
@@ -843,10 +875,16 @@ function toggleIsland() {
 // ---------------------------------------------------------------- tray
 
 function trayIcon(sensing = false) {
+  if (process.platform === 'win32' && !sensing) {
+    // Windows: the multi-size .ico (16/24/32 px frames), so the shell picks a crisp frame for its DPI.
+    const ico = nativeImage.createFromPath(path.join(ASSETS, 'o.ico'));
+    if (!ico.isEmpty()) return ico;
+  }
   let img = nativeImage.createFromPath(path.join(ASSETS, 'tray.png'));
   if (img.isEmpty()) img = nativeImage.createFromPath(path.join(ASSETS, 'o-base.png'));
   if (img.isEmpty()) return nativeImage.createEmpty();
-  const size = process.platform === 'darwin' ? 18 : 22;
+  // Windows notification-area icons are 16 px (the shell scales for DPI); 22 px on Linux, 18 pt on mac.
+  const size = process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 16 : 22;
   img = img.resize({ width: size, height: Math.round(size * img.getSize().height / img.getSize().width) || size, quality: 'best' });
   if (!sensing || !ambientMod) return img;
   // A sensor is live: a small white dot in the corner, visible whenever anything is sensing.
@@ -881,21 +919,80 @@ function createTray() {
   try {
     tray = new Tray(trayIcon());
     tray.setToolTip('O AI');
-    tray.on('click', () => togglePanel());
+    // Windows: a left click summons the command bar (launcher style); the menu is on the right button.
+    // Elsewhere a click toggles the panel, as before.
+    tray.on('click', () => (process.platform === 'win32' ? toggleCommandBar() : togglePanel()));
     rebuildTrayMenu();
   } catch (err) {
     console.error('[o] tray unavailable:', err.message);
   }
 }
 
+/** Open the panel on its Settings / set-up view (the panel handles 'open-settings'; until it does, it opens). */
+function openSettingsView() {
+  showPanel();
+  broadcast({ type: 'open-settings' });
+}
+
+/**
+ * Full autonomy from the tray: permissionMode 'auto' on, 'log' off. Mirrors what settings:set does for this
+ * key (settings.set, the action-log line, an engine restart since permissionMode is an engine key).
+ */
+function setFullAutonomy(on) {
+  if (!settings) return;
+  const before = settings.get().permissionMode;
+  const mode = on ? 'auto' : 'log';
+  if (before === mode) return;
+  settings.set({ permissionMode: mode });
+  if (actionLog) { try { actionLog.record({ kind: 'settings', summary: 'Settings changed: permissionMode', detail: { keys: ['permissionMode'] } }); } catch (_) {} }
+  if (engine) { try { engine.restart(); } catch (err) { console.error('[o] engine restart:', err.message); } }
+  rebuildTrayMenu();
+}
+
+/** The Windows tray menu: Open O, the command bar, Set up / Settings, Full autonomy, the Island, Quit. */
+function win32TrayMenu() {
+  const islandShown = !!(islandWin && islandWin.isVisible());
+  const running = tasks ? tasks.running().length : 0;
+  return [
+    { label: 'Open O', click: () => showPanel() },
+    { label: `Open command bar\t${shortcuts.summonLabel()}`, click: () => openCommandBar({ notify: true }) },
+    { label: 'Set up / Settings', click: openSettingsView },
+    { label: 'Open action log', click: openActionLog },
+    { type: 'separator' },
+    {
+      label: 'Full autonomy', type: 'checkbox', checked: !!(settings && settings.get().permissionMode === 'auto'),
+      click: (item) => setFullAutonomy(item.checked),
+    },
+    { label: islandShown ? 'Hide the Island' : 'Show the Island', click: toggleIsland },
+    { label: 'Island position', submenu: islandPositionMenu() },
+    ...(ambient && ambient.live.length ? [{ label: `Sensing: ${ambient.live.map((x) => x.label).join(', ')}…`, click: openAmbientSettings }] : []),
+    { label: running > 1 ? `Stop all ${running} tasks` : 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
+    { type: 'separator' },
+    {
+      label: 'Start O when I sign in', type: 'checkbox', checked: shortcuts.getOpenAtLogin(app),
+      click: (item) => { settings.set({ openAtLogin: item.checked }); shortcuts.setOpenAtLogin(app, item.checked); },
+    },
+    { label: 'Create desktop shortcut', click: () => {
+      const r = shortcuts.createShortcuts(app, shell);
+      notify(r.ok ? 'Shortcut created' : 'Could not create the shortcut', r.ok ? 'O AI is on your Desktop and in the Start menu.' : (r.error || ''));
+    } },
+    updater && updater.state.state === 'available'
+      ? { label: 'Update O now', click: () => updater.apply() }
+      : { label: 'Check for updates', click: () => updater && updater.check(), enabled: !!updater },
+    { type: 'separator' },
+    { label: 'Quit O', click: () => turnOff() },
+  ];
+}
+
 function rebuildTrayMenu() {
   if (!tray) return;
+  if (process.platform === 'win32') { tray.setContextMenu(Menu.buildFromTemplate(win32TrayMenu())); return; }
   const islandShown = !!(islandWin && islandWin.isVisible());
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'O AI', enabled: false },
     { type: 'separator' },
     { label: islandShown ? 'Hide the Island' : 'Show the Island', click: toggleIsland },
-    { label: 'Open command bar  (Ctrl/Cmd+Shift+O)', click: () => openCommandBar({ notify: true }) },
+    { label: `Open command bar  (${shortcuts.summonLabel()})`, click: () => openCommandBar({ notify: true }) },
     { label: 'Open panel', click: () => showPanel() },
     { label: 'Open action log', click: openActionLog },
     ...(ambient && ambient.live.length ? [{ label: `Sensing: ${ambient.live.map((x) => x.label).join(', ')}…`, click: openAmbientSettings }] : []),
@@ -1515,6 +1612,36 @@ function registerIpc() {
   ipcMain.handle('claude:check', async () => {
     try { return await checkClaudeFn(settings.get()); } catch (err) { return { installed: false, error: err.message }; }
   });
+  // ---------- one-click setup (main/setup.js): checklist, run, progress ----------
+  let setupSvc = null;
+  const getSetup = () => {
+    if (setupSvc) return setupSvc;
+    let createSetup = null;
+    try { ({ createSetup } = require('./setup')); } catch (err) { console.error('[o] could not load setup:', err.message); return null; }
+    setupSvc = createSetup({
+      appDir: path.join(__dirname, '..'),
+      settings,
+      getEngine: () => engine,
+      checkClaude: (s) => checkClaudeFn(s),
+      log: (summary, detail) => logApp('note', summary, detail),
+    });
+    setupSvc.on('progress', (ev) => {
+      for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('setup:progress', ev);
+    });
+    return setupSvc;
+  };
+  const noSetup = { ok: false, steps: [], error: 'Setup is unavailable in this build.' };
+  ipcMain.handle('setup:status', async () => { const s = getSetup(); if (!s) return noSetup; try { return await s.status(); } catch (err) { return { ...noSetup, error: err.message }; } });
+  ipcMain.handle('setup:run', async (_e, step) => {
+    const s = getSetup();
+    if (!s) return noSetup;
+    try {
+      const r = await s.run(typeof step === 'string' ? step : '');
+      broadcast({ type: 'engine', ...engineStatus() });
+      return r;
+    } catch (err) { return { ...noSetup, error: err.message }; }
+  });
+  ipcMain.handle('setup:summonLabel', () => { try { return shortcuts.summonLabel(); } catch (_) { return ''; } });
   ipcMain.handle('link:status', () => (link ? link.status() : { connected: false, error: 'O Link is not running' }));
   ipcMain.handle('link:connect', () => {
     if (!link) return { ok: false, error: 'O Link is not running' };
@@ -1693,9 +1820,15 @@ app.whenReady().then(() => {
   // Speed: the first task should not wait for Claude Code to start. Warm one process once the app is up
   // (again when the engine is ready, since its URL is part of the config).
   setTimeout(() => { if (tasks) tasks.prewarm().catch(() => {}); }, 2500).unref();
+  // Cmd/Ctrl+Shift+O everywhere; Windows also tries Alt+Space → Ctrl+Shift+Space → Ctrl+Alt+O (shortcuts.js).
   try {
-    globalShortcut.register('CommandOrControl+Shift+O', toggleCommandBar);
-  } catch (_) {}
+    const r = shortcuts.registerSummon(globalShortcut, toggleCommandBar);
+    if (process.platform === 'win32') {
+      console.log(r.summon ? `[o] command bar shortcut: ${r.summon} (tried ${r.tried.join(', ')})` : `[o] no launcher shortcut free (tried ${r.tried.join(', ')}); Ctrl+Shift+O only`);
+    }
+    if (!r.base && !r.summon) console.error('[o] no global shortcut could be registered');
+    rebuildTrayMenu(); // the menu shows the combo that registered
+  } catch (err) { console.error('[o] shortcut:', err.message); }
 });
 
 // O keeps running with no windows focused; only quit explicitly.

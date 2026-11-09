@@ -36,15 +36,26 @@
     <button id="btn-settings" class="icon seg-gear" type="button" title="Settings" aria-label="Settings"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.4"/><path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M4.9 15.1l1.4-1.4M13.7 6.3l1.4-1.4"/></svg></button>
   </nav>
 
-  <section id="setup" hidden>
-    <h3>O needs Claude Code to think</h3>
-    <p id="setup-detail"></p>
-    <ol>
-      <li>Install it: <code>npm install -g @anthropic-ai/claude-code</code></li>
-      <li>Log in once: run <code>claude</code> in a terminal and follow the prompts</li>
-      <li>If it is installed somewhere unusual, set <em>Claude path</em> in Settings, Advanced, Working</li>
-    </ol>
-    <button id="btn-recheck">Check again</button>
+  <section id="setup" hidden aria-labelledby="setup-h">
+    <div class="sheet-head"><h2 id="setup-h">Set up O</h2><span id="setup-note" class="sheet-note">Once, in one click</span></div>
+    <p class="sheet-sub">O thinks with Claude Code and acts through its engine. Anything missing below is installed for you.</p>
+    <div id="setup-steps" class="reqs setup-steps" role="list" aria-live="polite"></div>
+    <div class="row update-row setup-actions">
+      <span id="setup-line">Checking…</span>
+      <button id="btn-setup-run" type="button" class="primary">Set up O</button>
+    </div>
+    <ol id="setup-progress" class="setup-progress" aria-live="polite" hidden></ol>
+    <div id="setup-autonomy" class="essentials setup-autonomy" hidden>
+      <label class="row check">
+        <input type="checkbox" id="setup-fullAutonomy" aria-describedby="setup-autonomy-hint">
+        <span>Full autonomy</span>
+      </label>
+      <p class="hint" id="setup-autonomy-hint">O acts on its own. It never pays, never handles passwords, never bypasses sign-in or bot checks.</p>
+    </div>
+    <div class="row update-row setup-foot">
+      <span id="setup-shortcut"></span>
+      <button id="btn-setup-done" type="button">Done</button>
+    </div>
   </section>
 
   <section id="settings" hidden aria-labelledby="settings-h">
@@ -52,6 +63,33 @@
 
     <div class="group essentials">
       <h3>Essentials</h3>
+      <label class="row">
+        <span>Model</span>
+        <input type="text" id="set-model" spellcheck="false" placeholder="default">
+      </label>
+      <label class="row check">
+        <input type="checkbox" id="set-fullAutonomy" aria-describedby="autonomy-hint">
+        <span>Full autonomy</span>
+      </label>
+      <p class="hint" id="autonomy-hint">Off: O logs everything it does and asks for nothing. On: O acts on its own. It never pays, never handles passwords, never bypasses sign-in or bot checks.</p>
+      <label class="row check">
+        <input type="checkbox" id="set-openAtLogin">
+        <span>Start O when I log in</span>
+      </label>
+      <div class="row">
+        <span>Summon O</span>
+        <span id="shortcut-hint" class="kbd" aria-live="polite"></span>
+      </div>
+      <div class="row update-row">
+        <span id="settings-setup-line">Claude Code, Python and the engine</span>
+        <button id="btn-open-setup" type="button">Set up O</button>
+      </div>
+    </div>
+
+    <h3 class="adv-h">Advanced</h3>
+
+    <details class="group">
+      <summary>Appearance</summary>
       <label class="row">
         <span>Theme</span>
         <select id="set-theme">
@@ -74,31 +112,19 @@
           <option value="hidden">Hidden (the shortcut and the tray still open O)</option>
         </select>
       </label>
-      <label class="row">
-        <span>Permissions</span>
-        <select id="set-permissionMode">
-          <option value="log">Autonomous: acts without asking, records everything (default)</option>
-          <option value="ask">Ask first</option>
-          <option value="auto">Auto-approve everything (risky)</option>
-        </select>
-      </label>
-      <p class="hint">Payments, new accounts and consent rules always come to you, in every mode.</p>
-      <label class="row check">
-        <input type="checkbox" id="set-evolveAskBeforeInstall" aria-describedby="evolve-ask-hint">
-        <span>Ask before installing new tools and upgrades</span>
-      </label>
-      <p class="hint" id="evolve-ask-hint">When off, O installs tools it finds and ships its own upgrades without asking; safety checks, sandbox testing and automatic rollback still apply.</p>
-      <label class="row">
-        <span>Weekly self-improvement budget (USD)</span>
-        <input type="number" id="set-evolveBudgetUsd" min="0" max="1000" step="0.5" placeholder="10">
-      </label>
-      <p class="hint">A rolling 7-day cap on what O spends building its own upgrades. 0 stops new builds.</p>
-    </div>
-
-    <h3 class="adv-h">Advanced</h3>
+    </details>
 
     <details class="group">
       <summary>Working</summary>
+      <label class="row">
+        <span>Permission mode</span>
+        <select id="set-permissionMode">
+          <option value="log">Log everything: acts without asking, records every step (default)</option>
+          <option value="ask">Ask first</option>
+          <option value="auto">Full autonomy</option>
+        </select>
+      </label>
+      <p class="hint">Payments, new accounts and consent rules always come to you, in every mode.</p>
       <label class="row">
         <span>Tasks at once</span>
         <input type="number" id="set-maxParallelTasks" min="1" max="8" step="1" placeholder="3">
@@ -120,10 +146,20 @@
         <span>Claude path</span>
         <input type="text" id="set-claudePath" spellcheck="false" placeholder="claude">
       </label>
-      <label class="row">
-        <span>Model (optional)</span>
-        <input type="text" id="set-model" spellcheck="false" placeholder="default">
+    </details>
+
+    <details class="group">
+      <summary>Self-improvement</summary>
+      <label class="row check">
+        <input type="checkbox" id="set-evolveAskBeforeInstall" aria-describedby="evolve-ask-hint">
+        <span>Ask before installing new tools and upgrades</span>
       </label>
+      <p class="hint" id="evolve-ask-hint">When off, O installs tools it finds and ships its own upgrades without asking; safety checks, sandbox testing and automatic rollback still apply.</p>
+      <label class="row">
+        <span>Weekly self-improvement budget (USD)</span>
+        <input type="number" id="set-evolveBudgetUsd" min="0" max="1000" step="0.5" placeholder="10">
+      </label>
+      <p class="hint">A rolling 7-day cap on what O spends building its own upgrades. 0 stops new builds.</p>
     </details>
 
     <details class="group" id="addons">
@@ -394,10 +430,6 @@
 
     <details class="group">
       <summary>Startup and updates</summary>
-      <label class="row check">
-        <input type="checkbox" id="set-openAtLogin">
-        <span>Start O when I log in</span>
-      </label>
       <div class="row update-row">
         <span id="shortcut-status">O adds itself to your Desktop and Start menu on Windows.</span>
         <button id="btn-shortcuts" type="button">Create desktop shortcut</button>

@@ -279,6 +279,12 @@
       case 'open-log':
         openActionLog();
         break;
+      case 'open-settings': // the tray's Set up / Settings item: the Setup screen while something is missing
+        if (setupState && setupState.ok === false && (setupState.steps || []).some((r) => INSTALL_STEPS.includes(r.step) && !r.ok)) openSetup(); else openSettings();
+        break;
+      case 'engine':
+        if (!setupEl.hidden && !setupRunning) refreshSetup();
+        break;
       case 'genui':
         onGenuiFrame(ev.frame);
         break;
@@ -795,13 +801,15 @@
       if (k === 'islandPosition' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', () => { o.setSettings({ islandPosition: el.value }).catch(() => {}); }); }
       if (k === 'browserMode' && !el.dataset.watch) { el.dataset.watch = '1'; el.addEventListener('change', async () => { await o.setSettings({ browserMode: el.value }); refreshExtension(); }); }
     }
+    syncAutonomySwitch(s.permissionMode || 'log');
   }
 
   // An unsaved Appearance pick is only a preview: every way of leaving Settings puts the saved theme back.
   function revertThemePreview() { applyTheme(savedTheme); }
   function openSettings() {
-    settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true;
+    settingsEl.hidden = false; actionlogEl.hidden = true; runsEl.hidden = true; goalsEl.hidden = true; setupEl.hidden = true;
     loadSettings().then(refreshAmbient); refreshExtension(); refreshProxy(); renderSettingsSchedules(); refreshLearned();
+    refreshSetup(); refreshShortcutHint();
   }
 
   // ------------------------------------------------------------ ambient sensing (Settings → Ambient, header)
@@ -951,7 +959,7 @@
     revertThemePreview();
   }
   $('mode-chip').addEventListener('click', openSettings);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !settingsEl.hidden && document.activeElement !== promptEl) closeSettings(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.activeElement !== promptEl) { if (!settingsEl.hidden) closeSettings(); if (!setupEl.hidden && !setupRunning) closeSetup(); } });
 
   // The composer chip is quiet and optional: it shows only while the O Link add-on is connected.
   async function refreshModeChip() {
@@ -1212,7 +1220,7 @@
     refreshAutonomy();
     $('settings-saved').textContent = mcpOk ? 'Saved. Applies to the next task.' : 'Saved, except MCP servers (fix the JSON)';
     setTimeout(() => { $('settings-saved').textContent = ''; }, 2500);
-    checkClaude();
+    refreshSetup();
     refreshExtension();
     refreshProxy();
     if (GenUI) syncGenuiSettings();
@@ -1299,23 +1307,153 @@
   $('btn-update-apply').addEventListener('click', () => o.applyUpdate());
   o.getUpdateState().then((u) => { if (u && u.state && u.state !== 'idle') showUpdate(u); }).catch(() => {});
 
-  // ------------------------------------------------------------ Claude Code check
+  // ------------------------------------------------------------ Set up O (first run, Settings → Set up O, tray)
+  // One checklist (main/setup.js status()), one button that runs the missing steps, live progress lines, and
+  // when everything is green the Full autonomy switch. The install steps decide whether the screen opens on
+  // its own at launch; engine and computer-use rows only matter once the screen is open.
+  const INSTALL_STEPS = ['node', 'claude', 'login', 'python', 'venv'];
+  const SETUP_DISMISSED = 'o-setup-dismissed';
+  let setupState = null;    // last status(): { ok, steps, running }
+  let setupRunning = false;
+  let summon = '';          // the summon shortcut as the OS shows it
 
-  async function checkClaude() {
-    let st;
-    try { st = await o.checkClaude(); } catch (err) { st = { installed: false, error: err.message }; }
-    if (st && st.installed && st.loggedIn === false) {
-      setupEl.hidden = false;
-      $('setup-detail').textContent = `Claude Code ${st.version || ''} is installed but not logged in. Run \`claude auth login\` in a terminal to log in.`;
-    } else if (st && st.installed) {
-      setupEl.hidden = true;
-      $('logo').title = `Claude Code ${st.version || ''}`.trim();
-    } else {
-      setupEl.hidden = false;
-      $('setup-detail').textContent = st && st.error ? `(${st.error})` : 'Claude Code CLI was not found.';
+  function setupRow(r, state) {
+    const row = document.createElement('div');
+    row.className = 'req ' + (state === 'running' ? 'running' : state === 'ok' || (!state && r.ok) ? 'ok' : state === 'fail' || (!state && r.ok === false) ? 'bad' : 'pending');
+    row.dataset.step = r.step;
+    row.setAttribute('role', 'listitem');
+    row.innerHTML = `<span class="dot"></span><span class="name">${escapeHtml(r.label || r.step)}</span>${r.detail ? `<span class="det">— ${escapeHtml(r.detail)}</span>` : ''}${!r.ok && r.fix && state !== 'running' ? `<span class="fix">${escapeHtml(r.fix)}</span>` : ''}`;
+    return row;
+  }
+
+  function renderSetup() {
+    const box = $('setup-steps'), line = $('setup-line'), run = $('btn-setup-run');
+    const st = setupState;
+    if (!st) { line.textContent = 'Checking…'; return; }
+    if (st.error && !(st.steps || []).length) { line.textContent = st.error; run.disabled = true; return; }
+    box.innerHTML = '';
+    for (const r of st.steps || []) box.appendChild(setupRow(r));
+    const missing = (st.steps || []).filter((r) => !r.ok);
+    const settled = !setupRunning;
+    run.disabled = !settled;
+    run.textContent = setupRunning ? 'Setting up…' : missing.length ? (missing.every((r) => r.step === 'computer' || r.step === 'engine') ? 'Finish setup' : 'Set up O') : 'Check again';
+    line.textContent = setupRunning ? 'This can take a few minutes.' : missing.length ? `${missing.length} of ${st.steps.length} to go` : 'Everything is ready.';
+    line.classList.toggle('ok', settled && !missing.length);
+    $('setup-note').textContent = missing.length ? 'Once, in one click' : 'Done';
+    const allGreen = settled && !missing.length;
+    $('setup-autonomy').hidden = !allGreen;
+    if (allGreen) o.getSettings().then((s) => { $('setup-fullAutonomy').checked = s && s.permissionMode === 'auto'; }).catch(() => {});
+    $('settings-setup-line').textContent = missing.length ? `${missing.length} step${missing.length === 1 ? '' : 's'} left: ${missing.map((r) => (r.label || r.step).toLowerCase()).join(', ')}` : 'Claude Code, Python and the engine are ready';
+    $('settings-setup-line').classList.toggle('ok', !missing.length);
+    $('settings-setup-line').classList.toggle('bad', !!missing.length);
+    $('btn-open-setup').textContent = missing.length ? 'Set up O' : 'Open';
+  }
+
+  async function refreshSetup() {
+    if (!has('setupStatus')) { setupState = { ok: false, steps: [], error: 'Setup is not available in this build.' }; renderSetup(); return setupState; }
+    try { setupState = await o.setupStatus(); } catch (err) { setupState = { ok: false, steps: [], error: err && err.message ? err.message : String(err) }; }
+    if (setupState && Array.isArray(setupState.steps)) {
+      const c = setupState.steps.find((r) => r.step === 'claude');
+      if (c && c.ok) $('logo').title = c.detail || 'Claude Code';
+    }
+    renderSetup();
+    return setupState;
+  }
+
+  function openSetup() {
+    closeSheets();
+    setupEl.hidden = false;
+    $('setup-progress').hidden = $('setup-progress').children.length === 0;
+    renderSetup();
+    refreshSetup();
+    if (summon) $('setup-shortcut').textContent = `Summon O any time with ${summon}.`;
+  }
+  function closeSetup() { setupEl.hidden = true; }
+
+  function setupProgress(ev) {
+    if (!ev || !ev.step) return;
+    const box = $('setup-progress');
+    box.hidden = false;
+    const li = document.createElement('li');
+    li.className = ev.state || '';
+    const label = (setupState && (setupState.steps || []).find((r) => r.step === ev.step) || {}).label || ev.step;
+    li.textContent = `${label}: ${ev.detail || ev.state}`;
+    // One line per running step (its detail is the command's last output line); ok and fail stay.
+    const prev = box.lastElementChild;
+    if (prev && prev.dataset.step === ev.step && prev.classList.contains('running') && ev.state === 'running') prev.replaceWith(li); else box.appendChild(li);
+    li.dataset.step = ev.step;
+    while (box.children.length > 60) box.firstElementChild.remove();
+    box.scrollTop = box.scrollHeight;
+    const row = $('setup-steps').querySelector(`.req[data-step="${ev.step}"]`);
+    if (row) {
+      const r = (setupState && (setupState.steps || []).find((x) => x.step === ev.step)) || { step: ev.step, label };
+      row.replaceWith(setupRow({ ...r, detail: ev.detail || r.detail, ok: ev.state === 'ok' ? true : ev.state === 'fail' ? false : r.ok }, ev.state));
     }
   }
-  $('btn-recheck').addEventListener('click', checkClaude);
+  if (has('onSetupProgress')) o.onSetupProgress(setupProgress);
+
+  async function runSetup() {
+    if (setupRunning || !has('setupRun')) return;
+    setupRunning = true;
+    $('setup-progress').innerHTML = '';
+    renderSetup();
+    let r;
+    try { r = await o.setupRun(''); } catch (err) { r = { ok: false, error: err && err.message }; }
+    setupRunning = false;
+    if (r && Array.isArray(r.steps)) setupState = r; else await refreshSetup();
+    if (r && r.error) setupProgress({ step: 'engine', state: 'fail', detail: r.error });
+    renderSetup();
+    refreshAutonomy();
+    refreshEngineLine();
+  }
+  $('btn-setup-run').addEventListener('click', runSetup);
+  $('btn-setup-done').addEventListener('click', () => { try { localStorage.setItem(SETUP_DISMISSED, '1'); } catch (_) {} closeSetup(); });
+  $('btn-open-setup').addEventListener('click', openSetup);
+  $('setup-fullAutonomy').addEventListener('change', async () => {
+    const on = $('setup-fullAutonomy').checked;
+    await o.setSettings({ permissionMode: on ? 'auto' : 'log' });
+    syncAutonomySwitch(on ? 'auto' : 'log');
+    refreshAutonomy();
+  });
+
+  // Full autonomy, as one switch: on = permissionMode 'auto', off = 'log'. The Advanced select keeps 'ask' reachable.
+  function syncAutonomySwitch(mode) {
+    const sel = $('set-permissionMode'), sw = $('set-fullAutonomy');
+    if (mode == null) mode = sel.value;
+    if (sel.value !== mode && [...sel.options].some((op) => op.value === mode)) sel.value = mode;
+    sw.checked = mode === 'auto';
+    $('setup-fullAutonomy').checked = mode === 'auto';
+  }
+  $('set-fullAutonomy').addEventListener('change', async () => {
+    const mode = $('set-fullAutonomy').checked ? 'auto' : 'log';
+    syncAutonomySwitch(mode);
+    await o.setSettings({ permissionMode: mode }); // applies at once, like the tray switch
+    refreshAutonomy();
+  });
+  $('set-permissionMode').addEventListener('change', () => syncAutonomySwitch($('set-permissionMode').value));
+
+  async function refreshShortcutHint() {
+    if (!has('summonLabel')) return;
+    try { summon = String(await o.summonLabel() || ''); } catch (_) { summon = ''; }
+    $('shortcut-hint').textContent = summon || '—';
+    $('shortcut-hint').hidden = !summon;
+    if (summon) $('setup-shortcut').textContent = `Summon O any time with ${summon}.`;
+  }
+
+  // The Settings → Engine status line, from the same checklist (no second probe).
+  function refreshEngineLine() {
+    const st = setupState && (setupState.steps || []).find((r) => r.step === 'engine');
+    if (st && $('engine-status').textContent === 'Not checked yet') $('engine-status').textContent = st.ok ? st.detail : `Engine: ${st.detail}`;
+  }
+
+  // First run: the screen opens on its own while an install step is missing (until Done is pressed once).
+  async function firstRunSetup() {
+    const st = await refreshSetup();
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(SETUP_DISMISSED) === '1'; } catch (_) {}
+    const missing = (st && st.steps || []).some((r) => INSTALL_STEPS.includes(r.step) && !r.ok);
+    if (missing && !dismissed) openSetup();
+  }
 
   // ------------------------------------------------------------ generative UI (surfaces in chat + Runs sheet)
 
@@ -2160,9 +2298,9 @@
   }
 
   // ------------------------------------------------------------ navigation (slim segmented bar)
-  const NAV = [['settings', 'btn-settings'], ['runs', 'btn-runs'], ['goals', 'btn-goals'], ['evolve', 'btn-evolve'], ['drawer', 'btn-chats']];
+  const NAV = [['settings', 'btn-settings'], ['setup', 'btn-settings'], ['runs', 'btn-runs'], ['goals', 'btn-goals'], ['evolve', 'btn-evolve'], ['drawer', 'btn-chats']];
   function closeSheets() {
-    closeSettings(); closeActionLog(); closeRuns(); closeGoals(); closeDrawer();
+    closeSettings(); closeSetup(); closeActionLog(); closeRuns(); closeGoals(); closeDrawer();
     const ev = $('evolve'); if (ev) ev.hidden = true;
   }
   function goHome() { closeSheets(); newTaskView(); }
@@ -2205,7 +2343,8 @@
   if (!hasInitialTheme) o.getSettings().then((s) => { savedTheme = s && THEMES.includes(s.theme) ? s.theme : 'glass'; applyTheme(savedTheme); }).catch(() => {});
   renderHome();
   syncButtons();
-  checkClaude();
+  refreshShortcutHint();
+  firstRunSetup();
   refreshExtension();
   window.addEventListener('focus', () => { if (!settingsEl.hidden) refreshExtension(); else refreshModeChip(); });
   refreshState();
