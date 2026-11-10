@@ -1357,8 +1357,17 @@ def create_app(
 
     @app.get("/computer/tree", dependencies=guarded)
     def computer_tree(window: str | None = None) -> dict[str, Any]:
-        backend = deps().cu_backend(0)
-        nodes = backend.tree(window) if window else backend.tree()
+        # A backend failure (an app without an accessibility tree, a COM error on Windows, a dead display) is
+        # reported as data, not as a 500: callers (native tab listing, the planner) read `error` and fall back.
+        try:
+            backend = deps().cu_backend(0)
+            nodes = backend.tree(window) if window else backend.tree()
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            tail = traceback.format_exc().strip().splitlines()[-3:]
+            log.record("error", "computer/tree failed", error=f"{type(exc).__name__}: {exc}", trace=tail)
+            raise HTTPException(status_code=502, detail={"error": f"{type(exc).__name__}: {exc}", "trace": tail}) from None
         return {"window": window, "nodes": [_node_dict(n) for n in (nodes or [])]}
 
     @app.post("/computer/find", dependencies=guarded)

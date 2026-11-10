@@ -42,6 +42,33 @@ except Exception as _e:  # noqa: BLE001
     uia = None  # type: ignore
     _IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
+import threading as _threading
+
+_COM_READY = _threading.local()
+
+
+def _com_init_this_thread() -> None:
+    """UI Automation is COM: every thread that touches it needs COM initialised once. The server answers
+    requests on a thread pool, so the import-time initialisation of the main thread does not cover them
+    (symptom: 'CoInitialize has not been called' -> HTTP 500 on /computer/tree). Idempotent per thread."""
+    if getattr(_COM_READY, "done", False) or uia is None:
+        return
+    try:
+        init = getattr(uia, "InitializeUIAutomationInCurrentThread", None)
+        if callable(init):
+            init()
+        else:  # older uiautomation: initialise COM directly
+            import comtypes  # type: ignore
+
+            try:
+                comtypes.CoInitializeEx(getattr(comtypes, "COINIT_APARTMENTTHREADED", 2))
+            except OSError:  # already initialised with another model on this thread: fine
+                pass
+    except Exception:  # noqa: BLE001 - a failure here surfaces on the first real call with its own error
+        pass
+    _COM_READY.done = True
+
+
 MAX_DEPTH = 40
 MAX_NODES = 20_000
 MAX_CHILDREN = 2000
@@ -223,6 +250,7 @@ class UiaBackend(CUBackend):
     def _require(self) -> None:
         if not self.available:
             raise BackendError(f"uia backend unavailable: {self.reason}")
+        _com_init_this_thread()
 
     # ------------------------------------------------------------------ coordinates
 
