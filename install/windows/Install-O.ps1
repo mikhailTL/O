@@ -18,6 +18,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# npm/claude ship as .ps1 shims that a Restricted execution policy refuses to run; allow scripts for this process
+# only (no admin needed) and call the .cmd shims directly.
+try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
+function Npm { & npm.cmd @args }
 
 function Say($s) { Write-Host "  $s" }
 function Ok($s) { Write-Host "  + $s" -ForegroundColor Green }
@@ -84,16 +88,16 @@ Ok "O $(git -C $Dir rev-parse --short HEAD)"
 Push-Location $Dir
 try {
   Say 'Installing app packages (npm)...'
-  npm install --no-audit --no-fund --loglevel=error | Out-Null
+  Npm install --no-audit --no-fund --loglevel=error | Out-Null
   if (-not (Test-Path 'node_modules\electron\dist\electron.exe')) { throw 'Electron did not install (node_modules\electron\dist\electron.exe is missing).' }
   Ok 'App packages'
 
-  if (-not (Has 'claude')) {
+  if (-not (Has 'claude') -and -not (Has 'claude.cmd')) {
     Say 'Installing Claude Code...'
-    npm install -g @anthropic-ai/claude-code --loglevel=error | Out-Null
+    Npm install -g @anthropic-ai/claude-code --loglevel=error | Out-Null
     Refresh-Path
   }
-  if (Has 'claude') { Ok "Claude Code $((claude --version 2>$null) | Select-Object -First 1)" } else { Warn 'Claude Code did not install; O will offer to install it in Setup.' }
+  if (Has 'claude.cmd') { Ok "Claude Code $((& claude.cmd --version 2>$null) | Select-Object -First 1)" } elseif (Has 'claude') { Ok 'Claude Code' } else { Warn 'Claude Code did not install; O will offer to install it in Setup.' }
 
   # ---- 4. engine -------------------------------------------------------------------------------------------
   $venvPy = 'engine\.venv\Scripts\python.exe'
