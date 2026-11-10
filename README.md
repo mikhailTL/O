@@ -330,6 +330,7 @@ Ruled out: rendering model-produced HTML or markdown outside the sandbox; `allow
 | Key | Meaning |
 |---|---|
 | `permissionMode` | `log` (default) / `ask` / `auto` |
+| `brain` | `claude` (default: Claude Code's own login) / `custom`: run the whole agent on any Anthropic-compatible `/v1/messages` endpoint — Ollama (`http://localhost:11434`), LiteLLM, vLLM, OpenRouter, your own proxy — with `brainBaseUrl`, `brainApiKey` (anything non-empty for endpoints without auth) and `brainModel` (e.g. `qwen3:32b`). O's rules (money, security) are unchanged; the model is yours |
 | `maxParallelTasks` | tasks that run at once, each its own Claude Code process, default 3 (1..8); more wait in a queue |
 | `theme` | panel look: `glass` (default, black translucent), `light`, `dark` |
 | `enginePython` | Python for the engine; empty = auto (`python3` / `python` / `py -3`) |

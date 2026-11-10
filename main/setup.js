@@ -208,7 +208,9 @@ class Setup extends EventEmitter {
     const claude = await this._claudeState();
     row('claude', !!claude.installed, claude.installed ? `Claude Code ${claude.version || ''}`.trim() : (claude.error || 'not found'),
       'Set up O installs it: npm install -g @anthropic-ai/claude-code');
-    if (!claude.installed) row('login', false, 'Install Claude Code first', 'Set up O opens a terminal with `claude auth login` once Claude Code is installed.');
+    const brain = (() => { try { return require('./agent').brainConfig(s); } catch (_) { return null; } })();
+    if (brain) row('login', true, `Custom brain: ${brain.model} at ${brain.baseUrl} (no Claude login needed)`);
+    else if (!claude.installed) row('login', false, 'Install Claude Code first', 'Set up O opens a terminal with `claude auth login` once Claude Code is installed.');
     else if (claude.loggedIn === false) row('login', false, 'Not signed in', 'Set up O opens a terminal with `claude auth login`; sign in there.');
     else row('login', true, claude.loggedIn === true ? 'Signed in' : 'Signed in (not verified by this CLI version)');
 

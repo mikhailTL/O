@@ -14,7 +14,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { TokenFilter } = require('./tokenfilter');
 const { buildSystemPrompt } = require('./promptmod');
-const { childEnv, resolveClaude, spawnClaude, killTree } = require('./agent');
+const { childEnv, resolveClaude, spawnClaude, killTree, brainEnv, brainConfig } = require('./agent');
 
 const MODELS = ['o-ai', 'o-ai-code'];
 const MAX_TURNS = 40;
@@ -68,7 +68,8 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
       concurrency: Math.max(1, Math.min(16, Number(s.proxyConcurrency) || 4)),
       mode: s.proxyMode === 'chat' ? 'chat' : 'code',
       claudePath: resolveClaude(s.claudePath || 'claude'),
-      model: s.model || '',
+      model: (brainConfig(s) || {}).model || s.model || '',
+      brainEnv: brainEnv(s),
       cwd: s.cwd && fs.existsSync(s.cwd) ? s.cwd : require('os').homedir(),
     };
   };
@@ -155,8 +156,8 @@ function createProxy({ getSettings, actionLog, getEngine, agent, spawnImpl, user
         let child;
         try {
           child = spawnImpl
-            ? spawnImpl(s.claudePath, args, { cwd: s.cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
-            : spawnClaude(s.claudePath, args, { cwd: s.cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+            ? spawnImpl(s.claudePath, args, { cwd: s.cwd, env: childEnv(s.brainEnv), stdio: ['pipe', 'pipe', 'pipe'] })
+            : spawnClaude(s.claudePath, args, { cwd: s.cwd, env: childEnv(s.brainEnv), stdio: ['pipe', 'pipe', 'pipe'] });
         } catch (e) { return reject(e); }
         children.add(child);
         let buf = '', stderr = '', result = null, done = false;

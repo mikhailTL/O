@@ -247,6 +247,37 @@ function installedSkillServers(userDataDir) {
   return out;
 }
 
+// ---------------------------------------------------------------- the brain
+/**
+ * settings.brain === 'custom' points Claude Code at another Anthropic-compatible Messages endpoint (Ollama's
+ * /v1/messages, LiteLLM, vLLM, OpenRouter, a proxy): the agent then runs on that model, below the Claude layer.
+ * @returns {{baseUrl:string, apiKey:string, model:string}|null} null = Claude Code's own login (the default)
+ */
+function brainConfig(s) {
+  if (!s || s.brain !== 'custom') return null;
+  const baseUrl = String(s.brainBaseUrl || '').trim().replace(/\/+$/, '');
+  const model = String(s.brainModel || '').trim();
+  if (!/^https?:\/\//i.test(baseUrl) || !model) return null;
+  return { baseUrl, apiKey: String(s.brainApiKey || '').trim() || 'none', model };
+}
+/** Env that routes a Claude Code process to the custom brain (empty for the default). */
+function brainEnv(s) {
+  const b = brainConfig(s);
+  if (!b) return {};
+  return {
+    ANTHROPIC_BASE_URL: b.baseUrl,
+    ANTHROPIC_AUTH_TOKEN: b.apiKey,
+    ANTHROPIC_API_KEY: '', // an inherited key would be sent to the custom endpoint
+    ANTHROPIC_MODEL: b.model,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: b.model,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: b.model,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: b.model,
+    ANTHROPIC_SMALL_FAST_MODEL: b.model,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    DISABLE_PROMPT_CACHING: '1',
+  };
+}
+
 // ---------------------------------------------------------------- model routing
 
 const SIMPLE_VERB = /^(?:open|go|visit|launch|start|quit|close|search|google|show|check|play|pause|resume|mute|unmute|what|what's|whats|who|when|where|define|translate|convert|calculate|turn|set|read|look)\b/i;
@@ -257,6 +288,8 @@ const MULTI_STEP = /\b(?:and|then|after|afterwards|also|plus|compare|research|an
  * settings.model for the rest. A cheap heuristic, no model call. @returns {{model:string, route:'fast'|'main', reason:string}}
  */
 function routeModel(prompt, s, { resume = false, goal = false } = {}) {
+  const b = brainConfig(s);
+  if (b) return { model: b.model, route: 'main', reason: `custom brain (${b.baseUrl})` };
   const main = String((s && s.model) || '');
   const raw = s && s.fastModel;
   const fast = raw == null ? DEFAULT_FAST_MODEL : String(raw).trim();
@@ -489,6 +522,10 @@ class OAgent extends EventEmitter {
       cwd: s.cwd && fs.existsSync(s.cwd) ? s.cwd : os.homedir(),
       claudePath: resolveClaude(s.claudePath || 'claude'),
       model: s.model || '',
+      brain: s.brain === 'custom' ? 'custom' : 'claude',
+      brainBaseUrl: s.brainBaseUrl || '',
+      brainApiKey: s.brainApiKey || '',
+      brainModel: s.brainModel || '',
       browser: s.browser || '',
       browserPath: s.browserPath || '',
       browserMode: BROWSER_MODES.includes(s.browserMode) ? s.browserMode : 'auto',
@@ -855,7 +892,7 @@ class OAgent extends EventEmitter {
   }
 
   _spawnChild(s, args) {
-    return spawnClaude(s.claudePath, args, { cwd: s.cwd, env: agentEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    return spawnClaude(s.claudePath, args, { cwd: s.cwd, env: agentEnv(brainEnv(s)), stdio: ['pipe', 'pipe', 'pipe'] });
   }
 
   /**
@@ -1174,4 +1211,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { INTERNAL_PAGES, routeModel, findStagehand, readsBrowserData, agentEnv, TOOL_SEARCH_ENV, DEFAULT_FAST_MODEL, MAX_TURNS_FAST, STAGEHAND_READ_TOOLS, STAGEHAND_ACT_TOOLS, STAGEHAND_MCP, browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { INTERNAL_PAGES, routeModel, brainConfig, brainEnv, findStagehand, readsBrowserData, agentEnv, TOOL_SEARCH_ENV, DEFAULT_FAST_MODEL, MAX_TURNS_FAST, STAGEHAND_READ_TOOLS, STAGEHAND_ACT_TOOLS, STAGEHAND_MCP, browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };

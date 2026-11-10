@@ -19,6 +19,13 @@ const DEFAULTS = Object.freeze({
   cwd: os.homedir(),
   claudePath: 'claude',
   model: '',
+  // Brain: which model runs tasks. 'claude' = Claude Code's own login (default). 'custom' = any Anthropic-compatible
+  // Messages API endpoint (Ollama, LiteLLM, vLLM, OpenRouter, a self-hosted proxy): Claude Code is pointed at
+  // brainBaseUrl with brainApiKey and brainModel, so the whole agent runs on that model instead.
+  brain: 'claude', // 'claude' | 'custom'
+  brainBaseUrl: '', // e.g. http://localhost:11434 (Ollama) or https://openrouter.ai/api
+  brainApiKey: '', // local secret; never logged ('ollama' or any non-empty value for endpoints without auth)
+  brainModel: '', // e.g. qwen3:32b, llama3.3:70b, deepseek-chat
   fastModel: 'haiku', // model for short single-verb tasks (main/agent.js routeModel); '' = always use `model`
   fastPath: true, // zero-LLM fast path for "open <site>", "launch <app>", "search <query>" (main/fastpath.js)
   stagehand: true, // wire the Stagehand MCP server (web_act / web_extract / web_observe) when the package is installed
@@ -253,6 +260,10 @@ function sanitize(obj) {
   if (typeof obj.mcpServers === 'string') { try { const j = JSON.parse(obj.mcpServers || '{}'); if (j && typeof j === 'object' && !Array.isArray(j)) out.mcpServers = JSON.stringify(j); } catch (_) { /* keep the previous value */ } }
   if (['e2b', 'docker', 'local'].includes(obj.highRiskSandbox)) out.highRiskSandbox = obj.highRiskSandbox;
   if (typeof obj.e2bApiKey === 'string') out.e2bApiKey = obj.e2bApiKey.trim();
+  if (obj.brain === 'claude' || obj.brain === 'custom') out.brain = obj.brain;
+  if (typeof obj.brainBaseUrl === 'string') { const u = obj.brainBaseUrl.trim().replace(/\/+$/, ''); if (u === '' || /^https?:\/\/[^\s]+$/i.test(u)) out.brainBaseUrl = u; }
+  if (typeof obj.brainApiKey === 'string') out.brainApiKey = obj.brainApiKey.trim();
+  if (typeof obj.brainModel === 'string') out.brainModel = obj.brainModel.trim();
   if (typeof obj.dockerImage === 'string' && obj.dockerImage.trim()) out.dockerImage = obj.dockerImage.trim();
   if (typeof obj.dockerNetwork === 'string' && /^[a-z0-9_.-]+$/i.test(obj.dockerNetwork.trim())) out.dockerNetwork = obj.dockerNetwork.trim();
   if (typeof obj.swarmEnabled === 'boolean') out.swarmEnabled = obj.swarmEnabled;
