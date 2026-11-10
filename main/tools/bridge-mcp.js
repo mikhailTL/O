@@ -25,6 +25,8 @@
 //   swarm_run          objective → swarm job; blocks until done (POST /swarm/run + /jobs poll).
 //   web_run            headless browser task on the isolated display; blocks until done (POST /web/run + /jobs poll).
 //   ui_emit            push A2UI GenUI frames to O's panel (POST /ui on the app, same token as the log).
+//   ui_morph           ask O's own glass UI to take a mode: dot | pill | bar | card | sheet (POST /ui, surface job:o-ui).
+//   ui_dock            move O's UI to an edge: top | bottom (the Island), left | right (the sheet as a column), auto.
 //   schedule_task      save a prompt that starts a task at a time or on repeat (POST /schedule on the app).
 //   list_schedules     the saved schedules.
 //   cancel_schedule    remove one schedule by id.
@@ -512,6 +514,18 @@ const TOOLS = [
     inputSchema: UI_EMIT_SCHEMA,
   },
   {
+    name: 'ui_morph',
+    description: 'Change the shape of O\'s own glass UI on the user\'s screen for a while: dot (the ring only, out of the way), pill (ring + one status line), ' +
+      'bar (the command bar), card (the bar with one result or approval card), sheet (the full panel). Use dot when the user is reading, presenting or ' +
+      'watching; pill to show live progress; card when a result needs a look; sheet only when the user asked to see more. The user\'s own choices and approvals override it.',
+    inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['dot', 'pill', 'bar', 'card', 'sheet'] }, reason: { type: 'string', maxLength: 200, description: 'One short clause, shown in the action log.' } }, required: ['mode'], additionalProperties: false },
+  },
+  {
+    name: 'ui_dock',
+    description: 'Move O\'s UI to a screen edge: top or bottom put the Island there (offset = px along the edge from centre); left or right dock the sheet as a slim column on that side; auto undoes both.',
+    inputSchema: { type: 'object', properties: { edge: { type: 'string', enum: ['top', 'bottom', 'left', 'right', 'auto'] }, offset: { type: 'integer', minimum: -2000, maximum: 2000 } }, required: ['edge'], additionalProperties: false },
+  },
+  {
     name: 'schedule_task',
     description: 'Save a task that O starts on its own at a time or on repeat ("every Monday at 8, summarize my inbox"). ' +
       'Returns the saved schedule with its id and next run. The user sees it in O\'s task list and Settings.',
@@ -795,6 +809,22 @@ async function uiEmit(args) {
     return textResult(text, accepted === 0);
   } catch (e) {
     return textResult('Could not send the UI frames: ' + e.message, true);
+  }
+}
+
+/**
+ * ui_morph / ui_dock: a command to O's own UI. It rides the GenUI channel (POST /ui) as one frame on the reserved
+ * surface `job:o-ui` carrying `ui: {op, ...}`; main.js recognises the surface and applies it instead of storing a card.
+ */
+async function uiCommand(op, payload, label) {
+  if (!UI_URL) return textResult('O\'s UI is not reachable from this bridge.', true);
+  const frame = { a2ui: '1', type: 'data', surface: 'job:o-ui', ui: { op, ...payload } };
+  try {
+    const r = await request('POST', UI_URL, { frames: [frame] }, LOG_TOKEN, 10000);
+    if (!r || Number(r.accepted) < 1) return textResult(`${label}: O did not take the command.`, true);
+    return textResult(`${label}: ${op === 'morph' ? 'now ' + payload.mode : 'docked ' + payload.edge}` + (op === 'morph' ? ' (the user\'s own choices override it; context takes over again after ~20 s)' : ''));
+  } catch (e) {
+    return textResult(`${label} failed: ${e.message}`, true);
   }
 }
 
@@ -1223,6 +1253,17 @@ async function callTool(name, args) {
       return runJob('/web/run', args.url ? { task: args.task, url: args.url } : { task: args.task }, 'web_run');
     case 'ui_emit':
       return uiEmit(args);
+    case 'ui_morph': {
+      const mode = args && typeof args.mode === 'string' ? args.mode : '';
+      if (!['dot', 'pill', 'bar', 'card', 'sheet'].includes(mode)) return textResult('ui_morph needs mode: dot | pill | bar | card | sheet.', true);
+      return uiCommand('morph', { mode, reason: String((args && args.reason) || '').slice(0, 200) }, 'ui_morph');
+    }
+    case 'ui_dock': {
+      const edge = args && typeof args.edge === 'string' ? args.edge : '';
+      if (!['top', 'bottom', 'left', 'right', 'auto'].includes(edge)) return textResult('ui_dock needs edge: top | bottom | left | right | auto.', true);
+      const offset = Number.isFinite(Number(args && args.offset)) ? Math.max(-2000, Math.min(2000, Math.round(Number(args.offset)))) : 0;
+      return uiCommand('dock', { edge, offset }, 'ui_dock');
+    }
     case 'schedule_task': {
       const problem = scheduleProblem(args);
       if (problem) return textResult('schedule_task: ' + problem, true);

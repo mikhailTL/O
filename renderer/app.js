@@ -58,6 +58,19 @@
   let pendingStart = null; // { title, at }: a prompt just sent, until the task list shows it
   let proposals = { at: 0, list: [] };
   let suggestions = { at: 0, list: [] };
+  // The Island's mode (renderer/adapt.js): dot | pill | bar | card | sheet. Main decides from context (the
+  // frontmost window, the cursor, tasks, approvals) and from what O asks through ui_morph; the user's clicks
+  // and the shortcut open the bar directly. The window grows or shrinks to fit in main (a bounds tween).
+  const A = window.OAdapt;
+  let mode = 'pill';
+  let cardOnly = false; // card mode: the bar with one card, never focused
+  // The user's locked mode and sheet dock live here (localStorage, per machine) and are told to main at boot.
+  const prefs = (() => { try { return JSON.parse(localStorage.getItem('o.island.prefs') || '{}') || {}; } catch (_) { return {}; } })();
+  function savePrefs(next) {
+    Object.assign(prefs, next || {});
+    try { localStorage.setItem('o.island.prefs', JSON.stringify(prefs)); } catch (_) {}
+    if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto', dock: prefs.dock || 'none' });
+  }
 
   const clean = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
   const clip = (s, n) => { s = clean(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -146,12 +159,12 @@
     measure.innerHTML = html;
     lastText = { textW: Math.min(330, measure.offsetWidth), meta: !!s.meta };
     lastTone = s.tone;
-    let w = islandWidth();
+    let w = effectiveWidth();
     // A notch wing too narrow for "Key · value": the key alone (the tooltip has the whole line).
     if (LY.mode === 'notch' && s.v) {
       measure.innerHTML = lineHtml(s.k, '');
       const kW = measure.offsetWidth;
-      if (lineRoom(w) - kW < 56) { html = lineHtml(s.k, ''); lastText.textW = kW; w = islandWidth(); }
+      if (lineRoom(w) - kW < 56) { html = lineHtml(s.k, ''); lastText.textW = kW; w = effectiveWidth(); }
     }
     setIslandWidth(w);
     lineEl.innerHTML = html;
@@ -166,6 +179,17 @@
   let lastText = { textW: 0, meta: false };
   let lastTone = 'idle';
   let lastW = 0;
+
+  /** The ring alone: the caps overlap into a circle (notch: the notch plus the narrowest wings). */
+  function dotWidth() {
+    if (LY.mode === 'notch') return LY.notchW + 2 * G.C.RING_ONLY_WING;
+    return LY.ih;
+  }
+
+  /** The capsule width the mode wants: the ring alone in dot/sheet, the line in pill (and under the bar). */
+  function effectiveWidth() {
+    return (mode === 'dot' || mode === 'sheet') ? dotWidth() : islandWidth();
+  }
 
   /** The capsule width for the current line and layout. */
   function islandWidth() {
@@ -276,6 +300,13 @@
       case 'island':
         if (ev.open) open(); else close();
         break;
+      case 'island-mode':
+        applyAdapt(ev);
+        break;
+      case 'island-prefs':
+        // the right-click menu changed the lock or the dock: remember it here
+        savePrefs({ lock: ev.lock || prefs.lock || 'auto', dock: ev.dock || prefs.dock || 'none' });
+        break;
       case 'island-layout':
         applyLayout(ev.layout);
         break;
@@ -361,6 +392,11 @@
       out.push({ key: 'hint', kind: 'hint', passive: true, t1: active ? `Nothing needs you. O is working on ${active} goal${active === 1 ? '' : 's'}.` : 'Nothing needs you right now.',
         tag: ['↵', 'runs a task', shownKey, 'opens the panel'] });
     }
+    if (cardOnly) {
+      // card mode: the one thing that waits for the person (an approval, a checkpoint, setup), else the newest task
+      const pick = out.find((x) => x.kind === 'perm' || x.kind === 'checkpoint' || x.kind === 'setup') || out.find((x) => x.kind === 'task') || out[0];
+      return pick ? [pick] : [];
+    }
     return out.slice(0, MAX_BUBBLES);
   }
 
@@ -438,7 +474,7 @@
   function syncBubbles(first) {
     const want = isOpen ? items() : [];
     const keys = new Set(want.map((x) => x.key));
-    const step = 50;
+    const step = 30; // rows stagger in by 30 ms
     // gone
     let gone = 0;
     for (const [key, rec] of live) {
@@ -613,31 +649,63 @@
   let opened = false; // the opening morph has finished laying out bubbles
   let closeTimer = null;
 
-  function open() {
-    if (isOpen) { input.focus(); return; }
+  /** Open the bar (focused, the user asked) or, with { card: true }, the card: the bar with one card, unfocused. */
+  function open(opts) {
+    const card = !!(opts && opts.card);
+    if (isOpen) {
+      if (cardOnly && !card) { cardOnly = false; setMode('bar'); input.focus(); syncBubbles(); if (typeof bridge.islandOpen === 'function') bridge.islandOpen(); }
+      else if (!cardOnly && !card) input.focus();
+      return;
+    }
     isOpen = true;
     opened = false;
+    cardOnly = card;
     clearTimeout(closeTimer);
-    if (typeof bridge.islandOpen === 'function') bridge.islandOpen();
+    if (typeof bridge.islandOpen === 'function' && !card) bridge.islandOpen();
+    setMode(card ? 'card' : 'bar');
     setIgnore(false);
     for (const rec of live.values()) { rec.el.remove(); rec.blob.remove(); }
     live.clear();
     sel = -1;
     body.classList.add('open', 'ext');
     body.classList.remove('faded');
-    L.bud([gSide, side], { dx: -84, delay: 90, duration: 300, scale: 0.9, fade: [side] });
-    requestAnimationFrame(() => input.focus());
-    setTimeout(() => input.focus(), 60);
+    L.bud([gSide, side], { dx: -84, delay: 90, duration: 260, scale: 0.9, fade: [side] });
+    if (!card) { requestAnimationFrame(() => input.focus()); setTimeout(() => input.focus(), 60); }
     setTimeout(() => { if (isOpen) { opened = true; syncBubbles(true); } }, 110);
-    refreshSuggestions().then(() => { if (isOpen && opened) syncBubbles(); });
+    if (!card) refreshSuggestions().then(() => { if (isOpen && opened) syncBubbles(); });
   }
 
-  function close() {
+  /** The mode class on <body> (dot | pill | bar | card | sheet); the capsule re-measures for it. */
+  function setMode(m) {
+    if (!A || !A.MODES.includes(m) || m === mode) return;
+    mode = m;
+    body.dataset.mode = m;
+    for (const k of A.MODES) body.classList.toggle(k, k === m);
+    lastKey = '';
+    renderIsland();
+    setIslandWidth(effectiveWidth());
+  }
+
+  /** Main's decision (renderer/adapt.js): mode, opacity and whether clicks pass through. */
+  function applyAdapt(ev) {
+    const m = A && A.cleanMode(ev && ev.mode);
+    if (!m) return;
+    root.style.setProperty('--adapt-opacity', String(typeof ev.opacity === 'number' ? Math.max(0.2, Math.min(1, ev.opacity)) : 1));
+    if (m === 'bar') { if (!isOpen || cardOnly) open(); return; }
+    if (m === 'card') { if (!isOpen) open({ card: true }); else if (!cardOnly) { /* the user has the bar: keep it */ } return; }
+    if (isOpen) { if (cardOnly || m === 'dot' || m === 'sheet') close({ keepMode: m }); else return; }
+    setMode(m);
+  }
+
+  function close(opts) {
     if (!isOpen) return;
+    const wasCard = cardOnly;
     isOpen = false;
     opened = false;
+    cardOnly = false;
     clearTimeout(changeTimer); changeTimer = null;
-    if (typeof bridge.islandClose === 'function') bridge.islandClose();
+    if (typeof bridge.islandClose === 'function' && !wasCard) bridge.islandClose();
+    setMode((opts && A && A.cleanMode(opts.keepMode)) || 'pill');
     const recs = [...live.values()].sort((a, b) => b.slot - a.slot);
     live.clear();
     recs.forEach(retire);
@@ -646,7 +714,7 @@
         .then(() => { rec.el.remove(); rec.blob.remove(); });
     });
     L.retract([gSide, side], { dx: -84, duration: 200, scale: 0.9, fade: [side, gSide] });
-    input.blur();
+    if (!wasCard) input.blur();
     closeTimer = setTimeout(() => body.classList.remove('open'), recs.length ? 110 : 40);
     setTimeout(() => {
       if (isOpen) return;
@@ -658,10 +726,12 @@
   }
 
   island.addEventListener('click', () => open());
+  bar.addEventListener('mousedown', () => { if (isOpen && cardOnly) open(); });
   island.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     if (typeof bridge.petMenu === 'function') bridge.petMenu(); else open();
   });
+  bar.addEventListener('contextmenu', (e) => { e.preventDefault(); if (typeof bridge.petMenu === 'function') bridge.petMenu(); });
   side.addEventListener('click', () => submitToPanel());
   input.addEventListener('input', () => {
     bar.classList.toggle('has-text', !!clean(input.value));
@@ -702,11 +772,22 @@
     const t = e.target;
     const solid = t !== stage && t !== bubblesEl && t !== document.body && t !== document.documentElement && !!t.closest && !!t.closest('#island, #bar, #side, .bubble');
     setIgnore(!solid);
+    setHover(solid);
   });
+  window.addEventListener('mouseleave', () => setHover(false));
+  let hovering = false;
+  function setHover(v) {
+    if (v === hovering || typeof bridge.islandHover !== 'function') return;
+    hovering = v;
+    bridge.islandHover(v);
+  }
   setIgnore(true);
 
   applyLayout(LY);
-  setIslandWidth(islandWidth());
+  body.dataset.mode = mode;
+  body.classList.add(mode);
+  setIslandWidth(effectiveWidth());
   renderIsland();
+  if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto', dock: prefs.dock || 'none' });
   boot();
 })();

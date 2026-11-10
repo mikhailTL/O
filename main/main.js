@@ -37,8 +37,13 @@ const PANEL_H = 660;
 const ASSETS = path.join(__dirname, '..', 'assets');
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const IslandGeom = require(path.join(RENDERER, 'islandgeom.js')); // shared with the Island renderer
+const Adapt = require(path.join(RENDERER, 'adapt.js')); // the adaptive rules (modes, placement, the sheet), shared too
 const ISLAND_EXPANDED = { width: IslandGeom.C.EXP_W, height: IslandGeom.C.EXP_H };
 const ISLAND_PROX_MS = 100; // proximity poll (10 Hz), only while the compact Island is on screen
+const CONTEXT_MS = 1200;    // frontmost-window poll: what the user is working in decides the Island's mode and spot
+const BOUNDS_TWEEN_MS = 220; // the window grows/shrinks/slides over this long (ease-out), in step with the glass morph
+const UI_SURFACE = 'job:o-ui'; // GenUI frames on this surface are ui_morph / ui_dock commands from O, not cards
+const UI_REQUEST_MS = 20 * 1000; // how long O's own ui_morph holds before context takes over again
 
 if (process.platform === 'linux') {
   // Transparent windows on Linux need these.
@@ -71,6 +76,26 @@ let islandRevealed = false; // the user dwelt on the capsule: fully shown and cl
 let islandDwellSince = 0;
 let islandProxTimer = null;
 let rendererIgnore = true; // what the renderer's own hit test wants (macOS/Windows click-through)
+// ---- the adaptive Island (renderer/adapt.js)
+let islandMode = 'pill';        // dot | pill | bar | card | sheet: what the renderer is showing
+let islandLock = 'auto';        // the user's lock from the right-click menu: auto | dot | pill
+let sheetDock = 'none';         // the sheet as a column: none | left | right
+let islandHover = false;        // the cursor is on the glass (cancels click-through)
+let islandClickThrough = false; // the dot over a fullscreen app lets clicks through
+let islandOffset = { dx: 0, dy: 0 }; // where context moved the capsule from its home spot (float layouts)
+let islandEdge = null;          // ui_dock top|bottom: a session override of the position setting
+let frontWin = null;            // { app, title, bounds } of the frontmost window, from the OS
+let frontKey = '';              // last frontWin as a string (debounce)
+let contextTimer = null;
+let contextBusy = false;
+let uiRequest = null;           // { mode, until, reason }: what O asked for through ui_morph
+let lastAdaptKey = '';
+let boundsTween = null;         // the running window tween { timer }
+let sheetWant = { width: 0, height: 0 }; // what the panel's content asked for (sheet:fit)
+let sheetSaved = {};            // display id -> { x, y, width, height, dock } the user dragged the sheet to
+let sheetMoveTimer = null;
+let sheetPlacing = false;       // true while main itself moves the sheet (the 'move' handler ignores those)
+let panelHideTimer = null;
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
 let updater = null;
@@ -164,6 +189,13 @@ function sendTheme(theme) {
 function onGenuiFrame(frame) {
   if (!frame || typeof frame !== 'object' || typeof frame.surface !== 'string') return;
   const surface = frame.surface;
+  if (surface === UI_SURFACE && frame.ui && typeof frame.ui === 'object') {
+    // ui_morph / ui_dock from the bridge (main/tools/bridge-mcp.js) ride the GenUI channel: a command, not a card.
+    const u = frame.ui;
+    if (u.op === 'morph') uiMorph(u.mode, u.reason, 'bridge');
+    else if (u.op === 'dock') uiDock(u.edge, u.offset, 'bridge');
+    return;
+  }
   let s = genuiStore.get(surface);
   if (!s) {
     s = { frames: [], title: '', ended: false, ok: null };
@@ -372,7 +404,7 @@ function computeIslandLayout() {
   // O_ISLAND_NOTCH=1|0 forces the notch layout on or off (Electron exposes no notch inset to detect it with).
   const env = process.env.O_ISLAND_NOTCH;
   const forceNotch = env === '1' ? true : env === '0' ? false : undefined;
-  return IslandGeom.layout({ platform: process.platform, display: screen.getPrimaryDisplay(), position: s.islandPosition, notchWidth: s.islandNotchWidth, menuSafeLeft: s.islandMenuSafeLeft, menuSafeRight: s.islandMenuSafeRight, forceNotch });
+  return IslandGeom.layout({ platform: process.platform, display: screen.getPrimaryDisplay(), position: islandEdge || s.islandPosition, notchWidth: s.islandNotchWidth, menuSafeLeft: s.islandMenuSafeLeft, menuSafeRight: s.islandMenuSafeRight, forceNotch });
 }
 
 function currentIslandLayout() {
@@ -380,10 +412,47 @@ function currentIslandLayout() {
   return islandL;
 }
 
-/** Compact or expanded Island bounds: in the macOS menu bar, above the taskbar, or where the setting says. */
+/** The Island window's full footprint: in the macOS menu bar, above the taskbar, or where the setting says. */
 function islandBounds(expanded) {
   const L = currentIslandLayout();
   return expanded ? IslandGeom.expandedBounds(L) : { ...L.compact };
+}
+
+/**
+ * The window bounds for the current mode: the footprint's width and x, shifted by what context asked
+ * (islandOffset), and only as tall as the mode needs (top-anchored, or bottom-anchored for 'up' layouts), so
+ * the capsule never moves when the window grows into the bar or shrinks to the dot.
+ */
+function islandModeBounds(mode) {
+  const L = currentIslandLayout();
+  const full = L.compact;
+  const h = Adapt.modeHeight(L, mode || islandMode, { barH: 56, bubH: 48, firstGap: 18 });
+  const y = L.dir === 'up' ? full.y + full.height - h : full.y;
+  const off = L.mode === 'float' ? islandOffset : { dx: 0, dy: 0 };
+  return { x: Math.round(full.x + off.dx), y: Math.round(y + off.dy), width: full.width, height: h };
+}
+
+/** Put the Island window where its mode wants it; animated as a short ease-out tween when asked. */
+function placeIslandWindow({ animate = true } = {}) {
+  if (!islandWin || islandWin.isDestroyed()) return;
+  const target = islandModeBounds();
+  const cur = islandWin.getBounds();
+  if (cur.x === target.x && cur.y === target.y && cur.width === target.width && cur.height === target.height) return;
+  if (boundsTween) { clearInterval(boundsTween.timer); boundsTween = null; }
+  if (!animate) { islandWin.setBounds(target); return; }
+  if (process.platform === 'darwin') { try { islandWin.setBounds(target, true); return; } catch (_) { islandWin.setBounds(target); return; } }
+  const from = { ...cur };
+  const t0 = Date.now();
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  const timer = setInterval(() => {
+    if (!islandWin || islandWin.isDestroyed()) { clearInterval(timer); boundsTween = null; return; }
+    const k = Math.min(1, (Date.now() - t0) / BOUNDS_TWEEN_MS);
+    const e = ease(k);
+    const lerp = (a, b) => Math.round(a + (b - a) * e);
+    try { islandWin.setBounds({ x: lerp(from.x, target.x), y: lerp(from.y, target.y), width: lerp(from.width, target.width), height: lerp(from.height, target.height) }); } catch (_) {}
+    if (k >= 1) { clearInterval(timer); boundsTween = null; }
+  }, 16);
+  boundsTween = { timer };
 }
 
 /** macOS menu bar / notch: above the menu bar (NSStatusWindowLevel); everywhere else above other windows. */
@@ -400,7 +469,8 @@ function relayoutIsland() {
   const was = islandL;
   islandL = computeIslandLayout();
   sendToIsland({ type: 'island-layout', layout: islandL });
-  islandWin.setBounds(islandBounds(commandBarOpen));
+  islandOffset = { dx: 0, dy: 0 };
+  placeIslandWindow({ animate: false });
   applyIslandShape();
   applyIslandLevel();
   if (islandL.hidden && !commandBarOpen) { if (islandWin.isVisible()) islandWin.hide(); }
@@ -441,26 +511,25 @@ function syncIslandProximity() {
   if (!want) { islandDwellSince = 0; islandRevealed = false; setIslandFaded(false); }
 }
 
-/** The capsule in screen coordinates. */
+/** The capsule in screen coordinates (the shape is footprint-relative; 'up' layouts hang from the bottom). */
 function islandCapsuleScreenRect() {
   const L = currentIslandLayout();
   const b = islandWin.getBounds();
   const r = islandShape || IslandGeom.capsuleRect(L, L.minW);
-  return { x: b.x + r.x, y: b.y + r.y, width: r.width, height: r.height };
+  const y = L.dir === 'up' ? b.y + b.height - (L.compact.height - r.y) : b.y + r.y;
+  return { x: b.x + r.x, y, width: r.width, height: r.height };
 }
 
+let cursorDist = Infinity;
 function islandProximityTick() {
   if (!islandCompactShown()) { syncIslandProximity(); return; }
   let p;
   try { p = screen.getCursorScreenPoint(); } catch (_) { return; }
   const d = IslandGeom.distanceToRect(p, islandCapsuleScreenRect());
-  if (d > IslandGeom.C.FADE_NEAR) { islandDwellSince = 0; islandRevealed = false; setIslandFaded(false); return; }
-  if (islandAttention) { setIslandFaded(false); return; }
-  if (d === 0) {
-    if (!islandDwellSince) islandDwellSince = Date.now();
-    if (Date.now() - islandDwellSince >= IslandGeom.C.DWELL_MS) islandRevealed = true;
-  } else if (!islandRevealed) islandDwellSince = 0;
-  setIslandFaded(!islandRevealed);
+  // The capsule no longer fades away from the cursor: coming near it grows the dot into the pill (adapt.js).
+  setIslandFaded(false);
+  const near = d < Adapt.C.NEAR_PX;
+  if (near !== (cursorDist < Adapt.C.NEAR_PX)) { cursorDist = d; applyAdapt('cursor'); } else cursorDist = d;
 }
 
 function setIslandFaded(v) {
@@ -473,7 +542,7 @@ function setIslandFaded(v) {
 /** Click-through: faded always passes clicks on; otherwise the renderer's hit test decides (macOS/Windows). */
 function applyIslandIgnore() {
   if (!islandWin || islandWin.isDestroyed()) return;
-  const faded = islandFaded && !commandBarOpen;
+  const faded = (islandFaded || islandClickThrough) && !commandBarOpen;
   if (process.platform === 'linux') {
     // No forwarded mouse moves on Linux: faded = an empty input region, otherwise the capsule shape.
     try { islandWin.setIgnoreMouseEvents(faded); } catch (_) {}
@@ -547,9 +616,11 @@ function createIslandWindow() {
     if (!currentIslandLayout().hidden || commandBarOpen) {
       islandWin.showInactive();
       // macOS may constrain a window as it is first ordered in: put it back in the menu bar strip.
-      if (process.platform === 'darwin') islandWin.setBounds(islandBounds(commandBarOpen));
+      if (process.platform === 'darwin') placeIslandWindow({ animate: false });
     }
     syncIslandProximity();
+    startContextPoll();
+    applyAdapt('ready');
   });
   applyIslandLevel(); // Windows: 'screen-saver' (float mode), the highest level, so the capsule stays over fullscreen apps where DWM allows
   // Not on fullscreen Spaces: a fullscreen app (video, game, presentation) has the screen to itself.
@@ -558,7 +629,7 @@ function createIslandWindow() {
   applyIslandShape();
   // Spotlight behaviour: clicking anywhere else collapses the command bar.
   islandWin.on('blur', () => { if (commandBarOpen) closeCommandBar({ notify: true }); });
-  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; syncIslandProximity(); });
+  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; syncIslandProximity(); stopContextPoll(); });
   islandWin.on('hide', () => syncIslandProximity());
   islandWin.on('show', () => syncIslandProximity());
   // Displays change (resolution, the menu bar or the Dock, a monitor plugged or unplugged): lay out again.
@@ -575,9 +646,10 @@ function openCommandBar({ notify = false } = {}) {
   if (!islandWin || islandWin.isDestroyed()) createIslandWindow();
   clearTimeout(islandShrinkTimer);
   commandBarOpen = true;
+  islandMode = 'bar';
   syncIslandProximity(); // no fade while the bar is open
   applyIslandIgnore();
-  islandWin.setBounds(islandBounds(true));
+  placeIslandWindow(); // grows to the bar's footprint as the glass morphs
   applyIslandShape(); // Linux: the whole bar takes clicks while open
   if (!islandWin.isVisible()) islandWin.showInactive();
   // macOS: no app.focus() here, see ISLAND_IS_PANEL. Focusing a non-activating panel makes it key only.
@@ -595,12 +667,215 @@ function closeCommandBar({ notify = false } = {}) {
   clearTimeout(islandShrinkTimer);
   islandShrinkTimer = setTimeout(() => {
     if (!commandBarOpen && islandWin && !islandWin.isDestroyed()) {
-      islandWin.setBounds(islandBounds(false));
+      applyAdapt('bar closed');
       applyIslandShape();
       if (currentIslandLayout().hidden) islandWin.hide(); // 'hidden': only the bar was shown
       syncIslandProximity();
     }
   }, ISLAND_SHRINK_MS);
+}
+
+// ---------------------------------------------------------------- the adaptive Island
+// Every CONTEXT_MS main asks the OS for the frontmost window (name, title, bounds) and, with the cursor, the
+// tasks and the approvals, lets renderer/adapt.js decide the mode and the spot. Nothing here ever focuses a
+// window: the Island is shown with showInactive and only the user's own click or shortcut opens the bar.
+
+function startContextPoll() {
+  if (contextTimer) return;
+  contextTimer = setInterval(contextTick, CONTEXT_MS);
+  if (contextTimer.unref) contextTimer.unref();
+  contextTick();
+}
+function stopContextPoll() { if (contextTimer) { clearInterval(contextTimer); contextTimer = null; } }
+
+async function contextTick() {
+  if (contextBusy || !islandWin || islandWin.isDestroyed() || !islandWin.isVisible()) return;
+  contextBusy = true;
+  try {
+    const f = await frontmostWindow();
+    const key = f ? `${f.app}|${f.title}|${f.bounds ? [f.bounds.x, f.bounds.y, f.bounds.width, f.bounds.height].join(',') : ''}` : '';
+    if (key !== frontKey) { frontKey = key; frontWin = f; applyAdapt('frontmost changed'); }
+  } catch (_) { /* best-effort */ } finally { contextBusy = false; }
+}
+
+/** Run one short OS command with a hard timeout; resolves its stdout or ''. */
+function runCapture(cmd, args, ms = 900) {
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try { child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (_) { resolve(''); return; }
+    const t = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(out); }, ms);
+    child.stdout.on('data', (d) => { out += d; if (out.length > 8192) { try { child.kill(); } catch (_) {} } });
+    child.on('error', () => { clearTimeout(t); resolve(''); });
+    child.on('close', () => { clearTimeout(t); resolve(out); });
+  });
+}
+
+/** The frontmost window as { app, title, bounds } (bounds may be null), or null when the OS will not say. */
+async function frontmostWindow() {
+  const own = /^(O|O AI|Electron|electron)$/i;
+  if (process.platform === 'darwin') {
+    // System Events: the frontmost process and its front window. Needs Automation consent once; fails quietly.
+    const script = [
+      'tell application "System Events"',
+      'set p to first process whose frontmost is true',
+      'set n to name of p',
+      'try',
+      'set w to front window of p',
+      'set {x, y} to position of w',
+      'set {wd, ht} to size of w',
+      'set t to name of w',
+      'return n & tab & t & tab & x & tab & y & tab & wd & tab & ht',
+      'on error',
+      'return n & tab & tab & tab & tab & tab',
+      'end try',
+      'end tell',
+    ].join('\n');
+    const out = await runCapture('osascript', ['-e', script], 1000);
+    const [app, title, x, y, w, h] = String(out).trim().split('\t');
+    if (!app || own.test(app)) return null;
+    const b = [x, y, w, h].map(Number);
+    return { app, title: title || '', bounds: b.every(Number.isFinite) && b[2] > 0 ? { x: b[0], y: b[1], width: b[2], height: b[3] } : null };
+  }
+  if (process.platform === 'win32') {
+    // One PowerShell call: user32 GetForegroundWindow / GetWindowRect / GetWindowTextW, plus the process name.
+    const ps = [
+      '$s=@"',
+      'using System;using System.Runtime.InteropServices;using System.Text;',
+      'public class W{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
+      '[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);',
+      '[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetWindowTextW(IntPtr h,StringBuilder s,int n);',
+      '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);',
+      '[StructLayout(LayoutKind.Sequential)]public struct R{public int L,T,Rt,B;}}',
+      '"@;Add-Type $s;',
+      '$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;',
+      '$sb=New-Object System.Text.StringBuilder 512;[W]::GetWindowTextW($h,$sb,512)|Out-Null;',
+      '$id=0;[W]::GetWindowThreadProcessId($h,[ref]$id)|Out-Null;$n="";try{$n=(Get-Process -Id $id -ErrorAction Stop).ProcessName}catch{};',
+      '"$n`t$($sb.ToString())`t$($r.L)`t$($r.T)`t$($r.Rt-$r.L)`t$($r.B-$r.T)"',
+    ].join('\n');
+    const out = await runCapture('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], 1100);
+    const [app, title, x, y, w, h] = String(out).trim().split('\t');
+    if (!app || own.test(app)) return null;
+    const b = [x, y, w, h].map(Number);
+    // GetWindowRect is in physical px; Electron's screen is in DIPs: scale by the display under the window.
+    let bounds = b.every(Number.isFinite) && b[2] > 0 ? { x: b[0], y: b[1], width: b[2], height: b[3] } : null;
+    if (bounds) {
+      try { bounds = screen.screenToDipRect(null, bounds); } catch (_) {}
+    }
+    return { app, title: title || '', bounds };
+  }
+  if (process.platform === 'linux') {
+    // xdotool when present (X11); Wayland and a missing tool give nothing, and the Island keeps its home spot.
+    const id = (await runCapture('xdotool', ['getactivewindow'], 600)).trim();
+    if (!/^\d+$/.test(id)) return null;
+    const [name, geo] = await Promise.all([runCapture('xdotool', ['getwindowname', id], 600), runCapture('xdotool', ['getwindowgeometry', '--shell', id], 600)]);
+    const g = {};
+    for (const line of String(geo).split('\n')) { const m = /^(\w+)=(\d+)/.exec(line); if (m) g[m[1]] = Number(m[2]); }
+    const title = String(name).trim();
+    if (own.test(title)) return null;
+    // xdotool has no process name: the title's last segment is usually the app ("… - Firefox").
+    const app = (title.split(/\s[-–—]\s/).pop() || title).trim();
+    return { app, title, bounds: Number.isFinite(g.WIDTH) && g.WIDTH > 0 ? { x: g.X || 0, y: g.Y || 0, width: g.WIDTH, height: g.HEIGHT || 0 } : null };
+  }
+  return null;
+}
+
+/** Is there a status line worth a pill (a flash, a queue, a goal) beyond "Ready"? The renderer owns the words. */
+function islandHasStatus() {
+  if (tasks && tasks.list().some((t) => t.status === 'queued')) return true;
+  if (goals && goals.list && goals.list().goals && goals.list().goals.some((g) => g.status === 'active')) return true;
+  return false;
+}
+
+/** Decide mode + spot from everything main knows and apply what changed (renderer event, window bounds). */
+function applyAdapt(why) {
+  if (!islandWin || islandWin.isDestroyed()) return;
+  const L = currentIslandLayout();
+  const display = screen.getDisplayMatching(L.compact);
+  const front = frontWin;
+  const now = Date.now();
+  if (uiRequest && uiRequest.until < now) uiRequest = null;
+  const ctx = {
+    lock: islandLock, barOpen: commandBarOpen, sheetOpen: panelVisible(),
+    approvalPending: pendingPerms.size > 0 || !!(goals && goals.pendingCards && goals.pendingCards().length),
+    taskRunning: !!(tasks && tasks.running().length), hasStatus: islandHasStatus(),
+    cursorDist, hover: islandHover, front, display,
+  };
+  let d = Adapt.decideMode(ctx);
+  // O's own request (ui_morph) holds for a while unless the user has the bar or the sheet open or something waits for them.
+  if (uiRequest && !ctx.barOpen && !ctx.sheetOpen && !ctx.approvalPending && islandLock === 'auto') d = { mode: uiRequest.mode, opacity: 1, clickThrough: false, reason: 'ui_morph: ' + (uiRequest.reason || '') };
+  // Where: hug a browser, or step off a title bar (float layouts only; the menu bar / notch strip is its own place).
+  let off = { dx: 0, dy: 0 };
+  if (L.mode === 'float' && !ctx.barOpen) {
+    const cap = IslandGeom.capsuleRect(L, islandShape ? islandShape.width : L.minW);
+    const home = { cx: L.compact.x + cap.x + cap.width / 2, cy: L.compact.y + cap.y + cap.height / 2 };
+    const place = Adapt.placeIsland({ home, capsule: { width: cap.width, height: cap.height }, workArea: display.workArea, display, front, dock: sheetDock });
+    off = { dx: place.cx - home.cx, dy: place.cy - home.cy };
+    if (islandEdge && islandOffsetUser) off.dx += islandOffsetUser;
+  }
+  const changedOff = off.dx !== islandOffset.dx || off.dy !== islandOffset.dy;
+  islandOffset = off;
+  const key = `${d.mode}|${d.opacity}|${d.clickThrough}`;
+  if (key !== lastAdaptKey) {
+    lastAdaptKey = key;
+    islandMode = d.mode;
+    islandClickThrough = !!d.clickThrough;
+    sendToIsland({ type: 'island-mode', mode: d.mode, opacity: d.opacity, clickThrough: d.clickThrough, reason: d.reason + (why ? ` (${why})` : '') });
+    applyIslandIgnore();
+  }
+  // Grow before the glass morphs out, shrink after it has morphed in.
+  const growing = islandModeBounds().height > islandWin.getBounds().height;
+  if (growing || changedOff) placeIslandWindow();
+  else setTimeout(() => { if (islandWin && !islandWin.isDestroyed()) placeIslandWindow(); }, 260);
+  if (changedOff && panelVisible()) positionPanel({ animate: true });
+}
+let islandOffsetUser = 0; // ui_dock offset along the edge (px)
+
+/** ui_morph from O (bridge tool or IPC): hold a mode for a while. Logged like every tool. */
+function uiMorph(mode, reason, source) {
+  const m = Adapt.cleanMode(mode);
+  if (!m) return { ok: false, error: 'mode must be one of ' + Adapt.MODES.join(', ') };
+  logApp('tool', `ui_morph → ${m}${reason ? ': ' + String(reason).slice(0, 120) : ''}`, { name: 'ui_morph', input: { mode: m, reason: String(reason || '').slice(0, 200) }, source: source || 'bridge' });
+  if (m === 'sheet') { showPanel({ focus: false }); uiRequest = null; return { ok: true, mode: m }; }
+  if (m === 'bar') { openCommandBar({ notify: true }); uiRequest = null; return { ok: true, mode: m }; }
+  if (panelVisible() && m !== 'sheet') hidePanel();
+  if (commandBarOpen) closeCommandBar({ notify: true });
+  uiRequest = { mode: m, until: Date.now() + UI_REQUEST_MS, reason: String(reason || '') };
+  lastAdaptKey = '';
+  applyAdapt('ui_morph');
+  return { ok: true, mode: m, holdsMs: UI_REQUEST_MS };
+}
+
+/** ui_dock from O: left/right dock the sheet as a column; top/bottom move the Island to that edge; auto clears. */
+function uiDock(edge, offset, source) {
+  const e = Adapt.cleanEdge(edge);
+  if (!e) return { ok: false, error: 'edge must be one of ' + Adapt.EDGES.join(', ') };
+  const off = Math.max(-2000, Math.min(2000, Math.round(Number(offset) || 0)));
+  logApp('tool', `ui_dock → ${e}${off ? ' +' + off + 'px' : ''}`, { name: 'ui_dock', input: { edge: e, offset: off }, source: source || 'bridge' });
+  if (e === 'left' || e === 'right') { setSheetDock(e); }
+  else if (e === 'auto') { setSheetDock('none'); islandEdge = null; islandOffsetUser = 0; islandL = null; relayoutIsland(); }
+  else {
+    islandEdge = e; islandOffsetUser = off; islandL = null; relayoutIsland();
+  }
+  lastAdaptKey = '';
+  applyAdapt('ui_dock');
+  return { ok: true, edge: e, offset: off };
+}
+
+function setSheetDock(dock) {
+  sheetDock = Adapt.DOCKS.includes(dock) ? dock : 'none';
+  sendToIsland({ type: 'island-prefs', lock: islandLock, dock: sheetDock });
+  if (panelVisible()) positionPanel({ animate: true });
+  rebuildTrayMenu();
+}
+
+function setIslandLock(lock) {
+  islandLock = Adapt.LOCKS.includes(lock) ? lock : 'auto';
+  sendToIsland({ type: 'island-prefs', lock: islandLock, dock: sheetDock });
+  uiRequest = null;
+  lastAdaptKey = '';
+  applyAdapt('lock');
+  rebuildTrayMenu();
 }
 
 // The Island window is the full command-bar footprint in both states and is never resized on open/close, so
@@ -610,9 +885,16 @@ function closeCommandBar({ notify = false } = {}) {
 // list can mean "no region" on X11. macOS and Windows keep setIgnoreMouseEvents with forwarding instead.
 function applyIslandShape() {
   if (process.platform !== 'linux' || !islandWin || islandWin.isDestroyed() || typeof islandWin.setShape !== 'function') return;
-  const { width, height } = currentIslandLayout().compact;
+  const L = currentIslandLayout();
+  const { width, height } = L.compact;
   const full = { x: 0, y: 0, width, height };
-  try { islandWin.setShape([commandBarOpen || !islandShape ? full : islandShape]); } catch (_) {}
+  let shape = islandShape;
+  if (shape && L.dir === 'up') {
+    // The shape is footprint-relative; a shorter window hangs from the footprint's bottom edge.
+    const winH = islandWin.getBounds().height;
+    shape = { ...shape, y: Math.max(0, shape.y - (height - winH)) };
+  }
+  try { islandWin.setShape([commandBarOpen || !shape ? full : shape]); } catch (_) {}
 }
 
 /** Validate a capsule rect from the renderer against the compact window. */
@@ -668,8 +950,10 @@ function createPanelWindow() {
   panelWin = new BrowserWindow({
     width: PANEL_W,
     height: PANEL_H,
-    minWidth: 320,
+    minWidth: Adapt.C.SHEET_MIN_W,
+    maxWidth: Adapt.C.SHEET_MAX_W,
     minHeight: 380,
+    hasShadow: false,
     show: false,
     frame: false,
     ...glassWindowOptions(),
@@ -690,6 +974,17 @@ function createPanelWindow() {
     if (!quitting) { e.preventDefault(); hidePanel(); }
   });
   panelWin.on('closed', () => { panelWin = null; });
+  // The sheet can be dragged anywhere (its title bar is the drag region). When the drag ends it snaps to a
+  // work-area edge it came near, docks as a column when dropped against the left or right edge, and the spot is
+  // remembered per display (the panel keeps it in localStorage through sheet:bounds / sheet:restore).
+  panelWin.on('move', () => {
+    if (sheetPlacing || !panelWin || panelWin.isDestroyed() || !panelWin.isVisible()) return;
+    clearTimeout(sheetMoveTimer);
+    sheetMoveTimer = setTimeout(onSheetMoved, 160);
+  });
+  panelWin.on('resize', () => { if (!sheetPlacing) { clearTimeout(sheetMoveTimer); sheetMoveTimer = setTimeout(onSheetMoved, 160); } });
+  panelWin.on('show', () => { lastAdaptKey = ''; applyAdapt('sheet open'); });
+  panelWin.on('hide', () => { lastAdaptKey = ''; applyAdapt('sheet closed'); });
   // Open external links in the user's own browser, never inside the panel.
   panelWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
@@ -708,24 +1003,57 @@ function createPanelWindow() {
   panelWin.webContents.on(HAS_WILL_FRAME_NAVIGATE ? 'will-frame-navigate' : 'did-start-navigation', guardSubFrame);
 }
 
-/** The panel sits at the right of the Island's display, vertically centred, clear of the Island. */
-function positionPanel() {
+/** The display the Island is on (the sheet grows out of it) and its id for the per-display memory. */
+function sheetDisplay() {
+  const b = islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null;
+  return b ? screen.getDisplayNearestPoint({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }) : screen.getPrimaryDisplay();
+}
+
+/** The sheet's geometry from renderer/adapt.js: anchored under the capsule, or the user's saved spot, or a dock column. */
+function sheetBounds() {
+  const d = sheetDisplay();
+  const wa = d.workArea;
+  let anchor = null;
+  if (islandWin && !islandWin.isDestroyed() && islandWin.isVisible()) {
+    const r = islandCapsuleScreenRect();
+    anchor = { cx: r.x + r.width / 2, cy: r.y + r.height / 2, height: r.height };
+    // In the menu bar / on the notch the capsule is above the work area: the sheet hangs from the top edge.
+    if (anchor.cy < wa.y) anchor.cy = wa.y - Adapt.C.SHEET_GAP + 2 - anchor.height / 2;
+  }
+  const saved = sheetSaved[String(d.id)] || null;
+  const geo = Adapt.sheetGeometry({ anchor, workArea: wa, want: sheetWant, dock: sheetDock, saved: saved && saved.dock === 'none' ? saved : null });
+  return { ...geo, displayId: d.id };
+}
+
+/** Place the sheet (grows out of the Island, or where the user left it); animated when asked. */
+function positionPanel({ animate = false } = {}) {
   if (!panelWin || panelWin.isDestroyed()) return;
-  const wa = workAreaFor(islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null);
-  const [w, h0] = panelWin.getSize();
-  const x = wa.x + wa.width - w - 16;
-  // Clear of the capsule when it shares the panel's column (top/bottom positions, the right corners); in the
-  // menu bar the whole work area is free.
-  const res = islandReserve(wa, x, x + w);
-  const top = res.top > wa.y ? res.top : wa.y + 12;
-  const bottom = res.bottom - 12;
-  // On a short screen the height is clamped; place the panel by the height it ends up with (never below the
-  // 380 px minimum), so it is centred and its top stays clear of the Island.
-  const h = Math.max(380, Math.min(h0, bottom - top));
-  if (h !== h0) panelWin.setSize(w, h);
-  let y = Math.max(top, wa.y + Math.round((wa.height - h) / 2));
-  if (y + h > bottom) y = Math.max(top, bottom - h);
-  panelWin.setPosition(Math.round(x), Math.round(y));
+  const g = sheetBounds();
+  const target = { x: g.x, y: g.y, width: g.width, height: g.height };
+  sheetPlacing = true;
+  try { panelWin.setBounds(target, animate && process.platform === 'darwin'); } catch (_) { try { panelWin.setBounds(target); } catch (_) {} }
+  setTimeout(() => { sheetPlacing = false; }, 320);
+  if (!panelWin.isDestroyed()) panelWin.webContents.send('sheet:bounds', { ...target, dock: g.dock, narrow: g.narrow, anchored: g.anchored, displayId: g.displayId, save: false });
+  return g;
+}
+
+/** The user dragged or resized the sheet: snap, maybe dock, remember. */
+function onSheetMoved() {
+  if (!panelWin || panelWin.isDestroyed() || !panelWin.isVisible()) return;
+  const b = panelWin.getBounds();
+  const d = screen.getDisplayMatching(b);
+  const wa = d.workArea;
+  const snapped = Adapt.snapToEdges(b, wa);
+  const dock = Adapt.dockFor(snapped, wa);
+  if (dock !== sheetDock) { setSheetDock(dock); if (dock !== 'none') return; }
+  if (snapped.snapped) {
+    sheetPlacing = true;
+    try { panelWin.setBounds({ x: snapped.x, y: snapped.y, width: b.width, height: b.height }, process.platform === 'darwin'); } catch (_) {}
+    setTimeout(() => { sheetPlacing = false; }, 320);
+  }
+  const rec = { x: snapped.x, y: snapped.y, width: b.width, height: b.height, dock: sheetDock };
+  sheetSaved[String(d.id)] = rec;
+  panelWin.webContents.send('sheet:bounds', { ...rec, displayId: d.id, narrow: b.width < Adapt.C.NARROW_W, anchored: false, save: true });
 }
 
 // focus=false shows the panel without taking keyboard focus from whatever the user is doing
@@ -819,14 +1147,17 @@ function syncNotify() {
 
 function showPanel({ focus = true } = {}) {
   if (!panelWin) createPanelWindow();
-  positionPanel();
+  clearTimeout(panelHideTimer);
+  const g = positionPanel();
+  const was = panelWin.isVisible();
   if (focus) {
     panelWin.show();
     panelWin.focus();
   } else if (!panelWin.isVisible()) {
     panelWin.showInactive();
   }
-  broadcast({ type: 'panel', open: true });
+  // The sheet grows out of the Island: the renderer plays the clip-path morph from the capsule's x.
+  broadcast({ type: 'panel', open: true, origin: g && !was ? { x: g.originX == null ? g.width / 2 : g.originX, dir: g.dir || 'down', anchored: !!g.anchored } : null });
   // The panel lists every task now: the sidebar's task cards and the badge are done with.
   taskCards.clear();
   unseenDone = 0;
@@ -835,9 +1166,10 @@ function showPanel({ focus = true } = {}) {
 }
 
 function hidePanel() {
-  if (panelWin && !panelWin.isDestroyed()) panelWin.hide();
-  broadcast({ type: 'panel', open: false });
-  syncNotify();
+  broadcast({ type: 'panel', open: false }); // the renderer plays the exit morph first
+  clearTimeout(panelHideTimer);
+  const doHide = () => { if (panelWin && !panelWin.isDestroyed()) panelWin.hide(); syncNotify(); };
+  if (quitting) doHide(); else panelHideTimer = setTimeout(doHide, 200);
 }
 
 function togglePanel() {
@@ -1043,6 +1375,7 @@ function broadcastTasks() {
     tasksTimer = null;
     broadcast({ type: 'tasks', tasks: tasks ? tasks.list() : [], schedules: scheduler ? scheduler.list() : [] });
     updateBadge();
+    applyAdapt('tasks'); // a task started or ended: pill <-> dot
   }, 120);
 }
 
@@ -1065,6 +1398,7 @@ function askUser(req) {
     const expiresAt = Date.now() + PERMISSION_TIMEOUT_MS;
     const t = req.taskId && tasks ? tasks.get(req.taskId) : null;
     pendingPerms.set(req.id, { resolve, ...req, taskTitle: t ? t.title : '', expiresAt });
+    setTimeout(() => applyAdapt('approval'), 0); // an approval waits: the card
     setTimeout(() => {
       if (!pendingPerms.has(req.id)) return;
       pendingPerms.delete(req.id);
@@ -1190,6 +1524,7 @@ function onTaskEvent(ev) {
     for (const [id, p] of pendingPerms) {
       if (p.taskId !== ev.taskId) continue;
       pendingPerms.delete(id);
+      setTimeout(() => applyAdapt('approval resolved'), 0);
       broadcast({ type: 'permission-resolved', id, allow: false, taskId: ev.taskId });
     }
     syncNotify();
@@ -1277,6 +1612,7 @@ function resolvePermission(id, allow) {
   const p = pendingPerms.get(id);
   if (!p) return false;
   pendingPerms.delete(id);
+  setTimeout(() => applyAdapt('approval resolved'), 0);
   if (chats) chats.recordTo(p.taskId, { type: 'permission-resolved', id, allow: !!allow, toolName: p.toolName, summary: p.summary });
   p.resolve(allow ? { allow: true } : { allow: false, message: 'The user denied this action.' });
   broadcast({ type: 'permission-resolved', id, allow: !!allow, taskId: p.taskId });
@@ -1351,6 +1687,35 @@ function registerIpc() {
   });
   ipcMain.on('island:open', () => openCommandBar());
   ipcMain.on('island:close', () => closeCommandBar());
+  // the adaptive Island
+  ipcMain.on('island:hover', (_e, v) => { islandHover = !!v; applyAdapt('hover'); });
+  ipcMain.on('island:prefs', (_e, p) => {
+    if (!p || typeof p !== 'object') return;
+    if (Adapt.LOCKS.includes(p.lock)) islandLock = p.lock;
+    if (Adapt.DOCKS.includes(p.dock)) sheetDock = p.dock;
+    lastAdaptKey = '';
+    applyAdapt('prefs');
+    rebuildTrayMenu();
+  });
+  ipcMain.handle('ui:morph', (_e, mode, reason) => uiMorph(mode, reason, 'ipc'));
+  ipcMain.handle('ui:dock', (_e, edge, offset) => uiDock(edge, offset, 'ipc'));
+  // the sheet
+  ipcMain.on('sheet:fit', (_e, want) => {
+    if (!want || typeof want !== 'object') return;
+    const next = { width: Number(want.width) || 0, height: Number(want.height) || 0 };
+    if (next.width === sheetWant.width && next.height === sheetWant.height) return;
+    sheetWant = next;
+    if (panelVisible() && sheetDock === 'none' && !sheetSaved[String(sheetDisplay().id)]) positionPanel({ animate: true });
+    else if (panelVisible() && sheetDock !== 'none') positionPanel({ animate: true });
+  });
+  ipcMain.on('sheet:restore', (_e, saved) => {
+    if (!saved || typeof saved !== 'object') return;
+    const out = {};
+    for (const [k, v] of Object.entries(saved)) {
+      if (v && typeof v === 'object' && Number.isFinite(Number(v.x)) && Number.isFinite(Number(v.y))) out[String(k)] = { x: Number(v.x), y: Number(v.y), width: Number(v.width) || 0, height: Number(v.height) || 0, dock: Adapt.DOCKS.includes(v.dock) ? v.dock : 'none' };
+    }
+    sheetSaved = out;
+  });
 
   ipcMain.on('panel:toggle', togglePanel);
   ipcMain.on('panel:show', () => showPanel());
@@ -1362,6 +1727,15 @@ function registerIpc() {
       { label: 'Open panel', click: () => showPanel() },
       { label: 'Open action log', click: () => openActionLog() },
       { label: 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
+      { label: 'Island', submenu: [
+        { label: 'Auto (adapts to what you are doing)', type: 'radio', checked: islandLock === 'auto', click: () => setIslandLock('auto') },
+        { label: 'Dot', type: 'radio', checked: islandLock === 'dot', click: () => setIslandLock('dot') },
+        { label: 'Pill', type: 'radio', checked: islandLock === 'pill', click: () => setIslandLock('pill') },
+        { type: 'separator' },
+        { label: 'Dock the sheet left', type: 'radio', checked: sheetDock === 'left', click: () => setSheetDock('left') },
+        { label: 'Dock the sheet right', type: 'radio', checked: sheetDock === 'right', click: () => setSheetDock('right') },
+        { label: 'Sheet floats (grows out of the Island)', type: 'radio', checked: sheetDock === 'none', click: () => setSheetDock('none') },
+      ] },
       { label: 'Position', submenu: islandPositionMenu() },
       { label: 'Hide the Island (the tray icon brings it back)', click: () => toggleIsland() },
       { type: 'separator' },

@@ -25,7 +25,7 @@
   --ol-ease-io: cubic-bezier(0.77, 0, 0.175, 1);
   --ol-press: 120ms;
   --ol-hover: 150ms;
-  --ol-morph: 320ms;
+  --ol-morph: 240ms; /* 180-260 ms: the mode morphs (dot, pill, bar, card, sheet) */
 }
 
 .ol-defs { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }

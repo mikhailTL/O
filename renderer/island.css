@@ -41,9 +41,29 @@ html, body {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
 button:focus { outline: none; }
 
-#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; transition: opacity 160ms linear; }
+#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; opacity: var(--adapt-opacity, 1); transition: opacity 200ms linear; }
 /* Proximity fade (main.js): the cursor is near the capsule but has not dwelt on it, so it steps aside. */
 body.faded:not(.open) #stage { opacity: 0.25; }
+/* Modes (body[data-mode]): dot = the ring alone (the caps overlap into a circle: --w is the capsule height);
+   sheet = the same dot, the panel grows out of it; pill = the capsule; bar/card = body.open. All morphs are
+   transform/opacity only on the same parts, so dot <-> pill <-> bar never pop. */
+body.dot .island-row .line, body.dot .island-row .meta, body.sheet .island-row .line, body.sheet .island-row .meta { position: absolute; opacity: 0; pointer-events: none; transition: opacity 90ms linear; }
+body.dot .island-row, body.sheet .island-row { gap: 0; }
+body.dot.notch .ring, body.sheet.notch .ring { left: calc(50% - var(--notch) / 2 - var(--ring) - 6px); }
+/* the dot is a 22 px disc (the caps, both centred, scaled down: transform only); the ring inside stays 14 px */
+body.dot:not(.notch):not(.open) .g-cap-l, body.sheet:not(.notch):not(.open) .g-cap-l { transform: translateX(calc(var(--w) * -0.5px)) scale(0.78); }
+body.dot:not(.notch):not(.open) .g-cap-r, body.sheet:not(.notch):not(.open) .g-cap-r { transform: translateX(calc(var(--w) * 0.5px)) scale(0.78); }
+body.dot:not(.notch):not(.open) .g-mid, body.sheet:not(.notch):not(.open) .g-mid { transform: scaleX(0.01); }
+body.dot:not(.notch):not(.open) .rim-l, body.sheet:not(.notch):not(.open) .rim-l { transform: translateX(calc(var(--w) * -0.5px)) scale(0.62); transform-origin: 100% 50%; }
+body.dot:not(.notch):not(.open) .rim-r, body.sheet:not(.notch):not(.open) .rim-r { transform: translateX(calc(var(--w) * 0.5px)) scale(0.62); transform-origin: 0% 50%; }
+body.dot:not(.notch):not(.open) .rim-m, body.sheet:not(.notch):not(.open) .rim-m { opacity: 0; }
+body.dot #island { box-shadow: 0 0 18px rgba(255, 255, 255, 0.10); }
+body.dot .ring-halo { opacity: 0.7; }
+body.sheet #island { box-shadow: none; }
+body.sheet .ring-halo { opacity: 0.35; animation: none; }
+/* card: the bar with one card under it; the input is not focused, so its placeholder reads as the handle */
+body.card .keys { opacity: 0 !important; }
+body.card #input::placeholder { color: var(--ol-text-3); }
 #goo { position: absolute; inset: 0; }
 
 /* ------------------------------------------------------------------ island: three parts, so its width
@@ -275,8 +295,10 @@ body.ext .g-side, body.ext #side { visibility: visible; }
   pointer-events: none;
   z-index: -1;
 }
-#side:hover .side-rim::after { opacity: 0.6; }
-#side:hover { color: var(--ol-text); }
+@media (hover: hover) {
+  #side:hover .side-rim::after { opacity: 0.6; }
+  #side:hover { color: var(--ol-text); }
+}
 #side:active svg { opacity: 0.7; transition-duration: var(--ol-press); }
 
 /* ------------------------------------------------------------------ bubbles */
@@ -296,7 +318,7 @@ body.ext .g-side, body.ext #side { visibility: visible; }
   isolation: isolate;
 }
 .bubble.passive { pointer-events: none; }
-.bubble:hover::after { opacity: 0.55; box-shadow: none; }
+@media (hover: hover) { .bubble:hover::after { opacity: 0.55; box-shadow: none; } }
 .bubble.sel::after { opacity: 1; }
 .bubble .ic { width: 18px; height: 18px; flex: none; color: var(--ol-text-2); display: flex; align-items: center; justify-content: center; }
 .bubble .ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
@@ -319,19 +341,23 @@ body.ext .g-side, body.ext #side { visibility: visible; }
   border: 1px solid var(--ol-line);
   background: rgba(255, 255, 255, 0.05);
   box-shadow: var(--ol-highlight);
-  transition: opacity var(--ol-press) linear;
+  transition: opacity var(--ol-press) linear, transform 160ms ease-out;
   font-variant-numeric: tabular-nums;
 }
-.act:hover { background: rgba(255, 255, 255, 0.09); }
-.act:active { opacity: 0.75; }
+@media (hover: hover) {
+  .act:hover { background: rgba(255, 255, 255, 0.09); }
+  .act.primary:hover { background: #FFFFFF; opacity: 0.9; }
+}
+.act:active { opacity: 0.85; transform: scale(0.97); }
 .act:focus-visible { box-shadow: var(--ol-highlight), var(--ol-glow); }
 .act.primary { color: #0A0A0B; border-color: transparent; background: #FFFFFF; box-shadow: 0 0 16px rgba(255, 255, 255, 0.18); }
-.act.primary:hover { background: #FFFFFF; opacity: 0.9; }
 .act.danger { color: var(--ol-danger); }
+#side:active { transform: scale(0.97); transition: transform 160ms ease-out; }
 
 /* ------------------------------------------------------------------ reduced motion: crossfades only */
 @media (prefers-reduced-motion: reduce) {
   .g-cap, .g-mid, .rim, .g-bar, #bar { transition: opacity 180ms linear !important; }
+  .act, #side { transition: opacity 120ms linear !important; transform: none !important; }
   .ring.is-idle .ring-halo, .ring.is-working svg, .bubble.k-task.running .ic svg { animation: none; }
   .ring.is-working .ring-base { opacity: 1; }
   .ring.is-working .ring-arc { opacity: 0; }

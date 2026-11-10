@@ -25,7 +25,7 @@
  *                                  opacity goes 0 -> 1 after they separate] }. Returns a Promise.
  *   OLiquid.retract(targets, opts) the reverse: travel back into the parent; same opts. Returns a Promise.
  *   OLiquid.stagger(list, fn, step=50)  calls fn(item, i, delay) with delay = i * step (40-60 ms reads well).
- *   OLiquid.EASE_OUT / EASE_IO     the shared curves; OLiquid.MORPH_MS = 320.
+ *   OLiquid.EASE_OUT / EASE_IO     the shared curves; OLiquid.MORPH_MS = 240.
  *
  * Only transform and opacity are animated. No overshoot.
  */
@@ -33,7 +33,7 @@
   const NS = 'http://www.w3.org/2000/svg';
   const EASE_OUT = 'cubic-bezier(0.23,1,0.32,1)';
   const EASE_IO = 'cubic-bezier(0.77,0,0.175,1)';
-  const MORPH_MS = 320;
+  const MORPH_MS = 240;
   const FILTER_ID = 'ol-goo';
 
   function install(doc) {
