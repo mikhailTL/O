@@ -422,7 +422,7 @@ def test_skill_signals_feed_the_real_registry_and_only_the_user_approves(tmp_pat
 
     reg = SkillRegistry(tmp_path / "skills")
     s = Signal(id="sk1", kind="mcp_server", source="mcp-registry", title="ocr-mcp", url="https://github.com/x/ocr-mcp",
-               repo="x/ocr-mcp", license="MIT", topics=["skill", "ocr"])
+               repo="x/ocr-mcp", license="MIT", package="npm:ocr-mcp", topics=["skill", "ocr"])
     f = Fakes(signals=[s, sig(2)])
     ev = make(tmp_path, f, skills=reg)
     ev.tick("active")

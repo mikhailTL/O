@@ -232,6 +232,11 @@ class SkillRegistry:
             title = str(get("title") or repo or sid_sig)[:400]
             url = str(get("url") or "")
             package = str(get("package") or "") or (repo.split("/")[-1] if kind == "package_release" else "")
+            # Only a published npm / PyPI package can be installed (installer.pin): anything else is not a
+            # candidate at all, so it never shows up as "Did not install ... nothing changed".
+            if ":" not in package:
+                have.add(sid_sig)
+                continue
             status = "needs_approval" if lic in OK_LICENSES else "blocked_license"
             rec = ExternalSkill(
                 id="xs-" + hashlib.sha256(sid_sig.encode()).hexdigest()[:16], version=1, status=status,  # type: ignore[arg-type]
@@ -247,7 +252,8 @@ class SkillRegistry:
         return out
 
     def pending(self) -> list[ExternalSkill]:
-        return [s for s in self.external().values() if s.status == "needs_approval"]
+        # Older records that were never installable (no registry package) stay out of the queue.
+        return [s for s in self.external().values() if s.status == "needs_approval" and ":" in (s.package or "")]
 
     def _decide(self, skill_id: str, status: str, by: str, via: str, note: str) -> ExternalSkill:
         cur = self.external().get(skill_id)

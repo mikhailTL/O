@@ -700,6 +700,9 @@ async def ascan(store: EvolveStore, *, since_days: int = 14, limit: int = 50, in
             await client.aclose()
     store.set_cursor("_learned", {"ts": learned.get("ts") if fresh_learned else iso(now),
                                   "rest_blocked": ctx.rest_blocked, "no_changelog": sorted(ctx.no_changelog)})
+    # A "skill" signal is only a candidate when it resolves to a published npm / PyPI MCP-server package; the
+    # rest (articles, trackers, unpublished repos) lose the tag here instead of failing at install time.
+    collected = await resolve_installables(ctx, collected)
     uniq = list({s.id: s for s in collected}.values())
     new = store.add_signals(uniq)
     new_ids = {s.id for s in new}
@@ -712,6 +715,79 @@ async def ascan(store: EvolveStore, *, since_days: int = 14, limit: int = 50, in
         per["deps"]["total"] = len(ctx.deps)
     return ScanReport(new=new, fetched=fetched, per_source=per, stats=dict(fetcher.stats),
                       seconds=round(time.monotonic() - t0, 2))
+
+
+# ------------------------------------------------------------------------------ skill resolution
+
+RAW_GH = "https://raw.githubusercontent.com"
+NPM_REG = "https://registry.npmjs.org"
+PYPI = "https://pypi.org/pypi"
+_MCP_HINT = re.compile(r"\bmcp\b|model[- ]context[- ]protocol", re.I)
+_PYPROJECT_NAME = re.compile(r'(?ms)^\[project\].*?^name\s*=\s*["\']([A-Za-z0-9._-]+)["\']')
+_PYPROJECT_DEPS = re.compile(r"(?ms)^dependencies\s*=\s*\[(.*?)\]")
+
+
+def _is_mcp_server(pj: dict[str, Any], readme_hint: str = "") -> bool:
+    deps = {**(pj.get("dependencies") or {}), **(pj.get("peerDependencies") or {})}
+    if any(k.startswith("@modelcontextprotocol/") or k in ("fastmcp", "mcp") for k in deps):
+        return True
+    text = " ".join([str(pj.get("name") or ""), str(pj.get("description") or ""), " ".join(pj.get("keywords") or []), readme_hint])
+    return bool(_MCP_HINT.search(text)) and bool(pj.get("bin") or pj.get("main") or pj.get("exports"))
+
+
+async def resolve_one(ctx: Ctx, sig: Signal) -> Signal:
+    """Turn a repo signal tagged ``skill`` into an installable one (``package`` + ``version``) or drop the tag."""
+    if "skill" not in sig.topics or sig.package or not sig.repo or sig.kind == "package_release":
+        return sig
+    drop = sig.model_copy(update={"topics": [t for t in sig.topics if t != "skill"]})
+    hint = f"{sig.title} {sig.summary}"
+    # 1. Node: package.json on the default branch -> npm registry
+    try:
+        pj = json.loads(await ctx.fetcher.get(f"{RAW_GH}/{sig.repo}/HEAD/package.json"))
+    except (Blocked, RateLimited, ValueError):
+        pj = None
+    if isinstance(pj, dict) and pj.get("name") and not pj.get("private") and _is_mcp_server(pj, hint):
+        name = str(pj["name"])
+        try:
+            reg = json.loads(await ctx.fetcher.get(f"{NPM_REG}/{name}", accept="application/json"))
+            latest = str((reg.get("dist-tags") or {}).get("latest") or "")
+        except (Blocked, RateLimited, ValueError):
+            latest = ""
+        if latest:
+            return sig.model_copy(update={"package": f"npm:{name}", "version": latest,
+                                          "docs_url": sig.docs_url or f"https://www.npmjs.com/package/{name}"})
+        return drop
+    # 2. Python: pyproject.toml -> PyPI
+    try:
+        toml = await ctx.fetcher.get(f"{RAW_GH}/{sig.repo}/HEAD/pyproject.toml")
+    except (Blocked, RateLimited):
+        toml = ""
+    m = _PYPROJECT_NAME.search(toml) if toml else None
+    if m:
+        name = m.group(1)
+        dm = _PYPROJECT_DEPS.search(toml)
+        deps = dm.group(1) if dm else ""
+        if re.search(r"[\"']\s*(mcp|fastmcp)\b", deps) or _MCP_HINT.search(hint + " " + toml[:2000]):
+            try:
+                info = json.loads(await ctx.fetcher.get(f"{PYPI}/{name}/json", accept="application/json"))
+                latest = str((info.get("info") or {}).get("version") or "")
+            except (Blocked, RateLimited, ValueError):
+                latest = ""
+            if latest:
+                return sig.model_copy(update={"package": f"pypi:{name}", "version": latest,
+                                              "docs_url": sig.docs_url or f"https://pypi.org/project/{name}/"})
+    return drop
+
+
+async def resolve_installables(ctx: Ctx, signals: list[Signal]) -> list[Signal]:
+    todo = [i for i, s in enumerate(signals) if "skill" in s.topics and not s.package and s.repo and s.kind != "package_release"]
+    if not todo:
+        return signals
+    out = list(signals)
+    resolved = await asyncio.gather(*(resolve_one(ctx, signals[i]) for i in todo[:40]), return_exceptions=True)
+    for i, r in zip(todo, resolved):
+        out[i] = r if isinstance(r, Signal) else signals[i].model_copy(update={"topics": [t for t in signals[i].topics if t != "skill"]})
+    return out
 
 
 def _source_of(s: Signal) -> str:

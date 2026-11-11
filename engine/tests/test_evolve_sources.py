@@ -100,6 +100,8 @@ class World:
             return httpx.Response(200, json={"objects": [{"package": {
                 "name": name, "version": "9.0.0", "date": ts(1), "description": "d",
                 "links": {"repository": f"git+https://github.com/{name}js/{name}.git"}}}]})
+        if host == "registry.npmjs.org" and path == "/fast-mcp":
+            return httpx.Response(200, json={"dist-tags": {"latest": "1.4.0"}, "time": {"1.4.0": ts(1)}})
         if host == "registry.npmjs.org":
             return httpx.Response(200, json={"time": {"2.1.300": ts(1), "2.1.299": ts(30)}})
         if host == "api.github.com" and path.startswith("/search/repositories"):
@@ -126,6 +128,9 @@ class World:
             return httpx.Response(200, json={"license": {"spdx_id": "Apache-2.0"}, "archived": False,
                                              "stargazers_count": 1000, "topics": ["computer-use"]})
         if host == "raw.githubusercontent.com":
+            if path == "/new/fast/HEAD/package.json":  # a published MCP server: resolves to npm:fast-mcp
+                return httpx.Response(200, json={"name": "fast-mcp", "bin": {"fast-mcp": "cli.js"},
+                                                 "dependencies": {"@modelcontextprotocol/sdk": "^1.0.0"}})
             if path.startswith("/anthropics/claude-code/"):
                 return httpx.Response(200, text="# Changelog\n\n## 2.1.300\n\n- Added MCP tasks\n\n## 2.1.299\n\n- old\n")
             if path.startswith("/anthropics/anthropic-sdk-python/"):
@@ -202,10 +207,14 @@ def test_scan_all_sources_with_rest_api(root):
     repos = {s.repo: s for s in by["new_repo"]}
     assert set(repos) == {"new/fast", "new/older"}  # archived and below-min-stars dropped
     assert repos["new/fast"].stars_7d == 300 and "skill" in repos["new/fast"].topics
+    # the skill tag survives only because the repo resolved to a published MCP-server package
+    assert repos["new/fast"].package == "npm:fast-mcp" and repos["new/fast"].version == "1.4.0"
+    assert "skill" not in repos["new/older"].topics  # no package.json / pyproject -> not a candidate
     assert repos["new/older"].stars_7d == 70 and repos["new/older"].license == ""
     assert [p.repo for p in by["paper"]] == ["lab/zoomer"]
     mcp = by["mcp_server"]
-    assert len(mcp) == 1 and "skill" in mcp[0].topics and mcp[0].repo == "files/srv"
+    # a registry server with no npm/PyPI package (hosted / remote only) is not an installable candidate
+    assert len(mcp) == 1 and "skill" not in mcp[0].topics and mcp[0].repo == "files/srv"
     ch = {s.version for s in by["changelog"]}
     assert ch == {"2.1.300", "2.6.0"}
     # second identical scan: everything is a duplicate
@@ -242,7 +251,8 @@ def test_incremental_returns_only_new_items(root):
     world.mcp_servers.append(World.mcp("io.github.acme/brand-new", ts(0)))
     second = run_scan(store, world, root, incremental=True, sources=["mcp-registry"])
     assert [s.title for s in second.new] == ["MCP server io.github.acme/brand-new 1.0.0"]
-    sent = S.parse_ts(world.calls[-1].url.params["updated_since"])
+    reg_calls = [c for c in world.calls if "updated_since" in c.url.params]
+    sent = S.parse_ts(reg_calls[-1].url.params["updated_since"])
     assert sent > NOW - timedelta(hours=2)  # resumed from the cursor, not the 14-day window
 
 

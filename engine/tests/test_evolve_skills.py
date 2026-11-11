@@ -44,9 +44,11 @@ def test_promoted_after_consecutive_passes_then_demoted_on_falling_fitness(tmp_p
 def _signals():
     return [
         Signal(id="s1", kind="mcp_server", source="mcp-registry", title="Spreadsheet MCP server", url="https://example.org/s1",
-               repo="acme/sheets-mcp", version="1.2.0", license="MIT", topics=["skill", "spreadsheet"]),
+               repo="acme/sheets-mcp", version="1.2.0", license="MIT", package="npm:sheets-mcp", topics=["skill", "spreadsheet"]),
         Signal(id="s2", kind="new_repo", source="github", title="GPL tool", url="https://example.org/s2", repo="x/gpl",
-               license="GPL-3.0", topics=["skill"]),
+               license="GPL-3.0", package="npm:gpl", topics=["skill"]),
+        Signal(id="s4", kind="new_repo", source="github", title="Just an article", url="https://example.org/s4", repo="x/article",
+               license="MIT", topics=["skill"]),  # no registry package -> never a candidate
         Signal(id="s3", kind="paper", source="arxiv", title="Not a skill", url="https://example.org/s3", topics=["gui-agent"]),
     ]
 
@@ -54,7 +56,7 @@ def _signals():
 def test_external_candidates_need_approval_and_never_install_by_themselves(tmp_path):
     reg = SkillRegistry(tmp_path)
     recs = reg.ingest_signals(_signals())
-    assert [r.signal_id for r in recs] == ["s1", "s2"]  # only signals tagged "skill"
+    assert [r.signal_id for r in recs] == ["s1", "s2"]  # only signals tagged "skill" that name a package
     by = {r.signal_id: r for r in recs}
     assert by["s1"].status == "needs_approval"
     assert by["s2"].status == "blocked_license"
