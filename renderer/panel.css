@@ -101,7 +101,10 @@
 
 /* "full" mode: this window covers the work area; the html element is the translucent layer and the body the
    centred dashboard column. No system material, frame or shadow paints anything: these are the only pixels. */
-html { background: rgba(0, 0, 0, 0.72); }
+/* The dark layer is a fixed pseudo-element, not the root background: inside a transparent window Chromium
+   drops the html/root background on Windows, which left the dashboard floating unreadably over the desktop. */
+html { background: transparent; }
+html::before { content: ""; position: fixed; inset: 0; z-index: -1; background: rgba(0, 0, 0, 0.90); pointer-events: none; }
 html, body {
   margin: 0;
   height: 100%;
@@ -121,8 +124,8 @@ body {
   background: transparent;
   will-change: opacity, transform;
 }
-:root[data-theme="light"] { background: rgba(247, 247, 247, 0.92); }
-:root[data-theme="dark"] { background: rgba(11, 11, 12, 0.94); }
+:root[data-theme="light"]::before { background: rgba(247, 247, 247, 0.96); }
+:root[data-theme="dark"]::before { background: rgba(11, 11, 12, 0.97); }
 
 button {
   font: inherit;
