@@ -319,6 +319,29 @@ def test_unreachable_source_is_reported_not_raised(root):
     assert r.per_source["mcp-registry"]["ok"] is False and r.new == []
 
 
+def test_scan_uses_the_evolve_token_for_github(root, monkeypatch):
+    store = EvolveStore(":memory:")
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json={"items": []})
+
+    async def go(**kw):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await S.ascan(store, client=c, capmap=mini_capmap(), root=root, sources=["github-search"], **kw)
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("O_EVOLVE_GITHUB_TOKEN", "evolve-tok")
+    assert S.default_github_token() == "evolve-tok"
+    asyncio.run(go())
+    assert seen and all(a == "Bearer evolve-tok" for a in seen)  # the settings token, not an anonymous scan
+    seen.clear()
+    asyncio.run(go(github_token="explicit"))
+    assert seen and all(a == "Bearer explicit" for a in seen)
+    assert S.default_github_token({"GITHUB_TOKEN": "gh"}) == "gh" and S.default_github_token({}) == ""
+
+
 # ---------------------------------------------------------------- store
 def _sig(i: int, **kw) -> Signal:
     base = dict(id=f"s{i}", kind="paper", source="arxiv", title=f"t{i}", url=f"https://x/{i}")

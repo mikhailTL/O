@@ -15,6 +15,7 @@ from typing import Protocol
 import httpx
 from openai import OpenAI
 
+from .llm import claude_cli, cli_command
 from .schema import ProvisionRequest, SchemaViolation, parse_steps
 from .tokenfilter import TokenFilter
 
@@ -106,29 +107,12 @@ class ClaudeCodeParser:
         self.timeout = timeout
 
     def _command(self) -> list[str]:
-        return [self.claude_path, "-p", "--output-format", "json"]
+        return cli_command(self.claude_path)
 
     def parse(self, text: str, goal: str) -> ProvisionRequest:
         prompt = SYSTEM_PROMPT + "\n\n" + build_user_prompt(text, goal)
-        try:
-            proc = subprocess.run(
-                self._command(),
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            raise SchemaViolation(f"claude cli failed to run: {e}") from None
-        if proc.returncode != 0:
-            raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
-        try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if not isinstance(result, str):
-            raise SchemaViolation("claude cli output has no string result")
+        payload = claude_cli(prompt, claude_path=self.claude_path, timeout=self.timeout)
+        result = payload["result"]
         tf = TokenFilter()
         filtered = tf.feed(result)
         if not filtered:

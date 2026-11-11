@@ -60,3 +60,66 @@ def test_threads_keep_chain_intact(tmp_path):
         t.join()
     _chain_ok(tmp_path / "engine-actions.jsonl")
     assert len((tmp_path / "engine-actions.log").read_text().splitlines()) == 400
+
+
+def test_forwarding_never_blocks_the_recording_thread(tmp_path, monkeypatch):
+    """The POST to the app runs on the sender thread; record() returns before (and regardless of) delivery."""
+    import threading
+    import time
+
+    import httpx
+
+    from o_engine import actionlog
+
+    gate = threading.Event()
+    posts: list[tuple[str, dict, str]] = []
+
+    class SlowClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def post(self, url, json=None, headers=None):
+            gate.wait(5.0)
+            posts.append((url, json, threading.current_thread().name))
+
+    monkeypatch.setattr(httpx, "Client", SlowClient)
+    log = actionlog.ActionLog(tmp_path, forward_url="http://127.0.0.1:1/log", token="t")
+    t0 = time.monotonic()
+    for i in range(20):
+        log.record("note", f"n{i}")
+    assert time.monotonic() - t0 < 0.5, "record() waited on the app's socket"
+    assert posts == []
+    gate.set()
+    log.flush(5.0)
+    assert len(posts) == 20 and [p[1]["summary"] for p in posts] == [f"n{i}" for i in range(20)], "in order"
+    assert all(p[2] == "o-log-forward" for p in posts) and posts[0][0] == "http://127.0.0.1:1/log"
+    assert log.dropped == 0
+    assert len((tmp_path / "engine-actions.jsonl").read_text().splitlines()) == 20
+
+
+def test_forward_queue_drops_oldest_when_the_app_is_unreachable(tmp_path, monkeypatch):
+    import threading
+
+    import httpx
+
+    from o_engine import actionlog
+
+    gate = threading.Event()
+
+    class Stuck:
+        def __init__(self, *a, **k):
+            pass
+
+        def post(self, *a, **k):
+            gate.wait(5.0)
+
+    monkeypatch.setattr(httpx, "Client", Stuck)
+    monkeypatch.setattr(actionlog, "FORWARD_QUEUE_MAX", 5)
+    log = actionlog.ActionLog(tmp_path, forward_url="http://127.0.0.1:1/log")
+    for i in range(12):
+        log.record("note", f"n{i}")
+    assert log.dropped >= 1 and log._outbox.qsize() <= 5
+    gate.set()
+    log.flush(2.0)
+    _chain_ok(tmp_path / "engine-actions.jsonl")
+    assert "error" in KINDS

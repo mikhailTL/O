@@ -50,7 +50,7 @@ from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .backends.base import BackendError, CUBackend, Node, synthetic_node
+from .backends.base import BackendError, CUBackend, Node, backend_find, backend_tree, synthetic_node
 from .schema import (
     AssertStep,
     CallStep,
@@ -75,7 +75,7 @@ FailureReason = Literal["loop"]
 DEFAULT_POLL_INTERVAL = 0.25
 DEFAULT_LOOP_THRESHOLD = 3
 DEFAULT_LOOP_WINDOW = 8
-DEFAULT_FIND_SETTLE_POLLS = 8  # x poll_interval: how long a find waits for a just-opened window's tree to settle
+DEFAULT_FIND_SETTLE_POLLS = 2  # x poll_interval: how long a find waits for a just-opened window's tree to settle
 # Steps after which the tree may still be changing (a dialog mapping, a window opening) when the next find runs.
 _SETTLE_AFTER = frozenset({"launch", "click", "key", "type", "set_value", "invoke", "call", "script"})
 
@@ -183,6 +183,7 @@ class ScriptRunner:
         self.interface_store = interface_store
         self.find_settle_polls = max(0, int(find_settle_polls))
         self._prev_op: str | None = None
+        self._app: str | None = None  # the running script's app: every tree read / find is scoped to it
         self._clock = clock
         self._sleep = sleep
         self._popen = popen
@@ -229,6 +230,7 @@ class ScriptRunner:
         self._baselines = {}
         self._baseline = self._snapshot_baseline(script)
         self._prev_op = None
+        self._app = (script.app or "").strip() or None
         start = max(0, min(int(start or 0), len(script.steps) - 1))
         if start:
             self._rebind_refs(script, start, refs, job_id)
@@ -242,6 +244,13 @@ class ScriptRunner:
             if not result.ok:
                 return RunResult(ok=False, steps=tuple(results), failed_index=i)
         return RunResult(ok=True, steps=tuple(results), failed_index=None)
+
+    def _tree(self, window: str | None = None) -> list[Node]:
+        """The backend's tree, scoped to the script's app where the backend supports it (macOS AX)."""
+        return backend_tree(self.backend, window, app=self._app)
+
+    def _find(self, target: Target, within: Node | None = None) -> Node | None:
+        return backend_find(self.backend, target, within=within, app=self._app)
 
     def _rebind_refs(self, script: OScript, start: int, refs: dict[str, Node], job_id: str) -> None:
         """Re-find (tree only, no action, no vision) every ref bound before ``start`` that a later step uses."""
@@ -259,7 +268,7 @@ class ScriptRunner:
             if not isinstance(step, FindStep) or step.as_ not in used:
                 continue
             try:
-                node = self.backend.find(step.target, within=self._scope(step.target, refs))
+                node = self._find(step.target, within=self._scope(step.target, refs))
             except Exception:  # noqa: BLE001 - an unbound ref fails the step that uses it
                 node = None
             if node is None:
@@ -284,9 +293,9 @@ class ScriptRunner:
         reason: FailureReason | None = None
         evidence: list[dict] = []
         try:
-            nodes = self.backend.tree()
+            nodes = self._tree()
             if self._dismiss_dialogs(nodes, job_id, i):
-                nodes = self.backend.tree()
+                nodes = self._tree()
             before_digest = self.backend.tree_digest(nodes)
             screenshot = self.backend.screenshot()
             screenshot_sha = hashlib.sha256(screenshot).hexdigest()
@@ -312,7 +321,7 @@ class ScriptRunner:
             except (BackendError, Exception) as e:  # noqa: BLE001 - every failure becomes a structured result
                 error = f"{type(e).__name__}: {e}" if not isinstance(e, BackendError) else str(e)
         try:
-            after_digest = self.backend.tree_digest(self.backend.tree())
+            after_digest = self.backend.tree_digest(self._tree())
         except Exception as e:
             after_digest = ""
             error = error or f"could not capture evidence after step: {e}"
@@ -468,7 +477,7 @@ class ScriptRunner:
         if "multi line" in states:
             return None
         try:
-            chain = _ancestors(self.backend.tree(), node.id)
+            chain = _ancestors(self._tree(), node.id)
         except Exception:  # noqa: BLE001 - no tree: keep insert semantics
             chain = []
         in_dialog = next((a for a in chain if _is_file_dialog(a)), None)
@@ -523,12 +532,22 @@ class ScriptRunner:
         self, app: str, target: Target, refs: dict[str, Node], screenshot: bytes, screen_hash: str
     ) -> tuple[Node, ResolvedBy]:
         scope = self._scope(target, refs)
-        node = self.backend.find(target, within=scope)
+        node = self._find(target, within=scope)
         if node is not None:
             return node, "a11y"
         node = self._settle_find(target, scope)
         if node is not None:
             return node, "a11y"
+        pixels = bool(getattr(self.backend, "allow_pixels", False))
+        if not pixels:
+            # A screen position (locator cache, vision) can only be acted on with a pixel click, and pixel actions
+            # are disabled on this display (macOS host, a Linux host display). The paid vision call would buy a
+            # bbox no step can use: report the a11y miss plainly instead of a guaranteed-to-fail click later.
+            raise _StepFailure(
+                f"element not found in the accessibility tree ({target.describe()}); screen grounding "
+                f"(locator cache, vision) skipped because pixel actions are disabled on this display "
+                f"(allow_pixels=False): only elements the accessibility tree exposes can be used here"
+            )
         if self.locator_cache is not None:
             bbox = self.locator_cache.get(app, target, screen_hash)
             if _bbox_ok(bbox):
@@ -553,16 +572,16 @@ class ScriptRunner:
         if self._prev_op not in _SETTLE_AFTER or not self.find_settle_polls:
             return None
         try:
-            last = self.backend.tree_digest(self.backend.tree())
+            last = self.backend.tree_digest(self._tree())
         except Exception:  # noqa: BLE001
             return None
         for _ in range(self.find_settle_polls):
             self._sleep(self.poll_interval)
-            node = self.backend.find(target, within=scope)
+            node = self._find(target, within=scope)
             if node is not None:
                 return node
             try:
-                now = self.backend.tree_digest(self.backend.tree())
+                now = self.backend.tree_digest(self._tree())
             except Exception:  # noqa: BLE001
                 return None
             if now == last:
@@ -574,7 +593,7 @@ class ScriptRunner:
         scope = self._scope(step.for_, refs)
         deadline = self._clock() + step.timeout_s
         while True:
-            if self.backend.find(step.for_, within=scope) is not None:
+            if self._find(step.for_, within=scope) is not None:
                 return "a11y"
             if self._clock() >= deadline:
                 raise _StepFailure(f"wait timed out after {step.timeout_s}s ({step.for_.describe()})")
@@ -582,7 +601,7 @@ class ScriptRunner:
 
     def _assert(self, step: AssertStep, refs: dict[str, Node]) -> ResolvedBy:
         scope = self._scope(step.target, refs)
-        node = self.backend.find(step.target, within=scope)
+        node = self._find(step.target, within=scope)
         if node is None:
             raise _StepFailure(f"assert: element not found ({step.target.describe()})")
         if step.state not in node.states:
@@ -599,7 +618,7 @@ class ScriptRunner:
         # A mid-script screen check never spends a paid fallback call: the judge may answer from the focused
         # window's a11y text or defer to the job's final goal check (cu/judge.py Judge policy).
         if _accepts(ask, "tree") and _accepts(ask, "final"):
-            verdict = ask(screenshot, step.question, tree=self.backend.tree, final=False)
+            verdict = ask(screenshot, step.question, tree=self._tree, final=False)
         else:
             verdict = ask(screenshot, step.question)
         ok, reason = _verdict(verdict)

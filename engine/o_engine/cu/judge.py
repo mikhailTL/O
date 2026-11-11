@@ -38,6 +38,7 @@ from typing import Any, Protocol
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ..llm import claude_cli, cli_command
 from ..schema import ProvisionStep, SchemaViolation
 from ..tokenfilter import TokenFilter
 from . import meter
@@ -158,12 +159,13 @@ class ClaudeCodeJudge:
         self.timeout = timeout
 
     def _command(self) -> list[str]:
-        return [self.claude_path, "-p", "--output-format", "json"]
+        return cli_command(self.claude_path)
 
     def judge(self, png_bytes: bytes, question: str) -> JudgeVerdict:
         # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
         # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
-        # headless mode (real run: every screenshot check failed with "permission denied").
+        # headless mode (real run: every screenshot check failed with "permission denied"). A file read pins the
+        # call to the CLI (the proxy carries text only).
         meter.charge_paid("judge")
         workdir = tempfile.mkdtemp(prefix="o-judge-")
         path = os.path.join(workdir, "screen.png")
@@ -175,25 +177,11 @@ class ClaudeCodeJudge:
                 + f"\n\nThe screenshot is the PNG file at: {path}\nRead that image.\n\n"
                 + build_judge_prompt(question)
             )
-            try:
-                proc = subprocess.run(
-                    self._command(), input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=workdir
-                )
-            except (OSError, subprocess.SubprocessError) as e:
-                raise SchemaViolation(f"claude cli failed to run: {e}") from None
+            payload = claude_cli(prompt, claude_path=self.claude_path, timeout=self.timeout, cwd=workdir)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
-        if proc.returncode != 0:
-            raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
-        try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
         meter.add_cost(payload)
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if not isinstance(result, str):
-            raise SchemaViolation("claude cli output has no string result")
-        return parse_verdict(result, self.name)
+        return parse_verdict(payload["result"], self.name)
 
 
 _QUOTED = re.compile(

@@ -662,12 +662,22 @@ def build_cu_graph(deps: CUDeps):
                            dialogs=left)
         return done
 
-    def tree_summary(slot: int, window: Any = None) -> str:
+    def tree_summary(slot: int, window: Any = None, app: str | None = None) -> str:
+        """The planner's view of the screen: the target app's tree where the backend scopes by app (macOS AX),
+        the display's otherwise."""
+        from .backends.base import backend_tree
+
         backend = deps.backend_factory(slot)
         try:
-            return summarize_tree(backend.tree(window) if window is not None else backend.tree())
+            return summarize_tree(backend_tree(backend, window if window is not None else None, app=app or None))
         except Exception as e:
             return f"(tree unavailable: {type(e).__name__}: {e})"
+
+    def scoped_tree(backend: Any, app: str | None) -> Callable[[], Any]:
+        """``backend.tree`` bound to the job's app (for the judge's text-only screen checks)."""
+        from .backends.base import backend_tree
+
+        return lambda window=None: backend_tree(backend, window, app=app or None)
 
     def has_stored_procedure(state: CUState) -> bool:
         """True when ``plan`` will replay: a requested version, or ``procedures.latest(app, goal)`` exists."""
@@ -689,7 +699,7 @@ def build_cu_graph(deps: CUDeps):
             except Exception as e:
                 log.record("note", f"{state['id']}: interface notes unavailable ({type(e).__name__})", job_id=state["id"])
         n = max(1, int(state.get("candidates") or 1))
-        summaries = [tree_summary(i) for i in range(n)]
+        summaries = [tree_summary(i, app=state["app"]) for i in range(n)]
         max_heals = int(state.get("max_attempts") or deps.max_heals)
         memory = state.get("memory") or WorkingMemory.from_goal(state["goal"])
         out = {"phase": "context", "notes_text": notes_text, "tree_summary": summaries[0],
@@ -774,7 +784,7 @@ def build_cu_graph(deps: CUDeps):
         app = state["app"]
         interfaces = _interfaces_for(deps.interface_store, app)
         notes_text = state.get("notes_text", "")
-        summary = tree_summary(0)
+        summary = tree_summary(0, app=app)
         k = int(deps.step_candidates or 1)
         candidates = getattr(deps.planner, "candidate_steps", None)
         if k > 1 and callable(candidates):
@@ -886,7 +896,7 @@ def build_cu_graph(deps: CUDeps):
             if deps.judge is None:
                 return {"ok": True, "reason": "no judge configured", "source": "none"}
             backend = deps.backend_factory(0)
-            return _judge_answer(deps.judge, _screenshot(backend), done_when, tree=backend.tree, final=False)
+            return _judge_answer(deps.judge, _screenshot(backend), done_when, tree=scoped_tree(backend, state.get("app")), final=False)
         return _a11y_check(deps.backend_factory(0), done_when)
 
     def state_checks_verdict(state: CUState, checks: Any) -> dict:
@@ -970,7 +980,7 @@ def build_cu_graph(deps: CUDeps):
                 log.record("note", f"{state['id']}: memory extract skipped: no local model (fallback only)",
                            job_id=state["id"], turn=turn)
         if model is not None and callable(getattr(model, "complete_json", None)) and records:
-            memory = extract_memory(memory, records[-1], tree_summary(0), model)
+            memory = extract_memory(memory, records[-1], tree_summary(0, app=state.get("app")), model)
         detail = memory.to_log_detail() if hasattr(memory, "to_log_detail") else {}
         log.record("note", f"{state['id']}: working memory after turn {turn}", job_id=state["id"], turn=turn, **detail)
         return memory
@@ -1098,7 +1108,7 @@ def build_cu_graph(deps: CUDeps):
         backend = deps.backend_factory(0)
         try:
             answer = _judge_answer(deps.judge, _screenshot(backend), _goal_question(state["goal"]),
-                                   tree=backend.tree, final=True)
+                                   tree=scoped_tree(backend, state.get("app")), final=True)
         except cu_meter.ModelCallCapReached:
             return {"ok": False, "source": "budget", "cap": True,
                     "reason": f"{decided['reason']}, but the final goal check could not run; {_cap_reason(m)}"}
@@ -1168,7 +1178,7 @@ def build_cu_graph(deps: CUDeps):
         elif deps.judge is not None:
             backend = deps.backend_factory(0)
             answer = _judge_answer(deps.judge, _screenshot(backend), _goal_question(state["goal"]),
-                                   tree=backend.tree, final=True)
+                                   tree=scoped_tree(backend, state.get("app")), final=True)
             result = {"ok": answer["ok"], "error": None if answer["ok"] else f"goal not achieved: {answer['reason'][:200]}",
                       "reason": answer["reason"], "source": answer["source"], "goal": answer["ok"]}
             if not answer["ok"] and failed_index is None:
@@ -1215,9 +1225,9 @@ def build_cu_graph(deps: CUDeps):
         # replan_step yields exactly one replacement Step; replace_step splices it into a revalidated script.
         # A loop break hands the planner the repeat evidence when it accepts ``loop_evidence``.
         if loop_evidence and _accepts_kwarg(deps.planner.replan_step, "loop_evidence"):
-            step = deps.planner.replan_step(script, index, reason, tree_summary(0), loop_evidence=loop_evidence)
+            step = deps.planner.replan_step(script, index, reason, tree_summary(0, app=state.get("app")), loop_evidence=loop_evidence)
         else:
-            step = deps.planner.replan_step(script, index, reason, tree_summary(0))
+            step = deps.planner.replan_step(script, index, reason, tree_summary(0, app=state.get("app")))
         new_script = deps.planner.replace_step(script, index, step)
         attempt = int(state.get("attempt", 0)) + 1
         log.record("remediate", f"{state['id']}: healed step {index} (attempt {attempt})",

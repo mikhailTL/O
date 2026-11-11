@@ -103,23 +103,9 @@ class Sandbox:
         started = time.monotonic()
         timed_out = False
         try:
-            proc = subprocess.run(
-                step.command_string,
-                shell=True,
-                cwd=str(cwd),
-                env=env,
-                timeout=step.timeout_seconds,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                errors="replace",
+            exit_code, stdout, stderr, timed_out = run_command(
+                step.command_string, cwd=str(cwd), env=env, timeout=step.timeout_seconds
             )
-            exit_code, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as e:
-            timed_out = True
-            exit_code = _TIMEOUT_EXIT_CODE
-            stdout = _decode(e.stdout)
-            stderr = _decode(e.stderr)
         except (FileNotFoundError, NotADirectoryError):
             exit_code = _MISSING_CWD_EXIT_CODE
             stdout = ""
@@ -135,6 +121,45 @@ class Sandbox:
             elapsed_ms=elapsed_ms,
             timed_out=timed_out,
         )
+
+
+def run_command(command: str, *, cwd: str, env: Mapping[str, str], timeout: float,
+                popen: type[subprocess.Popen] | None = None) -> tuple[int, str, str, bool]:
+    """``(exit_code, stdout, stderr, timed_out)`` of ``command`` run through the shell in its own session
+    (process group). On timeout the whole group is killed, not just the shell: a ``npm install`` or ``sleep``
+    the shell forked would otherwise keep running (and keep the pipes open) after the step reported 124."""
+    popen = popen or subprocess.Popen
+    kwargs: dict = dict(shell=True, cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, errors="replace")
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    proc = popen(command, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, _decode(stdout), _decode(stderr), False
+    except subprocess.TimeoutExpired:
+        kill_process_group(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 - the group is dead or unreachable; report what we have
+            stdout, stderr = "", ""
+        return _TIMEOUT_EXIT_CODE, _decode(stdout), _decode(stderr), True
+
+
+def kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL ``proc``'s whole process group (POSIX) or the process (Windows). Never raises."""
+    import signal
+
+    try:
+        if os.name != "nt":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _decode(data: bytes | str | None) -> str:

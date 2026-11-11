@@ -834,18 +834,140 @@ def cu_display_status(settings: EngineSettings, deps: Any = None) -> list[dict[s
 
 
 def health_report(settings: EngineSettings, deps: Any = None) -> dict[str, Any]:
+    """The full report, probed synchronously (the ``o_engine health`` CLI). The server answers ``/health`` from a
+    ``HealthMonitor`` snapshot instead: see ``HealthMonitor.snapshot``."""
+    return {**health_cheap(settings, deps), **health_probes(settings)}
+
+
+def health_cheap(settings: EngineSettings, deps: Any = None) -> dict[str, Any]:
+    """The /health fields that cost microseconds (a stat, a ``which``, an in-memory read): always live."""
     return {
         "ok": True,
         "version": __version__,
-        "vllm": _probe_vllm(settings.vllm_url),
         "screenpipe": bool(settings.screenpipe_db) and os.path.isfile(settings.screenpipe_db),
         "xvfb": shutil.which("Xvfb") is not None,
+        "cu_displays": cu_display_status(settings, deps),
+        "mcp_servers": _count_mcp_servers(settings),
+    }
+
+
+def health_probes(settings: EngineSettings) -> dict[str, Any]:
+    """The /health fields that touch the network, spawn a process or import a platform package: vLLM, Playwright
+    (starts its driver), the accessibility backend, ``docker info`` and the optional packages. Only
+    ``HealthMonitor``'s background thread (and the CLI) runs these; a request never does."""
+    return {
+        "vllm": _probe_vllm(settings.vllm_url),
         "playwright": _probe_playwright(),
         "cu_backend": probe_cu_backend(),
         "accessibility_trusted": probe_accessibility_trusted(),
-        "cu_displays": cu_display_status(settings, deps),
-        **phase2_health(settings),
+        "docker": _probe_docker(),
+        "e2b": bool(settings.e2b_api_key) and _module_present("e2b"),
+        "crewai": _module_present("crewai"),
+        "browser_use": _module_present("browser_use"),
+        "open_interpreter": _module_present("interpreter"),
     }
+
+
+HEALTH_REFRESH_S = 15.0
+# What /health says for the probed fields before the first background probe has finished (``warming: true``):
+# the Electron side reads ``ok`` to mark the engine ready and these to colour the status rows.
+HEALTH_WARMING: dict[str, Any] = {
+    "vllm": False,
+    "playwright": False,
+    "cu_backend": {"name": "pending", "available": False, "reason": "probing"},
+    "accessibility_trusted": None,
+    "docker": False,
+    "e2b": False,
+    "crewai": False,
+    "browser_use": False,
+    "open_interpreter": False,
+}
+
+
+class HealthMonitor:
+    """Keeps the expensive half of /health in a snapshot that one daemon thread refreshes every
+    ``HEALTH_REFRESH_S`` seconds. ``snapshot()`` answers in microseconds: the cheap fields live, the probed
+    fields from the last refresh, ``warming: true`` until the first refresh has finished. Nothing on the request
+    path imports a CU backend, starts Playwright's driver or runs ``docker info``."""
+
+    def __init__(self, settings: EngineSettings, deps: Callable[[], Any] | None = None,
+                 interval_s: float = HEALTH_REFRESH_S, probes: Callable[[EngineSettings], dict[str, Any]] | None = None) -> None:
+        self.settings = settings
+        self._deps = deps or (lambda: None)
+        self.interval_s = float(interval_s)
+        self._probes = probes or health_probes
+        self._lock = threading.Lock()
+        self._probed: dict[str, Any] | None = None
+        self._probed_at: float | None = None
+        self._error: str | None = None
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.refreshes = 0
+
+    # ---- lifecycle
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, name="o-health", daemon=True)
+            self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stop the thread; waits (bounded) for a probe in flight so a half-started Playwright driver or
+        ``docker info`` is not torn down with the process."""
+        self._stop.set()
+        self._wake.set()
+        t = self._thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout)
+
+    def poke(self) -> None:
+        """Ask the thread to refresh now (a backend was just built, a setting changed)."""
+        self._wake.set()
+
+    def wait(self, timeout: float = 5.0) -> bool:
+        """True once the first refresh has finished (tests and the CLI)."""
+        return self._ready.wait(timeout)
+
+    # ---- probing
+    def refresh(self) -> dict[str, Any]:
+        """Run the probes now, on the calling thread, and store the result."""
+        try:
+            probed = dict(self._probes(self.settings))
+            error = None
+        except Exception as exc:  # noqa: BLE001 - a probe that raises must not stop the monitor
+            probed = dict(HEALTH_WARMING)
+            error = f"{type(exc).__name__}: {exc}"
+        with self._lock:
+            self._probed = probed
+            self._probed_at = time.time()
+            self._error = error
+            self.refreshes += 1
+        self._ready.set()
+        return probed
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self.refresh()
+            self._wake.wait(self.interval_s)
+            self._wake.clear()
+
+    # ---- reading
+    def snapshot(self) -> dict[str, Any]:
+        self.start()
+        with self._lock:
+            probed = dict(self._probed) if self._probed is not None else None
+            at, error = self._probed_at, self._error
+        cheap = health_cheap(self.settings, self._deps())
+        if probed is None:
+            return {**cheap, **HEALTH_WARMING, "warming": True, "probed_at": None}
+        out = {**cheap, **probed, "warming": False, "probed_at": at}
+        if error:
+            out["probe_error"] = error
+        return out
 
 
 # ---------------------------------------------------------------------------- Phase 2
@@ -901,18 +1023,6 @@ def _count_mcp_servers(settings: EngineSettings) -> int:
         return len(load_config(settings.mcp_servers_path))
     except Exception:
         return 0
-
-
-def phase2_health(settings: EngineSettings) -> dict[str, Any]:
-    """Keys merged into /health: mcp_servers, docker, e2b, crewai, browser_use, open_interpreter."""
-    return {
-        "mcp_servers": _count_mcp_servers(settings),
-        "docker": _probe_docker(),
-        "e2b": bool(settings.e2b_api_key) and _module_present("e2b"),
-        "crewai": _module_present("crewai"),
-        "browser_use": _module_present("browser_use"),
-        "open_interpreter": _module_present("interpreter"),
-    }
 
 
 class ScriptRunRequest(BaseModel):
@@ -1038,6 +1148,22 @@ def _node_dict(node: Any) -> dict[str, Any]:
     return out
 
 
+def unhandled_error_body(exc: BaseException, log: Any = None, route: str = "") -> dict[str, Any]:
+    """``{"detail": "Type: msg", "trace": [last 3 lines]}`` for an exception a route did not handle; recorded in
+    the action log as an ``error`` entry when ``log`` is given."""
+    import traceback
+
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    tail = [ln.rstrip() for ln in text.splitlines() if ln.strip()][-3:]
+    detail = f"{type(exc).__name__}: {exc}"
+    if log is not None:
+        try:
+            log.record("error", f"{route or 'request'} failed: {detail}"[:300], route=route, error=detail, trace=tail)
+        except Exception:  # noqa: BLE001 - logging must never mask the error
+            pass
+    return {"detail": detail, "trace": tail}
+
+
 def create_app(
     settings: EngineSettings,
     deps_factory: Callable[[EngineSettings], Any] | None = None,
@@ -1050,6 +1176,8 @@ def create_app(
     from .ambient.layer import AmbientLayer
 
     ambient = AmbientLayer(settings, log)  # plan J; threads/devices only after start() with O_AMBIENT=1
+    # deps are read only if already built: /health never constructs them (and never starts a display)
+    health_monitor = HealthMonitor(settings, lambda: state["deps"])
 
     def _stop_cu_displays() -> None:
         d = state["deps"]
@@ -1068,13 +1196,16 @@ def create_app(
             ambient.start()
         except Exception as exc:  # noqa: BLE001 - the ambient layer never stops the engine
             log.record("note", "ambient layer failed to start", error=f"{type(exc).__name__}: {exc}")
+        health_monitor.start()
         yield
+        health_monitor.stop()
         pool.shutdown(wait=False, cancel_futures=True)
         _stop_cu_displays()
         ambient.stop()
         log.record("note", "engine stopped")
 
     app = FastAPI(title="O engine", version=__version__, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app.state.health = health_monitor
 
     deps_lock = threading.Lock()
 
@@ -1095,6 +1226,12 @@ def create_app(
     def _schema_violation(_: Request, exc: SchemaViolation) -> JSONResponse:
         log.record("policy", "schema violation rejected", error=str(exc))
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(Exception)
+    def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        # Every other failure in a route becomes JSON the app can show (``detail`` + the last three trace lines),
+        # mirroring /computer/tree, instead of an HTML 500 / a dropped connection; and it is in the action log.
+        return JSONResponse(status_code=500, content=unhandled_error_body(exc, log, route=request.url.path))
 
     def _graph_for_presence(d: Any, job: _Job) -> tuple[Any, bool]:
         """Plan J.3: while USER_ABSENT a queued provision/script job runs headless in an isolated
@@ -1162,8 +1299,8 @@ def create_app(
 
     @app.get("/health", dependencies=guarded)
     def health() -> dict[str, Any]:
-        # deps are read only if already built: /health never constructs them (and never starts a display)
-        return health_report(settings, state["deps"])
+        # A cached snapshot (HealthMonitor): milliseconds, whatever vLLM, Docker or Playwright are doing.
+        return health_monitor.snapshot()
 
     @app.post("/provision", dependencies=guarded)
     def provision(body: dict[str, Any]) -> dict[str, str]:
@@ -1356,19 +1493,18 @@ def create_app(
         return accessibility_report()
 
     @app.get("/computer/tree", dependencies=guarded)
-    def computer_tree(window: str | None = None) -> dict[str, Any]:
+    def computer_tree(window: str | None = None, app: str | None = None) -> dict[str, Any]:
         # A backend failure (an app without an accessibility tree, a COM error on Windows, a dead display) is
         # reported as data, not as a 500: callers (native tab listing, the planner) read `error` and fall back.
+        # ``app`` scopes the walk to one application where the backend supports it (macOS AX: that app only).
         try:
-            backend = deps().cu_backend(0)
-            nodes = backend.tree(window) if window else backend.tree()
-        except Exception as exc:  # noqa: BLE001
-            import traceback
+            from .cu.backends.base import backend_tree
 
-            tail = traceback.format_exc().strip().splitlines()[-3:]
-            log.record("error", "computer/tree failed", error=f"{type(exc).__name__}: {exc}", trace=tail)
-            raise HTTPException(status_code=502, detail={"error": f"{type(exc).__name__}: {exc}", "trace": tail}) from None
-        return {"window": window, "nodes": [_node_dict(n) for n in (nodes or [])]}
+            nodes = backend_tree(deps().cu_backend(0), window or None, app=app or None)
+        except Exception as exc:  # noqa: BLE001
+            body = unhandled_error_body(exc, log, route="/computer/tree")
+            raise HTTPException(status_code=502, detail={"error": body["detail"], "trace": body["trace"]}) from None
+        return {"window": window, "app": app, "nodes": [_node_dict(n) for n in (nodes or [])]}
 
     @app.post("/computer/find", dependencies=guarded)
     def computer_find(body: dict[str, Any]) -> dict[str, Any]:
@@ -1378,7 +1514,10 @@ def create_app(
             target = Target.model_validate((body or {}).get("target") or {})
         except Exception as exc:
             raise SchemaViolation(str(exc)) from None
-        node = deps().cu_backend(0).find(target)
+        from .cu.backends.base import backend_find
+
+        app = (body or {}).get("app")
+        node = backend_find(deps().cu_backend(0), target, app=str(app) if app else None)
         return {"found": node is not None, "node": _node_dict(node) if node is not None else None}
 
     # ------------------------------------------------------------ Phase 2 routes

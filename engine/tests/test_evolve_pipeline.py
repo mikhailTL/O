@@ -535,3 +535,211 @@ def test_failed_self_test_never_activates(tmp_path):
     assert _config(inst) == {} and inst.rows() == []
     assert {s.status for s in reg.external().values()} == {"install_failed", "blocked_license"}
     assert ev.feed()[0]["text"].startswith("Did not install") and "self-test failed" in ev.feed()[0]["text"]
+
+
+# ---------------------------------------------------------------- audit fixes: failures surface, nothing is lost
+
+
+class _Result:
+    def __init__(self, done=(), failed=(), unreached=(), errors=()):
+        self.done, self.failed, self.unreached, self.errors = list(done), list(failed), list(unreached), list(errors)
+
+
+def test_triage_crash_keeps_signals_in_the_backlog_and_tells_the_feed(tmp_path):
+    f = Fakes(signals=[sig(1), sig(2)], proposals=[prop(1), prop(2)])
+    calls = []
+
+    def triage(signals, priors=None, budget_usd=0.0):
+        calls.append(sorted(s.id for s in signals))
+        raise RuntimeError("the claude CLI is not logged in: run `claude login`")
+
+    ev = make(tmp_path, f, settings={"evolveSlotsActive": 0})
+    ev.deps.triage = triage
+    r = ev.scan_and_triage()
+    assert r["new_proposals"] == 0 and "not logged in" in r["triage_error"] and r["backlog"] == 2
+    assert ev.store.local.backlog() == ["s1", "s2"]  # nothing was dropped
+    row = ev.journal.read(events=("triage_failed",))[-1]
+    assert row["signals"] == 2 and "not logged in" in row["error"]
+    texts = [x["text"] for x in ev.feed()]
+    assert any(t.startswith("Could not triage 2 signals: the claude CLI is not logged in") for t in texts)
+    assert "Read 2 new developments, 2 still to be triaged" in texts  # the scan line does not pretend they were judged
+    ev.scan_and_triage()
+    assert len(calls) == 2 and calls[1] == ["s1", "s2"]  # retried next time, same signals
+
+
+def test_partial_triage_failure_drops_only_the_settled_signals(tmp_path):
+    f = Fakes(signals=[sig(i) for i in range(1, 5)], proposals=[prop(1)])
+
+    def triage(signals, priors=None, budget_usd=0.0):
+        triage.last_result = _Result(done=["s1", "s2"], failed=["s3"], unreached=["s4"],
+                                     errors=["batch 2: TriageError: claude cli exited 1: boom", "budget reached before batch 3"])
+        return [prop(1)]
+
+    ev = make(tmp_path, f, settings={"evolveSlotsActive": 0})
+    ev.deps.triage = triage
+    r = ev.scan_and_triage()
+    assert r["new_proposals"] == 1 and r["triage_error"].startswith("batch 2: TriageError")
+    assert ev.store.local.backlog() == ["s3", "s4"]  # failed + not reached stay; settled ones go
+    row = ev.journal.read(events=("triage_failed",))[-1]
+    assert row["signals"] == 1 and row["text"] == "Could not triage 1 signal: batch 2: TriageError: claude cli exited 1: boom"
+    assert ev.status()["backlog"] == 2
+
+
+def test_hopeless_signals_are_given_up_after_max_tries(tmp_path):
+    from o_engine.evolve import pipeline as P
+
+    f = Fakes(signals=[sig(1)], proposals=[])
+    ev = make(tmp_path, f, settings={"evolveSlotsActive": 0})
+    ev.deps.triage = lambda signals, priors=None, budget_usd=0.0: (_ for _ in ()).throw(RuntimeError("bad batch"))
+    for _ in range(P.MAX_TRIAGE_TRIES):
+        ev.scan_and_triage()
+    assert ev.store.local.backlog() == []
+    rows = ev.journal.read(events=("triage_failed",))
+    assert [r["given_up"] for r in rows] == [0] * (P.MAX_TRIAGE_TRIES - 1) + [1]
+
+
+def test_scan_report_source_errors_reach_the_journal_and_feed(tmp_path):
+    class Report:
+        def __init__(self):
+            self.new = [sig(1)]
+            self.per_source = {"github": {"ok": False, "error": "RateLimited: 60/h anonymous limit; set a token"},
+                               "arxiv": {"ok": True, "error": "", "new": 1}}
+
+    f = Fakes(proposals=[prop(1)])
+    ev = make(tmp_path, f, settings={"evolveSlotsActive": 0})
+    ev.deps.scan = lambda: Report()
+    r = ev.scan_and_triage()
+    assert r["new_signals"] == 1 and r["source_errors"] == {"github": "RateLimited: 60/h anonymous limit; set a token"}
+    row = ev.journal.read(events=("scan",))[-1]
+    assert row["source_errors"]["github"].startswith("RateLimited")
+    text = [x["text"] for x in ev.feed() if x["event"] == "scan"][0]
+    assert text.startswith("Read 1 new development, 1 worth trying; 1 source could not be read: github (RateLimited")
+    ev.deps.scan = lambda: (_ for _ in ()).throw(ConnectionError("offline"))
+    ev.scan_and_triage()
+    assert [x["text"] for x in ev.feed() if x["event"] == "scan"][0] == "Could not read new developments: ConnectionError: offline"
+
+
+def test_no_push_access_keeps_the_branch_local_and_refuses_approve(tmp_path):
+    f = Fakes(signals=[sig(1)], proposals=[prop(1)])
+    probes = []
+
+    def can_push():
+        probes.append(1)
+        return False, "the GitHub token has no write access to o/O"
+
+    ev = make(tmp_path, f, can_push=can_push)
+    run_cycle(ev.settings(), ev.deps, evolver=ev)
+    p = ev.store.get("p1")
+    assert p.status == "ready_local" and f.pushed == [] and not ev.deps.github.prs
+    v = ev.proposal_view(p)
+    assert v["branch"] == "evolve/p1" and "no write access" in v["local_reason"] and v["compare_url"] == ""
+    text = [x["text"] for x in ev.feed() if x["event"] == "ready_local"][0]
+    assert text == "Upgrade 1 is ready on branch evolve/p1 on this computer — O can't push to o/O (the GitHub token has no write access to o/O)"
+    a = ev.approve("p1")
+    assert a["ok"] is False and "cannot push it to o/O" in a["error"] and "evolve/p1" in a["error"]
+    assert ev.store.get("p1").status == "ready_local" and not ev.journal.read(events=("approved",))
+    st = ev.status()
+    assert st["push_access"] == {"ok": False, "reason": "the GitHub token has no write access to o/O"}
+    assert st["ready_local"] == [{"id": "p1", "title": "Upgrade 1", "branch": "evolve/p1"}]
+    ev.push_access(); ev.push_access()
+    assert len(probes) == 1  # cached, not re-probed every call
+    assert ev.reject("p1", "fine")["status"] == "rejected"  # the person can still set it aside
+
+
+def test_push_failure_is_ready_local_not_a_stuck_gated_pass(tmp_path):
+    f = Fakes(signals=[sig(1)], proposals=[prop(1)])
+    ev = make(tmp_path, f, github=FakeGitHub(token=""))
+    ev.deps.push = lambda wd, br: (_ for _ in ()).throw(RuntimeError("git push failed: remote: Permission denied"))
+    run_cycle(ev.settings(), ev.deps, evolver=ev)
+    assert ev.store.get("p1").status == "ready_local"
+    text = [x["text"] for x in ev.feed() if x["event"] == "push_failed"][0]
+    assert text == ("Upgrade 1 passed every check but could not be pushed to o/O: git push failed: remote: Permission denied; "
+                    "the branch evolve/p1 stays on this computer")
+    assert ev.approve("p1")["ok"] is False
+    # a gated_pass that never got a compare URL cannot be "approved" into a merge that never happened
+    ev._status("p1", "gated_pass")
+    a = ev.approve("p1")
+    assert a["ok"] is False and "never pushed" in a["error"] and ev.store.get("p1").status == "gated_pass"
+
+
+def test_pr_gates_and_skills_errors_have_feed_lines(tmp_path):
+    f = Fakes(signals=[sig(1)], proposals=[prop(1)])
+
+    class FailingGitHub(FakeGitHub):
+        def open_pr(self, head, base, title, body):
+            raise RuntimeError("GitHub POST /pulls answered 403: resource not accessible")
+
+    ev = make(tmp_path, f, github=FailingGitHub())
+    ev.deps.run_gates = lambda p, wd, base, spent_usd=0.0: (_ for _ in ()).throw(RuntimeError("docker died"))
+    run_cycle(ev.settings(), ev.deps, evolver=ev)
+    texts = [x["text"] for x in ev.feed()]
+    assert "Could not check Upgrade 1: RuntimeError: docker died; left unchanged" in texts
+    assert ev.proposal_view(ev.store.get("p1"))["error"] == "RuntimeError: docker died"
+    f2 = Fakes(signals=[sig(2)], proposals=[prop(2)])
+    ev2 = make(tmp_path / "b", f2, github=FailingGitHub())
+    run_cycle(ev2.settings(), ev2.deps, evolver=ev2)
+    texts = [x["text"] for x in ev2.feed()]
+    assert any(t.startswith("Upgrade 2 was pushed but the pull request could not be opened: GitHub POST /pulls answered 403") for t in texts)
+    ev2._record("skills_error", error="ValueError: bad registry")
+    assert "Could not update skills: ValueError: bad registry" in [x["text"] for x in ev2.feed()]
+    ev2._record("build_failed", "p2", error="BuildError: client crashed")
+    assert "Could not build Upgrade 2; nothing changed (BuildError: client crashed)" in [x["text"] for x in ev2.feed()]
+
+
+def test_without_a_sandbox_only_no_exec_proposals_build(tmp_path):
+    from o_engine.evolve.pipeline import no_exec
+
+    code = prop(1, 0.9)
+    deps_only = prop(2, 0.8, dep_only=True, new_deps=["pypi:httpx==0.28.1"])
+    docs = prop(3, 0.7).model_copy(update={"files": ["docs/evolve.md", "README.md"]})
+    mixed = prop(4, 0.6).model_copy(update={"files": ["docs/evolve.md", "engine/o_engine/x.py"]})
+    assert [no_exec(p) for p in (code, deps_only, docs, mixed)] == [False, True, True, False]
+    f = Fakes(signals=[sig(i) for i in range(1, 5)], proposals=[code, deps_only, docs, mixed])
+    seen = {}
+
+    def build(p, repo_root, workdir, budget_usd=0.0, needs_sandbox=True):
+        seen[p.id] = needs_sandbox
+        return f.build(p, repo_root, workdir, budget_usd)
+
+    ev = make(tmp_path, f, sandbox=no_sandbox, settings={"evolveSlotsAway": 4})
+    ev.deps.build = build
+    out = ev.tick("away", force_scan=True)
+    ev.wait(5)
+    assert sorted(out["started"]) == ["p2", "p3"] and seen == {"p2": False, "p3": False}
+    assert {ev.store.get(i).status for i in ("p2", "p3")} == {"pr_open"}
+    assert {ev.store.get(i).status for i in ("p1", "p4")} == {"proposed"}
+    assert ev.waiting_for_sandbox() and {p.id for p in ev.waiting_for_sandbox()} == {"p1", "p4"}
+    rows = ev.journal.read(events=("sandbox_missing",))
+    assert len(rows) == 1 and rows[0]["text"].endswith("2 upgrades waiting") and "docker: not installed" in rows[0]["text"]
+    ev.tick("away")
+    assert len(ev.journal.read(events=("sandbox_missing",))) == 1  # once a day, not every tick
+    ev.deps.now = lambda: 1_000_000.0 + 2 * 86400
+    ev.tick("away")
+    assert len(ev.journal.read(events=("sandbox_missing",))) == 2
+    assert ev.status()["sandbox_missing"] is True and ev.status()["waiting_for_sandbox"] == 2
+    # with a sandbox, code proposals build and need it
+    ev2 = make(tmp_path / "b", Fakes(signals=[sig(1)], proposals=[code]))
+    ev2.deps.build = build
+    run_cycle(ev2.settings(), ev2.deps, evolver=ev2)
+    assert seen["p1"] is True
+
+
+def test_no_git_checkout_blocks_builds_with_one_feed_line(tmp_path):
+    from o_engine.evolve.builder import NO_GIT_MESSAGE
+
+    f = Fakes(signals=[sig(1)], proposals=[prop(1)])
+    ev = make(tmp_path, f, git_reason=lambda: NO_GIT_MESSAGE)
+    out = ev.tick("away", force_scan=True)
+    ev.wait(5)
+    assert out["started"] == [] and f.built == [] and out["git_reason"] == NO_GIT_MESSAGE
+    assert ev.store.get("p1").status == "proposed" and not ev.journal.read(events=("build_failed",))
+    ev.tick("away")
+    rows = [x for x in ev.feed() if x["event"] == "no_git"]
+    assert [x["text"] for x in rows] == ["O was installed without git; upgrades need a git checkout"]
+    st = ev.status()
+    assert st["git_missing"] is True and st["git_reason"] == NO_GIT_MESSAGE
+    assert run_cycle(ev.settings(), ev.deps, evolver=ev)["built"] == []
+    ev.deps.git_reason = lambda: ""
+    ev.tick("away")
+    ev.wait(5)
+    assert [b[0] for b in f.built] == ["p1"]

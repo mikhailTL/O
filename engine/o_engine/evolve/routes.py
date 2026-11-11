@@ -16,7 +16,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .learn import Telemetry
-from .pipeline import Evolver, GitHub, PipelineDeps, PracticeHost, _call, evolve_settings, git_push, run_cycle
+from .pipeline import (Evolver, GitHub, PipelineDeps, PracticeHost, _call, evolve_settings, git_push, git_push_access,
+                       run_cycle)
 
 
 class TickRequest(BaseModel):
@@ -64,14 +65,17 @@ class _Triage:
     def __init__(self, mod: Any, claude_path: str, store: Any) -> None:
         self.mod, self.store, self.last_spent = mod, store, 0.0
         self.client = mod.TriageClient(claude_path)
+        self.last_result: Any = None  # triage.TriageResult of the last call: which signals settled, which failed and why
         from .capmap import load_capmap
 
         self.capmap = load_capmap()
 
     def __call__(self, signals: list[Any], priors: Any = None, budget_usd: float = 0.5) -> list[Any]:
         before = float(getattr(self.client, "spent_usd", 0.0))
+        res = self.mod.TriageResult()
+        self.last_result = res
         try:
-            return self.mod.triage(signals, self.capmap, self.client, budget_usd, store=self.store)
+            return self.mod.triage(signals, self.capmap, self.client, budget_usd, store=self.store, result=res)
         finally:
             self.last_spent = max(0.0, float(getattr(self.client, "spent_usd", 0.0)) - before)
 
@@ -99,11 +103,16 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
     if m_store is not None:
         cls = _first(m_store, ("EvolveStore", "Store"))
         store = _try(lambda: cls(evolve_dir / "evolve.db")) if cls else None
+    token = str(evo.get("evolveGithubToken") or "")
+    repo = str(evo.get("evolveRepo") or "")
     scan = None
     if m_sources is not None:
+        full = getattr(m_sources, "scan", None)  # -> ScanReport: new signals plus each source's outcome
         fn = _first(m_sources, ("scan_incremental", "scan_all"))
-        if fn is not None:
-            scan = lambda: list(_call(fn, store=store) or [])  # noqa: E731 - ETag/cursor caching lives in the store
+        if callable(full):
+            scan = lambda: _call(full, store, incremental=True, github_token=token or None)  # noqa: E731 - ETag/cursor caching lives in the store
+        elif fn is not None:
+            scan = lambda: list(_call(fn, store=store) or [])  # noqa: E731
     triage = None
     if m_triage is not None and getattr(m_triage, "triage", None) is not None:
         triage = _try(lambda: _Triage(m_triage, str(getattr(engine_settings, "claude_path", "") or "claude"), store))
@@ -116,12 +125,18 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
     mode = lambda: evolve_settings()["evolveSandbox"]  # noqa: E731
     choice = m_sandbox.CachedChoice(mode, engine_settings)
     build = None
+    git_reason = None
     if m_builder is not None and getattr(m_builder, "build", None) is not None:
         claude = str(getattr(engine_settings, "claude_path", "") or "claude")
 
-        def build(p: Any, root: str, wd: str, budget_usd: float = 3.0, signals: Any = ()) -> Any:
+        def build(p: Any, root: str, wd: str, budget_usd: float = 3.0, signals: Any = (), needs_sandbox: bool = True) -> Any:
+            # A docs / dependency-pin proposal builds with no shell when there is no sandbox; code needs one.
             return m_builder.build(p, root, wd, client_cmd=claude, budget_usd=budget_usd, sandbox_mode=mode(),
-                                   signals=list(signals or ()))
+                                   signals=list(signals or ()), needs_sandbox=needs_sandbox)
+
+        reason_fn = getattr(m_builder, "git_checkout_reason", None)
+        if callable(reason_fn):
+            git_reason = lambda: str(reason_fn(repo_root) or "")  # noqa: E731
     run_gates = None
     if m_gates is not None and getattr(m_gates, "run_gates", None) is not None:
         def run_gates(p: Any, wd: str, base: Any, spent_usd: float = 0.0) -> Any:
@@ -133,7 +148,10 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
         def baseline() -> Any:
             c = choice()
             if not c.available:
-                raise RuntimeError(f"no sandbox for the baseline: {c.reason}")
+                # No sandbox: nothing is measured. The gates still get HEAD for the diff; dynamic checks are
+                # waived only for diffs that run no code (gates.py) and fail for everything else.
+                return {"commit": m_baseline.head_commit(repo_root), "sandbox": "none", "static_only": True,
+                        "reason": f"no sandbox for the baseline: {c.reason}"}
             return m_baseline.sandboxed_baseline(repo_root, c.factory, c.backend)
     protected = _first(m_protected, ("violations",)) if m_protected else None
     skills = None
@@ -147,13 +165,13 @@ def build_deps(engine_settings: Any, evo: dict[str, Any]) -> PipelineDeps:
         installer = McpInstaller(data_dir / "skills", sandbox=choice)
     except Exception:  # noqa: BLE001
         missing.append("installer")
-    token = str(evo.get("evolveGithubToken") or "")
-    repo = str(evo.get("evolveRepo") or "")
     learning_dir = getattr(engine_settings, "learning_path", data_dir / "learning")
+    gh = GitHub(repo, token)
     return PipelineDeps(
         store=store, scan=scan, triage=triage, build=build, run_gates=run_gates, baseline=baseline, protected=protected,
-        github=GitHub(repo, token), push=lambda workdir, branch: git_push(workdir, branch, repo, token), skills=skills,
+        github=gh, push=lambda workdir, branch: git_push(workdir, branch, repo, token), skills=skills,
         installer=installer,
+        can_push=lambda: git_push_access(repo_root, repo, token, gh), git_reason=git_reason,
         telemetry=Telemetry(learning_dir, data_dir, evo.get("evolveAppLog") or None),
         repo_root=repo_root, evolve_dir=str(evolve_dir), missing=missing, sandbox=choice,
     )

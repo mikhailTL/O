@@ -9,6 +9,7 @@ focused) are permitted only when the backend was constructed with
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -363,6 +364,43 @@ class CUBackend(ABC):
         """SHA-256 over the structural content of a tree (ids, roles, names, text, rects, states)."""
         payload = [n.model_dump() for n in tree]
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+_APP_PARAM: dict[tuple[type, str], bool] = {}
+
+
+def _accepts_app(backend: CUBackend, method: str) -> bool:
+    """True when ``backend.<method>`` takes an ``app`` keyword (the macOS AX backend scopes by application; the
+    other backends read the display's whole tree and ignore it). Cached per class."""
+    key = (type(backend), method)
+    hit = _APP_PARAM.get(key)
+    if hit is None:
+        try:
+            params = inspect.signature(getattr(backend, method)).parameters
+            hit = "app" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError, AttributeError):
+            hit = False
+        _APP_PARAM[key] = hit
+    return hit
+
+
+def backend_tree(backend: CUBackend, window: str | None = None, *, app: str | None = None) -> list[Node]:
+    """``backend.tree`` scoped to ``app`` where the backend supports it (else the plain call)."""
+    kwargs: dict = {}
+    if app and _accepts_app(backend, "tree"):
+        kwargs["app"] = app
+    if window:
+        return backend.tree(window, **kwargs)
+    return backend.tree(**kwargs)
+
+
+def backend_find(backend: CUBackend, target: Target, within: Node | None = None, *, app: str | None = None) -> Node | None:
+    """``backend.find`` scoped to ``app`` where the backend supports it (else the plain call)."""
+    if app and _accepts_app(backend, "find"):
+        return backend.find(target, within=within, app=app)
+    if within is not None:
+        return backend.find(target, within=within)
+    return backend.find(target)
 
 
 class UnavailableBackend(CUBackend):

@@ -492,12 +492,16 @@ def test_no_sandbox_pauses_code_builds_but_scanning_and_triage_continue(tmp_path
     assert out["scan"]["new_proposals"] == 1 and fk.triaged  # scanning + triage kept running
     assert out["started"] == [] and fk.built == []
     assert out["code_builds"]["enabled"] is False
-    lines = [f for f in ev.feed() if f["event"] == "code_paused"]
-    assert [f["text"] for f in lines] == [S.PAUSED_MESSAGE]
+    paused_rows = lambda: [f for f in ev.feed() if f["event"] in ("code_paused", "sandbox_missing")]  # noqa: E731
+    lines = paused_rows()
+    assert len(lines) == 1 and lines[0]["text"].startswith("Code upgrades need Docker (or an E2B key): install Docker Desktop")
+    assert "docker: nope" in lines[0]["text"] and lines[0]["text"].endswith("1 upgrade waiting")  # says exactly what is missing
     ev.tick("away")
-    assert len([f for f in ev.feed() if f["event"] == "code_paused"]) == 1  # one calm line, not one per tick
+    assert len(paused_rows()) == 1  # one calm line, not one per tick
     st = ev.status()
     assert st["code_builds"]["enabled"] is False and st["code_builds"]["message"] == S.PAUSED_MESSAGE
+    assert st["sandbox_missing"] is True and st["code_builds"]["sandbox_missing"] is True and st["waiting_for_sandbox"] == 1
+    assert st["sandbox_missing_text"] == lines[0]["text"]
 
 
 def test_unwired_sandbox_counts_as_none(tmp_path):
@@ -543,3 +547,14 @@ def test_untrusted_env_drops_git_config_injection_as_a_set(monkeypatch):
     env = bl.untrusted_env()
     assert not [k for k in env if k.startswith("GIT_CONFIG")]
     assert subprocess.run(["git", "--version"], env=env, capture_output=True).returncode == 0
+
+
+def test_no_exec_paths_and_missing_text():
+    assert S.no_exec_paths(["docs/a.md", "README.md", "LICENSE", "package.json", "engine/pyproject.toml"])
+    assert not S.no_exec_paths([]) and not S.no_exec_paths(["docs/a.md", "main/x.js"])
+    assert not S.no_exec_paths(["engine/o_engine/evolve/notes.py"]) and not S.no_exec_paths(["../docs/a.md"])
+    view = S.choose("auto", env={}, docker_probe=_no, e2b_probe=_no).view()
+    t = S.missing_text(view, 3)
+    assert t.startswith("Code upgrades need Docker (or an E2B key): install Docker Desktop") and t.endswith("3 upgrades waiting")
+    assert "docker: nope" in t
+    assert S.missing_text({"mode": "e2b", "reason": "e2b: no key"}).startswith("Code upgrades need E2B")

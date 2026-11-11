@@ -104,11 +104,35 @@ def _git(repo: Path | str, *args: str, check: bool = True) -> subprocess.Complet
     return proc
 
 
+NO_GIT_MESSAGE = "O was installed without git; upgrades need a git checkout"
+
+
+def git_checkout_reason(repo_root: Path | str) -> str:
+    """``""`` when ``repo_root`` is a git checkout O can build from, otherwise why not (fast, no model call)."""
+    repo = Path(repo_root)
+    if not repo.exists():
+        return f"{NO_GIT_MESSAGE} ({repo} does not exist)"
+    if not (repo / ".git").exists():
+        return NO_GIT_MESSAGE
+    if shutil.which("git") is None:
+        return "git is not installed on this computer; upgrades need it"
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"git could not read {repo}: {exc}"
+    if proc.returncode != 0:
+        return f"{NO_GIT_MESSAGE} ({(proc.stderr or proc.stdout).strip()[:120]})"
+    return ""
+
+
 def make_checkout(repo_root: Path | str, workdir: Path | str, branch: str) -> str:
     """Isolated checkout of ``repo_root``'s HEAD at ``workdir`` on ``branch``; returns how ("worktree"/"clone")."""
     repo, wd = Path(repo_root).resolve(), Path(workdir).resolve()
     if wd.exists() and any(wd.iterdir()):
         raise BuildError(f"workdir {wd} exists and is not empty")
+    why = git_checkout_reason(repo)
+    if why:
+        raise BuildError(why)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     wt = _git(repo, "worktree", "add", "-b", branch, str(wd), head, check=False)
     if wt.returncode == 0:
@@ -335,18 +359,25 @@ def build(proposal: Proposal, repo_root: Path | str, workdir: Path | str, client
           budget_usd: float = 5.0, *, max_turns: int = DEFAULT_MAX_TURNS, timeout_s: float = DEFAULT_TIMEOUT_S,
           transcript_dir: Path | str | None = None, env: Mapping[str, str] | None = None,
           sandbox_mode: str | None = None, signals: Sequence[Signal] = (),
-          chooser: Any = None) -> BuildResult:
-    """``sandbox_mode`` (``evolveSandbox``) gives the session ``o-sandbox-test``; without it there is no shell."""
+          chooser: Any = None, needs_sandbox: bool = True) -> BuildResult:
+    """``sandbox_mode`` (``evolveSandbox``) gives the session ``o-sandbox-test``; without it there is no shell.
+    ``needs_sandbox=False`` (a docs or dependency-pin proposal: nothing it writes runs) lets the build go ahead
+    with no shell when no sandbox is available instead of failing."""
     if budget_usd <= 0:
         raise BuildError("budget_usd must be > 0")
     branch = branch_name(proposal)
     wd = Path(workdir).resolve()
+    why = git_checkout_reason(repo_root)
+    if why:
+        raise BuildError(why)
     choice = None
     if sandbox_mode is not None:
         choice = (chooser or sbx.choose)(sandbox_mode)
         if not choice.available:
-            raise BuildError(f"no sandbox for test runs: {choice.reason}")
-        if choice.prepare is not None:
+            if needs_sandbox:
+                raise BuildError(f"no sandbox for test runs: {choice.reason}")
+            choice = None
+        elif choice.prepare is not None:
             choice.prepare()
     how = make_checkout(repo_root, wd, branch)
     tdir = Path(transcript_dir) if transcript_dir else wd.parent / f"{wd.name}.transcripts"

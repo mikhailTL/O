@@ -67,6 +67,12 @@ def _h():
     return {"x-o-token": TOKEN}
 
 
+def _health(c):
+    """/health after the monitor's first probe: the accessibility fields are probed in the background."""
+    assert c.app.state.health.wait(5.0), "the health monitor's first refresh did not finish"
+    return c.get("/health", headers=_h()).json()
+
+
 # ------------------------------------------------------------------ health: three states
 
 
@@ -77,7 +83,7 @@ def test_absent_backend_reports_not_importable(mac, tmp_path):
     assert cu["reason"].startswith("accessibility backend not importable") and "install.sh" in cu["reason"]
     assert srv.probe_accessibility_trusted() is None
     with _client(tmp_path) as c:
-        body = c.get("/health", headers=_h()).json()
+        body = _health(c)
         assert set(body["cu_backend"]) == {"name", "available", "reason"}
         assert body["cu_backend"]["available"] is False and body["accessibility_trusted"] is None
         access = c.get("/computer/access", headers=_h()).json()
@@ -90,7 +96,7 @@ def test_present_but_untrusted_reports_permission_needed(mac, tmp_path):
     cu = srv.probe_cu_backend()
     assert cu == {"name": "ax", "available": False, "reason": "accessibility permission needed"}
     with _client(tmp_path) as c:
-        body = c.get("/health", headers=_h()).json()
+        body = _health(c)
         assert body["accessibility_trusted"] is False
         assert body["cu_backend"]["reason"] == "accessibility permission needed"
         access = c.get("/computer/access", headers=_h()).json()
@@ -107,7 +113,7 @@ def test_present_and_trusted_is_available(mac, tmp_path):
     cu = srv.probe_cu_backend()
     assert cu == {"name": "ax", "available": True, "reason": ""}
     with _client(tmp_path) as c:
-        body = c.get("/health", headers=_h()).json()
+        body = _health(c)
         assert body["accessibility_trusted"] is True and body["cu_backend"]["available"] is True
         assert c.get("/computer/access", headers=_h()).json()["hint"] == ""
 

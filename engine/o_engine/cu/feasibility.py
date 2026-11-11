@@ -115,19 +115,21 @@ class FeasibilityGate:
         except Exception:
             pass  # logging never breaks a probe
 
-    def _run_probe(self, probe: Probe, job_id: str = "") -> ProbeResult:
+    def _run_probe(self, probe: Probe, job_id: str = "", app: str = "") -> ProbeResult:
         self._log("tool", f"{job_id}: feasibility probe {probe.op} {probe.arg}".rstrip(),
                   job_id=job_id, op=probe.op, arg=probe.arg)
-        result = self._probe(probe)
+        result = self._probe(probe, app)
         self._log("result", f"{job_id}: probe {probe.op} {'ok' if result.ok else 'failed'}: "
                   + (result.output.strip()[:200] or "(no output)"),
                   job_id=job_id, op=probe.op, arg=probe.arg, ok=result.ok, output=result.output[:PROBE_OUTPUT_CHARS])
         return result
 
-    def _probe(self, probe: Probe) -> ProbeResult:
+    def _probe(self, probe: Probe, app: str = "") -> ProbeResult:
         try:
             if probe.op == "tree":
-                tree = self.backend.tree(probe.arg) if probe.arg else self.backend.tree()
+                from .backends.base import backend_tree
+
+                tree = backend_tree(self.backend, probe.arg or None, app=app or None)
                 return ProbeResult(op=probe.op, arg=probe.arg, ok=True,
                                    output=summarize_tree(tree, TREE_LINES) or "(empty tree)")
             if probe.op == "screenshot":
@@ -164,7 +166,7 @@ class FeasibilityGate:
 
     def check(self, goal: str, app: str, job_id: str) -> FeasibilityVerdict:
         probes = self.probes if self.probes is not None else default_probes(app)
-        results = tuple(self._run_probe(p, job_id) for p in probes)
+        results = tuple(self._run_probe(p, job_id, app) for p in probes)
         answer = self._ask(goal, app, results)
         if answer is None:
             return FeasibilityVerdict(feasible=True, reason=GATE_UNAVAILABLE, probes=results)

@@ -226,3 +226,45 @@ def test_apply_patch_outside_sandbox(sandbox, tmp_path):
     with pytest.raises(SandboxEscape):
         apply_patch(sandbox, Patch(path="../o.txt", find="a", replace="b"))
     assert outside.read_text() == "a"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX")
+def test_timeout_kills_the_whole_process_group(sandbox, tmp_path):
+    """A shell step that forks a long-lived child: on timeout the child dies with the shell (its own session),
+    instead of outliving the step and holding the pipes open."""
+    import subprocess
+    import time
+
+    marker = tmp_path / "alive"
+    # the shell forks `sleep` into the background and waits on it: the timeout must reach the grandchild
+    step = _step(f"(sleep 30; touch {marker}) & echo started; wait", timeout=1)
+    t0 = time.monotonic()
+    res = sandbox.run(step)
+    assert res.timed_out is True and res.exit_code == 124 and "started" in res.stdout
+    assert time.monotonic() - t0 < 10, "communicate() returned once the group was killed, not after 30 s"
+    time.sleep(0.3)
+    # no `sleep 30` in a session of ours is left running under this sandbox's marker path
+    ps = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout
+    assert str(marker) not in ps, ps
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX")
+def test_run_command_starts_a_new_session():
+    from o_engine.executor import run_command
+
+    seen: dict = {}
+
+    class P:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, cmd, **kw):
+            seen.update(kw)
+
+        def communicate(self, timeout=None):
+            return "out", ""
+
+    code, out, err, timed_out = run_command("true", cwd=".", env={}, timeout=5, popen=P)
+    assert (code, out, err, timed_out) == (0, "out", "", False)
+    assert seen["start_new_session"] is True and seen["shell"] is True and seen["stdin"] is not None

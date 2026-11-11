@@ -57,6 +57,14 @@ TMPFS = "/tmp:rw,exec,nosuid,size=2g"
 MAX_TIMEOUT_S = 3600
 PAUSED_MESSAGE = "Code upgrades paused: install Docker Desktop to let O test upgrades safely"
 PAUSED_E2B = "Code upgrades paused: E2B is not reachable, so O cannot test upgrades safely"
+MISSING_MESSAGE = ("Code upgrades need Docker (or an E2B key): install Docker Desktop and start it, or add an E2B API key "
+                   "in Settings; until then only documentation and dependency-pin upgrades are built")
+# Files whose change never executes code on the host or in the gates: prose, and the dependency manifests whose
+# pins the gates check statically. An upgrade touching only these may be built and gated without a sandbox.
+NO_EXEC_SUFFIXES = (".md", ".txt", ".rst")
+NO_EXEC_PREFIXES = ("docs/",)
+NO_EXEC_FILES = ("package.json", "package-lock.json", "engine/pyproject.toml", "engine/requirements.txt",
+                 "engine/requirements-dev.txt", "engine/uv.lock", "engine/poetry.lock", "LICENSE", "README.md")
 SANDBOX_ENV = {"HOME": "/tmp/home", "PYTHONDONTWRITEBYTECODE": "1", "LANG": "C.UTF-8", "CI": "1",
                "PIP_NO_INDEX": "1", "npm_config_offline": "true"}
 _TAR_SKIP = (".git", "node_modules", "__pycache__", ".pytest_cache")
@@ -331,6 +339,37 @@ class SandboxChoice:
 def normalize_mode(mode: Any) -> str:
     m = str(mode or "auto").strip().lower()
     return m if m in MODES else "auto"
+
+
+def no_exec_path(path: str) -> bool:
+    p = str(path).replace("\\", "/")
+    if not p or ".." in p.split("/") or p.startswith("/"):
+        return False
+    if p.startswith("./"):
+        p = p[2:]
+    name = p.rsplit("/", 1)[-1]
+    return (p in NO_EXEC_FILES or name in ("package.json", "package-lock.json") or p.startswith(NO_EXEC_PREFIXES)
+            or p.lower().endswith(NO_EXEC_SUFFIXES) or name.startswith("LICENSE"))
+
+
+def no_exec_paths(paths: Sequence[str]) -> bool:
+    """True when every path is one whose change runs no code (docs, licence text, dependency pins). Empty: False."""
+    files = [str(p) for p in paths if str(p).strip()]
+    return bool(files) and all(no_exec_path(p) for p in files)
+
+
+def missing_text(choice_view: Mapping[str, Any] | None, waiting: int = 0) -> str:
+    """The exact feed line for a missing sandbox: what is missing, how to fix it, what is waiting."""
+    v = dict(choice_view or {})
+    reason = str(v.get("reason") or "").strip()
+    text = MISSING_MESSAGE
+    if v.get("mode") == "e2b":
+        text = "Code upgrades need E2B: it is not reachable (" + (reason or "no key") + "); check the E2B API key in Settings"
+    elif reason:
+        text += f" (checked: {reason[:160]})"
+    if waiting:
+        text += f" — {waiting} upgrade{'s' if waiting != 1 else ''} waiting"
+    return text
 
 
 def _setting(settings_like: Any, *names: str) -> Any:

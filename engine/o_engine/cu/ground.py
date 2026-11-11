@@ -34,6 +34,7 @@ from typing import Any, Callable, Protocol
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ..llm import claude_cli, cli_command
 from ..schema import SchemaViolation
 from ..tokenfilter import TokenFilter
 from . import meter
@@ -187,12 +188,13 @@ class ClaudeCodeGrounder:
         self.timeout = timeout
 
     def _command(self) -> list[str]:
-        return [self.claude_path, "-p", "--output-format", "json"]
+        return cli_command(self.claude_path)
 
     def ground(self, png_bytes: bytes, target_text: str) -> GroundResult | None:
         # The PNG goes in a fresh directory that is also the CLI's working directory: `claude -p` reads files in
         # its working directory without a permission prompt, but a Read of a /tmp file outside it is denied in
-        # headless mode (real run: every screenshot check failed with "permission denied").
+        # headless mode (real run: every screenshot check failed with "permission denied"). A file read pins the
+        # call to the CLI (the proxy carries text only).
         meter.charge_paid("grounder")
         workdir = tempfile.mkdtemp(prefix="o-ground-")
         path = os.path.join(workdir, "screen.png")
@@ -204,29 +206,11 @@ class ClaudeCodeGrounder:
                 + f"\n\nThe screenshot is the PNG file at: {path}\nRead that image.\n\n"
                 + build_ground_prompt(target_text)
             )
-            try:
-                proc = subprocess.run(
-                    self._command(),
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout, cwd=workdir,
-                )
-            except (OSError, subprocess.SubprocessError) as e:
-                raise SchemaViolation(f"claude cli failed to run: {e}") from None
+            payload = claude_cli(prompt, claude_path=self.claude_path, timeout=self.timeout, cwd=workdir)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
-        if proc.returncode != 0:
-            raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
-        try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
         meter.add_cost(payload)
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if not isinstance(result, str):
-            raise SchemaViolation("claude cli output has no string result")
-        return parse_bbox(result, self.name)
+        return parse_bbox(payload["result"], self.name)
 
 
 # ---------------------------------------------------------------- zoom-in grounding

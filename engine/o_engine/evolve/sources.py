@@ -36,7 +36,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import quote, urlencode, urlparse
 
 import httpx
@@ -637,6 +637,13 @@ _NEEDS_DEPS = {"github", "packages"}
 
 
 # --------------------------------------------------------------------------- scan
+def default_github_token(env: Mapping[str, str] | None = None) -> str:
+    """The evolve token (``evolveGithubToken`` reaches the engine as ``O_EVOLVE_GITHUB_TOKEN``), else ``GITHUB_TOKEN``.
+    Scans without one run at GitHub's anonymous rate limit (60 requests/hour)."""
+    e = os.environ if env is None else env
+    return str(e.get("O_EVOLVE_GITHUB_TOKEN") or e.get("GITHUB_TOKEN") or "").strip()
+
+
 @dataclass
 class ScanReport:
     new: list[Signal]
@@ -650,7 +657,7 @@ async def ascan(store: EvolveStore, *, since_days: int = 14, limit: int = 50, in
                 client: httpx.AsyncClient | None = None, capmap: dict[str, Any] | None = None,
                 root: Path = REPO_ROOT, sources: list[str] | None = None, min_stars: int = 25,
                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                overlap: timedelta = timedelta(hours=1)) -> ScanReport:
+                overlap: timedelta = timedelta(hours=1), github_token: str | None = None) -> ScanReport:
     t0 = time.monotonic()
     capmap = capmap if capmap is not None else load_capmap()
     names = sources or list(SOURCES)
@@ -665,7 +672,7 @@ async def ascan(store: EvolveStore, *, since_days: int = 14, limit: int = 50, in
                 since[n] = max(window, last - overlap)
     own = client is None
     client = client or httpx.AsyncClient(headers={"User-Agent": UA}, timeout=TIMEOUT)
-    fetcher = Fetcher(client, store, github_token=os.environ.get("GITHUB_TOKEN") or None, sleep=sleep)
+    fetcher = Fetcher(client, store, github_token=github_token or default_github_token() or None, sleep=sleep)
     ctx = Ctx(fetcher=fetcher, capmap=capmap, since=since, limit=limit, root=root, cursors=cursors,
               min_stars=min_stars, now=now)
     learned = cursors.get("_learned") or {}

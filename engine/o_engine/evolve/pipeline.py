@@ -52,6 +52,8 @@ MIN_BUILD_USD = 0.25
 TRIAGE_BATCH = 40  # signals per triage call
 TRIAGE_MAX_USD = 0.5  # cap per triage call (counts toward the rolling budget)
 TRIAGE_MIN_USD = 0.05
+MAX_TRIAGE_TRIES = 5  # a signal whose triage batch keeps failing is given up after this many attempts
+PUSH_CHECK_TTL_S = 3600.0  # push access re-probed at most hourly
 WEEK_S = 7 * 86400
 DAY_S = 86400
 DEFAULTS: dict[str, Any] = {
@@ -151,6 +153,16 @@ class GitHub:
     def compare_url(self, base: str, branch: str) -> str:
         return f"https://github.com/{self.repo}/compare/{base}...{branch}"
 
+    def can_push(self) -> tuple[bool, str]:
+        """Whether this token may push to the repo (``permissions.push`` of GET /repos/{repo}). No token: no."""
+        if not self.token:
+            return False, f"no GitHub token with write access to {self.repo}"
+        j = self._req("GET", "")
+        perms = j.get("permissions") or {}
+        if perms.get("push") or perms.get("admin") or perms.get("maintain"):
+            return True, ""
+        return False, f"the GitHub token has no write access to {self.repo}"
+
     def open_pr(self, head: str, base: str, title: str, body: str) -> dict[str, Any]:
         j = self._req("POST", "/pulls", {"title": title, "head": head, "base": base, "body": body, "maintainer_can_modify": True})
         return {"number": j.get("number"), "url": j.get("html_url", ""), "base_sha": (j.get("base") or {}).get("sha", "")}
@@ -167,13 +179,43 @@ class GitHub:
         return {"tag": j.get("tag_name", tag), "url": j.get("html_url", "")}
 
 
+_GIT_NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "SSH_ASKPASS": "echo", "GCM_INTERACTIVE": "never"}
+
+
 def git_push(workdir: str | os.PathLike[str], branch: str, repo: str = "", token: str = "") -> None:
     """Push ``branch`` from the build worktree. With a token the remote URL carries it (never logged)."""
     remote = f"https://x-access-token:{token}@github.com/{repo}.git" if token and repo else "origin"
-    r = subprocess.run(["git", "-C", str(workdir), "push", remote, f"{branch}:{branch}"], capture_output=True, text=True, timeout=180)
+    r = subprocess.run(["git", "-C", str(workdir), "push", remote, f"{branch}:{branch}"], capture_output=True, text=True,
+                       timeout=180, env={**os.environ, **_GIT_NO_PROMPT})
     if r.returncode != 0:
         msg = (r.stderr or r.stdout or "").replace(token, "***") if token else (r.stderr or r.stdout or "")
         raise RuntimeError(f"git push failed: {msg.strip()[:300]}")
+
+
+def git_push_access(repo_root: str | os.PathLike[str], repo: str = "", token: str = "", github: GitHub | None = None,
+                    probe_branch: str = "evolve/_push-probe") -> tuple[bool, str]:
+    """Can O push branches to ``repo``? With a token: the token's repo permission (one REST call). Without one:
+    ``git push --dry-run`` from ``repo_root`` with prompts disabled, so a non-author install fails fast instead
+    of hanging on a credential prompt. Never pushes anything."""
+    if token and github is not None:
+        try:
+            return github.can_push()
+        except Exception as exc:  # noqa: BLE001 - fall through to git's own answer
+            api_why = f"{exc}"[:160]
+    else:
+        api_why = ""
+    remote = f"https://x-access-token:{token}@github.com/{repo}.git" if token and repo else "origin"
+    try:
+        r = subprocess.run(["git", "-C", str(repo_root), "push", "--dry-run", remote, f"HEAD:refs/heads/{probe_branch}"],
+                           capture_output=True, text=True, timeout=90, env={**os.environ, **_GIT_NO_PROMPT})
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"could not run git push --dry-run: {exc}"[:300]
+    if r.returncode == 0:
+        return True, ""
+    msg = (r.stderr or r.stdout or "").strip()
+    if token:
+        msg = msg.replace(token, "***")
+    return False, (f"{api_why}; " if api_why else "") + f"git push --dry-run to {repo or 'origin'} failed: {msg[:200]}"
 
 
 # --------------------------------------------------------------------------------- store adapter
@@ -238,11 +280,37 @@ class LocalStore:
                 self._save()
             return list(cur)
 
+    def backlog(self) -> list[str]:
+        with self._lock:
+            return list(self._d.get("backlog", []))
+
     def backlog_drop(self, ids: list[str]) -> None:
         with self._lock:
             drop = set(ids)
             self._d["backlog"] = [i for i in self._d.get("backlog", []) if i not in drop]
+            tries = self._d.get("backlog_tries") or {}
+            self._d["backlog_tries"] = {k: v for k, v in tries.items() if k not in drop}
             self._save()
+
+    def backlog_defer(self, ids: list[str], max_tries: int = MAX_TRIAGE_TRIES) -> list[str]:
+        """Triage of these signals failed: they stay in the backlog for the next run. Each failure counts; a
+        signal that reached ``max_tries`` is dropped so one hopeless batch cannot block the queue. Returns the
+        ids given up on."""
+        with self._lock:
+            tries = self._d.setdefault("backlog_tries", {})
+            gone = []
+            for i in ids:
+                tries[i] = int(tries.get(i, 0)) + 1
+                if tries[i] >= max_tries:
+                    gone.append(i)
+            if gone:
+                drop = set(gone)
+                self._d["backlog"] = [i for i in self._d.get("backlog", []) if i not in drop]
+                for i in gone:
+                    tries.pop(i, None)
+            if ids:
+                self._save()
+            return gone
 
     def signals(self, limit: int = 200) -> list[Signal]:
         rows = sorted(self._d["signals"].values(), key=lambda r: r.get("_seen", 0), reverse=True)[:limit]
@@ -369,6 +437,8 @@ class PipelineDeps:
     skills: Any = None  # runtime skills registry (evolve/skills.py)
     installer: Any = None  # installer.McpInstaller: installs / uninstalls approved external skills
     sandbox: Callable[[], Any] | None = None  # -> sandbox.SandboxChoice; None or unavailable pauses code builds
+    can_push: Callable[[], tuple[bool, str]] | None = None  # -> (O may push to evolveRepo, reason); None: assume yes
+    git_reason: Callable[[], str] | None = None  # -> "" when repo_root is a git checkout, else why builds cannot run
     telemetry: Telemetry | None = None
     rollback: Callable[[str, str, str], Any] | None = None  # extra hook; the app's updater is driven via status
     repo_root: str = ""
@@ -405,6 +475,12 @@ def auto_ship_allowed(p: Proposal, report: GateReport, mode: str, violations: li
 
 def _fmt(v: float | None) -> str:
     return "—" if v is None else (f"{v:.4g}")
+
+
+def no_exec(p: Proposal) -> bool:
+    """A proposal whose change runs no code (a dependency-pin bump, or docs / licence text only): it can be built
+    and gated without a sandbox, because nothing it writes is executed. Everything else needs the sandbox."""
+    return bool(p.dependency_only) or sbx.no_exec_paths(p.files)
 
 
 def pr_body(p: Proposal, report: GateReport, signals: list[Signal], note: str = "") -> str:
@@ -448,6 +524,7 @@ class Evolver:
         self._reserved: dict[str, float] = {}  # proposal id -> budget held until its spend is recorded
         self._lock = threading.RLock()
         self._tick_lock = threading.Lock()
+        self._push_cache: tuple[float, str, bool, str] | None = None  # (checked at, repo, ok, reason)
 
     # ------------------------------------------------------------ helpers
 
@@ -494,7 +571,52 @@ class Evolver:
         view = choice.view() if hasattr(choice, "view") else dict(choice)
         if not view.get("enabled"):
             view["message"] = view.get("message") or sbx.PAUSED_MESSAGE
+        view["sandbox_missing"] = not bool(view.get("enabled"))
         return view
+
+    def waiting_for_sandbox(self) -> list[Proposal]:
+        """Buildable proposals that change code, so they wait until there is a sandbox to test them in."""
+        return [p for p in self.store.proposals() if p.status in BUILDABLE and p.licenses_ok and not no_exec(p)]
+
+    def sandbox_missing_text(self) -> str:
+        tier = self.code_tier()
+        return "" if tier.get("enabled") else sbx.missing_text(tier, len(self.waiting_for_sandbox()))
+
+    def git_reason(self) -> str:
+        """Why builds cannot run from ``repo_root`` (no git checkout), or ``""``."""
+        if self.deps.git_reason is None:
+            return ""
+        try:
+            return str(self.deps.git_reason() or "")[:300]
+        except Exception as exc:  # noqa: BLE001
+            return f"could not check the git checkout: {type(exc).__name__}: {exc}"[:300]
+
+    def push_access(self) -> tuple[bool, str]:
+        """Whether O may push branches to ``evolveRepo`` (probed through ``deps.can_push``, cached for an hour).
+        A non-author install has none: built branches then stay local (``ready_local``)."""
+        repo = str(self.settings()["evolveRepo"])
+        if self.deps.can_push is None:
+            return True, ""
+        with self._lock:
+            c = self._push_cache
+            if c is not None and c[1] == repo and self.now() - c[0] < PUSH_CHECK_TTL_S:
+                return c[2], c[3]
+        try:
+            ok, why = self.deps.can_push()
+            ok, why = bool(ok), str(why or "")[:300]
+        except Exception as exc:  # noqa: BLE001 - cannot tell: do not push blind
+            ok, why = False, f"could not check push access: {type(exc).__name__}: {exc}"[:300]
+        with self._lock:
+            self._push_cache = (self.now(), repo, ok, why)
+        return ok, why
+
+    def _once_a_day(self, event: str, **detail: Any) -> bool:
+        """Journal ``event`` unless one with the same text was written in the last day (one calm feed line)."""
+        rows = self.journal.read(since=self.now() - DAY_S, events=(event,))
+        if any(r.get("text") == detail.get("text") for r in rows):
+            return False
+        self._record(event, **detail)
+        return True
 
     def _sources_of(self, p: Proposal) -> list[str]:
         out: list[str] = []
@@ -521,10 +643,15 @@ class Evolver:
         if self.deps.scan is None:
             return {"ok": False, "error": "sources unavailable", "new_signals": 0, "new_proposals": 0}
         try:
-            found = list(self.deps.scan() or [])
+            report = self.deps.scan()
         except Exception as exc:  # noqa: BLE001
-            self._record("scan", error=f"{type(exc).__name__}: {exc}", new=0)
+            self._record("scan", error=f"{type(exc).__name__}: {exc}"[:300], new=0)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "new_signals": 0, "new_proposals": 0}
+        # ``scan`` may return the signals, or a sources.ScanReport (``new`` + ``per_source`` with each source's error).
+        found = list(getattr(report, "new", report) or [])
+        per = getattr(report, "per_source", None) or {}
+        source_errors = {str(n): str(d.get("error") or "failed")[:200] for n, d in per.items()
+                         if isinstance(d, dict) and d.get("ok") is False}
         new = self.store.add_signals(found)
         self._ingest_skill_signals(new)
         known = {p.id for p in self.store.proposals()}
@@ -533,12 +660,15 @@ class Evolver:
         backlog = self.store.local.backlog_add([s.id for s in new])
         pending = [s for s in (self.store.get_signal(i) for i in backlog[:TRIAGE_BATCH]) if s is not None]
         cap = min(TRIAGE_MAX_USD, self.budget()["available_usd"])
+        triage_error = ""
         if pending and self.deps.triage is not None and cap >= TRIAGE_MIN_USD:
             try:
                 proposals = list(_call(self.deps.triage, pending, priors=self.priors(), budget_usd=cap) or [])
-                self.store.local.backlog_drop([s.id for s in pending])
-            except Exception as exc:  # noqa: BLE001
-                self._record("triage_failed", error=f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - nothing was triaged: every signal stays in the backlog
+                triage_error = f"{exc}"[:300] or type(exc).__name__
+                self._triage_failed(pending, triage_error)
+            else:
+                triage_error = self._settle_triage(pending)
             spent = float(getattr(self.deps.triage, "last_spent", 0.0) or 0.0)
             if spent:
                 self._record("triaged", signals=len(pending), spent_usd=round(spent, 6))
@@ -552,8 +682,33 @@ class Evolver:
             srcs = sorted({s.source for s in new if s.id in p.signal_ids}) or self._sources_of(p)
             self._record("proposed", p.id, title=p.title, subsystem=p.subsystem, risk=p.risk, score=p.score,
                          sources=srcs, signal_ids=list(p.signal_ids))
-        self._record("scan", found=len(found), new=len(new), proposals=added)
-        return {"ok": True, "found": len(found), "new_signals": len(new), "new_proposals": added}
+        self._record("scan", found=len(found), new=len(new), proposals=added, source_errors=source_errors,
+                     backlog=len(self.store.local.backlog()))
+        return {"ok": True, "found": len(found), "new_signals": len(new), "new_proposals": added,
+                "source_errors": source_errors, "triage_error": triage_error, "backlog": len(self.store.local.backlog())}
+
+    def _settle_triage(self, pending: list[Signal]) -> str:
+        """After a triage call returned: drop the signals it settled from the backlog, keep the ones whose batch
+        failed (``last_result.failed`` from routes' ``_Triage``; a triage without that surface settled them all)."""
+        res = getattr(self.deps.triage, "last_result", None)
+        failed_ids = getattr(res, "failed", None)
+        if not isinstance(failed_ids, (list, tuple, set)):
+            self.store.local.backlog_drop([s.id for s in pending])
+            return ""
+        failed, unreached = set(failed_ids), set(getattr(res, "unreached", None) or ())
+        self.store.local.backlog_drop([s.id for s in pending if s.id not in failed and s.id not in unreached])
+        keep = [s for s in pending if s.id in failed]
+        if not keep:
+            return ""
+        errors = [str(e) for e in (getattr(res, "errors", None) or [])]
+        reason = "; ".join(e for e in errors if not e.startswith("budget reached"))[:300] or "triage batch failed"
+        self._triage_failed(keep, reason)
+        return reason
+
+    def _triage_failed(self, signals: list[Signal], reason: str) -> None:
+        gone = self.store.local.backlog_defer([s.id for s in signals])
+        self._record("triage_failed", signals=len(signals), error=reason[:300], given_up=len(gone),
+                     text=f"Could not triage {len(signals)} signal{'s' if len(signals) != 1 else ''}: {reason[:200]}")
 
     def _ingest_skill_signals(self, new: list[Signal]) -> int:
         """Signals tagged ``skill`` become approval-gated candidates in the skills registry (never installed here)."""
@@ -575,13 +730,16 @@ class Evolver:
 
     # ------------------------------------------------------------ build -> gates -> ship
 
-    def candidates(self) -> list[Proposal]:
+    def candidates(self, sandbox: bool | None = None) -> list[Proposal]:
         """Proposals waiting to be built: the person's accepted ones first, then by score x priors. A build moves
-        the status off ``proposed``/``accepted``, so nothing is built twice unless the person re-accepts it."""
+        the status off ``proposed``/``accepted``, so nothing is built twice unless the person re-accepts it.
+        ``sandbox=False`` (no sandbox right now) keeps only proposals whose change runs no code (``no_exec``)."""
         with self._lock:
             busy = set(self._inflight)
         pri = self.priors()
         out = [p for p in self.store.proposals() if p.status in BUILDABLE and p.id not in busy and p.licenses_ok]
+        if sandbox is False:
+            out = [p for p in out if no_exec(p)]
         return sorted(out, key=lambda p: (p.status != "accepted", -self.rank(p, pri)))
 
     def launch(self, p: Proposal) -> bool:
@@ -593,7 +751,9 @@ class Evolver:
             cap = min(float(s["evolvePerProposalUsd"]), self.budget()["available_usd"])
             if cap < MIN_BUILD_USD or self.deps.build is None or self.deps.run_gates is None:
                 return False
-            if not self.code_tier()["enabled"]:
+            if self.git_reason():
+                return False
+            if not self.code_tier()["enabled"] and not no_exec(p):
                 return False
             self._record("build_started", p.id, reserved_usd=round(cap, 4), title=p.title)
             self._status(p.id, "building")
@@ -616,7 +776,7 @@ class Evolver:
         workdir.parent.mkdir(parents=True, exist_ok=True)
         try:
             branch, commit, spent, _transcript = _call(d.build, p, d.repo_root, str(workdir), budget_usd=cap, max_usd=cap,
-                                                       signals=self._signals_of(p))
+                                                       signals=self._signals_of(p), needs_sandbox=not no_exec(p))
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._record("build_failed", p.id, error=f"{type(exc).__name__}: {exc}"[:500], spent_usd=0.0)
@@ -654,13 +814,19 @@ class Evolver:
         gh = self.deps.github
         base = s["evolveBaseBranch"]
         ok, why = auto_ship_allowed(p, report, s["evolveAutoShip"], violations)
+        can_push, no_push = self.push_access()
+        if not can_push:
+            # A non-author install: the branch stays on this computer and the feed says where it is.
+            self._record("ready_local", p.id, branch=report.branch, repo=s["evolveRepo"], reason=no_push)
+            self._status(p.id, "ready_local", f"branch {report.branch} kept local: {no_push}"[:1000], metrics)
+            return {"id": p.id, "status": "ready_local", "branch": report.branch, "reason": no_push}
         try:
             if self.deps.push is not None:
                 self.deps.push(workdir, report.branch)
         except Exception as exc:  # noqa: BLE001
-            self._record("push_failed", p.id, error=str(exc)[:400])
-            self._status(p.id, "gated_pass")
-            return {"id": p.id, "status": "gated_pass", "error": "push failed"}
+            self._record("push_failed", p.id, error=str(exc)[:400], branch=report.branch, repo=s["evolveRepo"])
+            self._status(p.id, "ready_local", f"push failed; branch {report.branch} kept local", metrics)
+            return {"id": p.id, "status": "ready_local", "branch": report.branch, "error": "push failed"}
         if gh is None or not gh.token:
             url = (gh or GitHub(s["evolveRepo"])).compare_url(base, report.branch)
             self._record("compare", p.id, compare_url=url, auto_ship=False, ask=bool(s["evolveAskBeforeInstall"]),
@@ -723,12 +889,22 @@ class Evolver:
             return {"ok": True, "id": pid, "status": "accepted"}
         if p.status == "pr_open":
             return self.merge(pid, by="user")
+        if p.status == "ready_local":
+            r = self.journal.last(pid, ("ready_local", "push_failed")) or {}
+            return {"ok": False, "error": f"{p.title} is ready on branch {r.get('branch') or 'evolve/' + pid} on this computer, "
+                                          f"but O cannot push it to {r.get('repo') or self.settings()['evolveRepo']}"
+                                          + (f" ({r.get('reason')})" if r.get("reason") else "")
+                                          + ". Push the branch and open the pull request yourself; nothing can be approved here."}
         if p.status == "gated_pass":
             cmp_ = self.journal.last(pid, ("compare",))
+            url = (cmp_ or {}).get("compare_url", "")
+            if not url:
+                return {"ok": False, "error": f"{p.title} passed its checks but was never pushed, so there is nothing to merge: "
+                                              "approving it would only record a merge that did not happen"}
             self._record("approved", pid, by="user", release="", previous=self._previous_release(pid),
-                         note="merge the branch on GitHub; the updater installs it", compare_url=(cmp_ or {}).get("compare_url", ""))
+                         note="merge the branch on GitHub; the updater installs it", compare_url=url)
             self._status(pid, "approved")
-            return {"ok": True, "id": pid, "status": "approved", "compare_url": (cmp_ or {}).get("compare_url", "")}
+            return {"ok": True, "id": pid, "status": "approved", "compare_url": url}
         return {"ok": False, "error": f"cannot approve a proposal that is {p.status}"}
 
     def reject(self, pid: str, reason: str = "") -> dict[str, Any]:
@@ -949,7 +1125,13 @@ class Evolver:
             started = []
             tier = self.code_tier()
             out["code_builds"] = tier
-            for p in (self.candidates() if tier["enabled"] else []):
+            out["git_reason"] = self.git_reason()
+            out["push_access"] = self.push_access() if self.candidates() or self.in_flight() else (True, "")
+            if not tier["enabled"] and self.waiting_for_sandbox():
+                self._once_a_day("sandbox_missing", text=self.sandbox_missing_text(), reason=tier.get("reason", ""))
+            if out["git_reason"]:
+                self._once_a_day("no_git", text=out["git_reason"])
+            for p in (self.candidates(sandbox=tier["enabled"]) if not out["git_reason"] else []):
                 if len(started) >= free:
                     break
                 if not self.launch(p):
@@ -980,7 +1162,8 @@ class Evolver:
     # ------------------------------------------------------------ views
 
     def proposal_view(self, p: Proposal) -> dict[str, Any]:
-        j = {e: self.journal.last(p.id, (e,)) for e in ("gated", "pr_opened", "compare", "approved", "shipped", "rolled_back", "held", "built", "build_failed")}
+        j = {e: self.journal.last(p.id, (e,)) for e in ("gated", "pr_opened", "compare", "approved", "shipped", "rolled_back", "held", "built",
+                                                        "build_failed", "ready_local", "push_failed", "pr_failed", "gates_error")}
         rep = (j["gated"] or {}).get("report") or {}
         spent = sum(float(r.get("spent_usd") or 0) for r in self.journal.read(proposal_id=p.id) if r.get("spent_usd"))
         return {
@@ -997,7 +1180,9 @@ class Evolver:
             "release": (j["shipped"] or j["approved"] or {}).get("release", ""),
             "rollback_reason": (j["rolled_back"] or {}).get("reason", ""),
             "post_ship": {k: (j[k] or {}).get("after") for k in ("held", "rolled_back") if j[k]},
-            "error": (j["build_failed"] or {}).get("error", ""),
+            "error": (j["build_failed"] or j["gates_error"] or j["pr_failed"] or j["push_failed"] or {}).get("error", ""),
+            "branch": (j["built"] or j["ready_local"] or {}).get("branch", ""),
+            "local_reason": (j["ready_local"] or j["push_failed"] or {}).get("reason") or (j["push_failed"] or {}).get("error", ""),
             "in_flight": p.id in self.in_flight(),
             "rank": self.rank(p),
             "updated": max([float(r["ts"]) for r in self.journal.read(proposal_id=p.id)] or [0.0]),
@@ -1012,8 +1197,9 @@ class Evolver:
         titles = {p.id: p.title for p in self.store.proposals()}
         out = []
         tier = self.code_tier()
-        if not tier["enabled"] and self.settings()["evolveEnabled"]:
-            out.append({"ts": self.now(), "event": "code_paused", "proposal_id": "", "text": tier["message"], "url": ""})
+        if not tier["enabled"] and self.settings()["evolveEnabled"] and not any(r.get("event") == "sandbox_missing" for r in rows):
+            # The tick journals ``sandbox_missing`` once a day while upgrades wait; before that, one synthetic line.
+            out.append({"ts": self.now(), "event": "code_paused", "proposal_id": "", "text": self.sandbox_missing_text(), "url": ""})
         status = {p.id: p.status for p in self.store.proposals()}
         installed = {x["id"] for x in self.installed_skills()}
         undone: set[str] = set()
@@ -1051,6 +1237,13 @@ class Evolver:
             "rollback_requests": self.rollback_requests(), "awaiting_install": self.awaiting_install(),
             "missing": list(self.deps.missing),
             "code_builds": self.code_tier(), "sandbox_setting": s["evolveSandbox"],
+            "sandbox_missing": not self.code_tier()["enabled"], "sandbox_missing_text": self.sandbox_missing_text(),
+            "waiting_for_sandbox": len(self.waiting_for_sandbox()),
+            "git_missing": bool(self.git_reason()), "git_reason": self.git_reason(),
+            "push_access": dict(zip(("ok", "reason"), self._push_cache[2:])) if self._push_cache else None,
+            "ready_local": [{"id": p.id, "title": p.title, "branch": (self.journal.last(p.id, ("ready_local", "push_failed")) or {}).get("branch", "")}
+                            for p in self.store.proposals() if p.status == "ready_local"],
+            "backlog": len(self.store.local.backlog()),
         }
 
 
@@ -1070,10 +1263,32 @@ def _cost_time(a: Any) -> str:
     return f"{float(a.get('seconds') or 0):.0f}s/${cost:.2f}" if cost else f"{float(a.get('seconds') or 0):.0f}s/$0"
 
 
+def _err(r: dict[str, Any], key: str = "error", n: int = 160) -> str:
+    return str(r.get(key) or "").strip()[:n]
+
+
 def _feed_text(r: dict[str, Any], title: str) -> str:
     e, t = r.get("event"), title or r.get("title") or ""
-    if e == "scan" and r.get("new"):
-        return f"Read {r['new']} new development{'s' if r['new'] != 1 else ''}" + (f", {r.get('proposals')} worth trying" if r.get("proposals") else "")
+    if e == "scan":
+        errs = r.get("source_errors") or {}
+        parts = []
+        if r.get("error"):
+            parts.append(f"Could not read new developments: {_err(r)}")
+        elif r.get("new"):
+            line = f"Read {r['new']} new development{'s' if r['new'] != 1 else ''}"
+            if r.get("proposals"):
+                line += f", {r['proposals']} worth trying"
+            elif r.get("backlog"):
+                line += f", {r['backlog']} still to be triaged"
+            parts.append(line)
+        if isinstance(errs, dict) and errs:
+            names = ", ".join(f"{k} ({str(v)[:80]})" for k, v in list(errs.items())[:3])
+            parts.append(f"{len(errs)} source{'s' if len(errs) != 1 else ''} could not be read: {names}")
+        return "; ".join(parts)
+    if e == "triage_failed":
+        return str(r.get("text") or f"Could not triage {r.get('signals') or 'the new'} signals: {_err(r)}")
+    if e in ("sandbox_missing", "no_git", "code_paused"):
+        return str(r.get("text") or "")
     if e == "proposed":
         return f"Idea: {t}"
     if e == "build_started":
@@ -1084,7 +1299,19 @@ def _feed_text(r: dict[str, Any], title: str) -> str:
         failed = [c.get("name") for c in ((r.get("report") or {}).get("checks") or []) if not c.get("passed")]
         return f"{t} did not pass" + (f" ({', '.join(failed[:3])})" if failed else "") + "; left unchanged"
     if e == "build_failed":
-        return f"Could not build {t}; nothing changed"
+        return f"Could not build {t}; nothing changed" + (f" ({_err(r, n=120)})" if r.get("error") else "")
+    if e == "gates_error":
+        return f"Could not check {t}: {_err(r)}; left unchanged"
+    if e == "ready_local":
+        return (f"{t} is ready on branch {r.get('branch') or '?'} on this computer — O can't push to {r.get('repo') or 'the repo'}"
+                + (f" ({_err(r, 'reason', 120)})" if r.get("reason") else ""))
+    if e == "push_failed":
+        return f"{t} passed every check but could not be pushed" + (f" to {r['repo']}" if r.get("repo") else "") + \
+               (f": {_err(r)}" if r.get("error") else "") + (f"; the branch {r['branch']} stays on this computer" if r.get("branch") else "")
+    if e == "pr_failed":
+        return f"{t} was pushed but the pull request could not be opened: {_err(r)}"
+    if e == "skills_error":
+        return f"Could not update skills: {_err(r)}"
     if e == "pr_opened":
         return f"{t} is ready for your review" if not r.get("auto_ship") else f"{t} ready to ship"
     if e == "compare":
@@ -1132,7 +1359,7 @@ def run_cycle(settings: Any, deps: PipelineDeps, evolver: Evolver | None = None)
     scan = ev.scan_and_triage()
     picked = []
     tier = ev.code_tier()
-    for p in (ev.candidates() if tier["enabled"] else []):
+    for p in (ev.candidates(sandbox=tier["enabled"]) if not ev.git_reason() else []):
         if len(picked) >= s["evolveTopK"]:
             break
         if not ev.launch(p):

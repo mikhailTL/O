@@ -9,7 +9,8 @@ _STRICT = ConfigDict(frozen=True, extra="forbid")
 
 SignalKind = Literal["repo_release", "new_repo", "paper", "changelog", "mcp_server", "package_release"]
 ProposalStatus = Literal["proposed", "accepted", "rejected", "building", "built", "gated_pass", "gated_fail",
-                         "pr_open", "approved", "shipped", "rolled_back"]
+                         "ready_local", "pr_open", "approved", "shipped", "rolled_back"]
+# ready_local: passed every gate, but the branch stays on this computer because O cannot push to the repo.
 OK_LICENSES = ("MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "MPL-2.0")
 
 

@@ -209,3 +209,54 @@ def test_live_triage_tiny():
     client = T.TriageClient()
     out = T.triage([sig(1)], CM, client, budget_usd=0.2)
     assert client.spent_usd <= 0.25 and all(0 <= p.score <= 1 for p in out)
+
+
+# ---------------------------------------------------------------- failures are reported, not swallowed
+
+def test_triage_reports_which_signals_settled_failed_or_waited():
+    signals = [sig(i) for i in range(1, 46)] + [sig(99, kind="paper", summary="no code here", repo="")]
+    answer = lambda user: json.dumps({"proposals": [good([re.search(r'"id": "([^"]+)"', user).group(1)], title=f"p{len(user)}")]})
+    client = FakeClient(["garbage", answer], cost=0.5)  # batch 1 fails, batch 2 answers, batch 3 is beyond the budget
+    res = T.TriageResult()
+    out = T.triage(signals, CM, client, budget_usd=1.0, max_signals=45, result=res)
+    assert len(out) == 1 and len(client.prompts) == 2
+    kept = [c.signal.id for c in res.kept]
+    assert set(res.failed) == set(kept[:20]) and set(res.unreached) == set(kept[40:])
+    assert set(res.done) == set(kept[20:40]) | {"s99"}  # the paper without code was filtered out for good
+    assert not (set(res.done) & set(res.failed)) and not (set(res.failed) & set(res.unreached))
+    assert len(res.done) + len(res.failed) + len(res.unreached) == len(signals)
+
+
+def test_triage_raises_when_every_batch_fails():
+    signals = [sig(i) for i in range(1, 26)]
+    client = FakeClient(["not json", "still not json"], cost=0.1)
+    res = T.TriageResult()
+    with pytest.raises(T.TriageError, match="every triage batch failed"):
+        T.triage(signals, CM, client, budget_usd=1.0, max_signals=30, result=res)
+    assert len(res.failed) == 25 and not res.done and res.spent_usd == pytest.approx(0.2)
+
+    class Broken:  # the CLI itself is unusable: the pipeline must hear the reason, not get []
+        spent_usd = 0.0
+
+        def complete(self, system, user, max_budget_usd=None):
+            raise T.TriageError("the claude CLI is not logged in: run `claude login`")
+
+    with pytest.raises(T.TriageError, match="not logged in"):
+        T.triage([sig(1)], CM, Broken(), budget_usd=0.5)
+
+
+def test_explain_cli_failure_names_the_usual_causes():
+    assert "too old" in T.explain_cli_failure(1, "error: unknown option '--strict-mcp-config'")
+    assert "not logged in" in T.explain_cli_failure(1, "Not logged in. Please run `claude login`")
+    assert "out of budget" in T.explain_cli_failure(1, "API error 429: rate limit exceeded")
+    assert T.explain_cli_failure(2, "something else").startswith("claude cli exited 2: something else")
+    assert "no JSON output" in T.explain_cli_failure(0, "")
+    missing = T.TriageClient(claude_path="/nonexistent/claude-cli-for-test")
+    with pytest.raises(T.TriageError, match="not found"):
+        missing.complete("s", "u")
+
+
+def test_validated_proposal_keeps_its_files():
+    c = T.Candidate(sig(1), {"cu_grounding": 3}, 0.5, True)
+    p = T.validate_proposal(good(["s1"], files=["docs/grounding.md"]), {"s1": c}, CM)
+    assert p.files == ["docs/grounding.md"]

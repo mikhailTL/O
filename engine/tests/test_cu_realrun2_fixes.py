@@ -183,14 +183,17 @@ def test_type_on_a_vision_node_clicks_then_types_and_invoke_clicks(tmp_path):
 
 
 def test_vision_node_without_pixels_fails_with_a_reason_not_a_tree_error(tmp_path):
+    """Pixels disabled: the paid vision call is skipped and the find step itself fails with the reason (no
+    screen-only node is ever bound, so no later action can fail on it)."""
     b = FakeBackend([_no_entry()], allow_pixels=False)
+    vision = _Vision(BBOX)
     res, _ = _run(b, [
         {"op": "find", "as": "name", "target": {"role": "text", "name": "Name*"}},
         {"op": "set_value", "ref": "name", "value": "x"},
-    ], tmp_path, grounder=_Vision(BBOX))
-    assert not res.ok and res.failed_index == 1
-    assert "not in the accessibility tree" not in res.error
-    assert "found only on screen" in res.error and "pixel actions are disabled" in res.error
+    ], tmp_path, grounder=vision)
+    assert not res.ok and res.failed_index == 0
+    assert "pixel actions are disabled" in res.error and "skipped" in res.error and "Name*" in res.error
+    assert vision.calls == 0, "the grounder was never asked"
     assert b.actions == []
 
 

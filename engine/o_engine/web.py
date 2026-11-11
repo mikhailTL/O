@@ -11,8 +11,10 @@ Two runners share one result shape:
   (``goto`` / ``fill`` / ``click`` / ``read`` / ``wait``) with sync Playwright,
   the same headless pattern ``verify.py`` uses. DOM only; no screenshots.
 
-Both strip the host ``DISPLAY`` and use only the isolated display's env, so
-nothing here can open a window on the user's desktop. There is no CAPTCHA or
+Both launch the browser with ``launch_env``: the host ``DISPLAY`` is stripped and only
+the isolated display's variables are passed (never through ``os.environ``), so nothing here
+can open a window on the user's desktop. Every browser-use object is created, run and closed on
+one event loop (one ``asyncio.run`` per job). There is no CAPTCHA or
 proxy handling anywhere in this module by design.
 """
 from __future__ import annotations
@@ -21,10 +23,8 @@ import asyncio
 import hashlib
 import inspect
 import os
-import threading
 import time
-from contextlib import contextmanager
-from typing import Any, Iterator, Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,30 +78,13 @@ def _display_env(display: Any) -> dict[str, str]:
     return {}
 
 
-_env_lock = threading.Lock()
-
-
-@contextmanager
-def _scoped_display(display: Any) -> Iterator[dict[str, str]]:
-    """Temporarily replace DISPLAY/WAYLAND_DISPLAY in os.environ with the isolated display's (or nothing).
-
-    Playwright and browser-use launch Chromium from the current process environment, so the
-    host display is removed for the duration of the run and restored afterwards.
-    """
-    wanted = _display_env(display)
-    with _env_lock:
-        saved = {k: os.environ.get(k) for k in _HOST_DISPLAY_VARS}
-        for k in _HOST_DISPLAY_VARS:
-            os.environ.pop(k, None)
-        os.environ.update(wanted)
-        try:
-            yield wanted
-        finally:
-            for k in _HOST_DISPLAY_VARS:
-                os.environ.pop(k, None)
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
+def launch_env(display: Any) -> dict[str, str]:
+    """The environment a browser is launched with: the engine's, minus the host DISPLAY / WAYLAND_DISPLAY, plus the
+    isolated display's variables (or none). Passed to the launcher (``chromium.launch(env=...)``); ``os.environ``
+    itself is never changed, so concurrent web jobs and the rest of the engine are unaffected."""
+    env = {k: v for k, v in os.environ.items() if k not in _HOST_DISPLAY_VARS}
+    env.update(_display_env(display))
+    return env
 
 
 def _sha(data: bytes) -> str:
@@ -214,13 +197,16 @@ class BrowserUseRunner:
         # The proxy carries text only (images are dropped), so browser-use works from the DOM there.
         return {"use_vision": False} if self._endpoint()["via"] == "proxy" else {}
 
-    def _make_browser(self) -> Any:
+    def _make_browser(self, env: dict[str, str] | None = None) -> Any:
         from browser_use import Browser  # type: ignore
 
         params = inspect.signature(Browser).parameters
+        accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
         kwargs: dict[str, Any] = {}
-        if "headless" in params:
+        if "headless" in params or accepts_any:
             kwargs["headless"] = True
+        if env is not None and ("env" in params or accepts_any):
+            kwargs["env"] = dict(env)  # BrowserProfile.env: the launch environment of its Chromium
         if "config" in params:
             try:
                 from browser_use import BrowserConfig  # type: ignore
@@ -267,35 +253,52 @@ class BrowserUseRunner:
             return WebResult(ok=False, via=self.via, error="browser_use is not installed",
                              elapsed_ms=int((time.monotonic() - started) * 1000))
         full_task = f"Open {url} first. {task}" if url else task
-        browser = None
+        env = launch_env(self.display)
         try:
-            with _scoped_display(self.display):
-                from browser_use import Agent  # type: ignore
+            from browser_use import Agent  # type: ignore
 
-                llm = self._make_llm()
-                browser = self._make_browser()
-                agent = _construct(Agent, {"task": full_task, "llm": llm, "browser": browser}, self._agent_kwargs())
+            llm = self._make_llm()
+            agent_extra = self._agent_kwargs()
 
-                async def _go() -> Any:
+            async def _session() -> Any:
+                # The browser is created, started, driven and closed on this one loop: closing a browser-use
+                # object from a second ``asyncio.run`` (a different loop) raised inside its own cleanup.
+                browser = self._make_browser(env)
+                try:
+                    start = getattr(browser, "start", None)
+                    if callable(start):
+                        r = start()
+                        if inspect.isawaitable(r):
+                            await r
+                    agent = _construct(Agent, {"task": full_task, "llm": llm, "browser": browser}, agent_extra)
                     return await asyncio.wait_for(agent.run(), timeout=self.timeout_s)
+                finally:
+                    await _aclose(browser)
 
-                history = asyncio.run(_go())
-                steps, final, shas = self._history_to_steps(history)
+            history = asyncio.run(_session())
+            steps, final, shas = self._history_to_steps(history)
             return WebResult(ok=True, final_text=final[:MAX_TEXT], steps=steps, screenshots_sha=shas, via=self.via,
                              elapsed_ms=int((time.monotonic() - started) * 1000))
         except BaseException as e:  # never raises
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
             return WebResult(ok=False, via=self.via, error=_err(e), elapsed_ms=int((time.monotonic() - started) * 1000))
-        finally:
-            close = getattr(browser, "close", None)
-            if callable(close):
-                try:
-                    r = close()
-                    if inspect.isawaitable(r):
-                        asyncio.run(r)
-                except Exception:
-                    pass
+
+
+async def _aclose(obj: Any) -> None:
+    """Close a browser-use browser / session on the current loop (``close``, ``stop`` or ``kill``, whichever
+    exists; sync or async). Never raises."""
+    for name in ("close", "stop", "kill"):
+        fn = getattr(obj, name, None)
+        if not callable(fn):
+            continue
+        try:
+            r = fn()
+            if inspect.isawaitable(r):
+                await r
+        except Exception:
+            pass
+        return
 
 
 def _construct(cls: Any, base: dict[str, Any], extra: dict[str, Any]) -> Any:
@@ -358,58 +361,57 @@ class PlaywrightDomRunner:
             return done(False, "playwright is not installed")
         timeout_ms = max(1, int(timeout_s)) * 1000
         try:
-            with _scoped_display(self.display):
-                from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright
 
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
-                    try:
-                        page = browser.new_page()
-                        page.set_default_timeout(timeout_ms)
-                        for index, a in enumerate(parsed):
-                            t0 = time.monotonic()
-                            rec: dict[str, Any] = {"index": index, "op": a.op, "ok": True}
-                            try:
-                                if a.op == "goto":
-                                    if not a.url:
-                                        raise ValueError("goto needs url")
-                                    resp = page.goto(a.url, timeout=timeout_ms, wait_until="load")
-                                    rec["url"] = a.url
-                                    rec["status"] = int(resp.status) if resp is not None else None
-                                elif a.op == "fill":
-                                    if not a.selector:
-                                        raise ValueError("fill needs selector")
-                                    page.fill(a.selector, a.text or "")
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True, env=launch_env(self.display))
+                try:
+                    page = browser.new_page()
+                    page.set_default_timeout(timeout_ms)
+                    for index, a in enumerate(parsed):
+                        t0 = time.monotonic()
+                        rec: dict[str, Any] = {"index": index, "op": a.op, "ok": True}
+                        try:
+                            if a.op == "goto":
+                                if not a.url:
+                                    raise ValueError("goto needs url")
+                                resp = page.goto(a.url, timeout=timeout_ms, wait_until="load")
+                                rec["url"] = a.url
+                                rec["status"] = int(resp.status) if resp is not None else None
+                            elif a.op == "fill":
+                                if not a.selector:
+                                    raise ValueError("fill needs selector")
+                                page.fill(a.selector, a.text or "")
+                                rec["selector"] = a.selector
+                            elif a.op == "click":
+                                if not a.selector:
+                                    raise ValueError("click needs selector")
+                                page.click(a.selector)
+                                rec["selector"] = a.selector
+                            elif a.op == "read":
+                                text = page.inner_text(a.selector) if a.selector else page.inner_text("body")
+                                text = (text or "").strip()[:MAX_TEXT]
+                                rec["selector"] = a.selector or "body"
+                                rec["text"] = text
+                                texts.append(text)
+                            elif a.op == "wait":
+                                if a.selector:
+                                    page.wait_for_selector(a.selector, timeout=timeout_ms)
                                     rec["selector"] = a.selector
-                                elif a.op == "click":
-                                    if not a.selector:
-                                        raise ValueError("click needs selector")
-                                    page.click(a.selector)
-                                    rec["selector"] = a.selector
-                                elif a.op == "read":
-                                    text = page.inner_text(a.selector) if a.selector else page.inner_text("body")
-                                    text = (text or "").strip()[:MAX_TEXT]
-                                    rec["selector"] = a.selector or "body"
-                                    rec["text"] = text
-                                    texts.append(text)
-                                elif a.op == "wait":
-                                    if a.selector:
-                                        page.wait_for_selector(a.selector, timeout=timeout_ms)
-                                        rec["selector"] = a.selector
-                                    else:
-                                        secs = float(a.seconds if a.seconds is not None else 1.0)
-                                        page.wait_for_timeout(min(secs, 60.0) * 1000)
-                                        rec["seconds"] = secs
-                            except Exception as e:
-                                rec["ok"] = False
-                                rec["error"] = _err(e)
-                                rec["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
-                                steps.append(rec)
-                                return done(False, f"step {index} ({a.op}) failed: {rec['error']}")
+                                else:
+                                    secs = float(a.seconds if a.seconds is not None else 1.0)
+                                    page.wait_for_timeout(min(secs, 60.0) * 1000)
+                                    rec["seconds"] = secs
+                        except Exception as e:
+                            rec["ok"] = False
+                            rec["error"] = _err(e)
                             rec["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
                             steps.append(rec)
-                    finally:
-                        browser.close()
+                            return done(False, f"step {index} ({a.op}) failed: {rec['error']}")
+                        rec["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+                        steps.append(rec)
+                finally:
+                    browser.close()
             return done(True)
         except Exception as e:
             return done(False, _err(e))

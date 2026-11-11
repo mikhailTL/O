@@ -173,3 +173,31 @@ def test_practice_and_skills_routes(tmp_path):
     sk = c.get("/evolve/skills", headers=H).json()
     assert sk["pending_approval"] == 0 and sk["candidates"] == [] and "internal" in sk
     assert c.post("/evolve/skills/nope/approve", headers=H).status_code == 409
+
+
+def test_build_deps_wires_token_push_check_git_check_and_triage_result(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from o_engine.evolve import routes as R
+    from o_engine.evolve import sources as S
+    from o_engine.evolve import triage as T
+
+    calls = {}
+    monkeypatch.setattr(S, "scan", lambda store, **kw: calls.setdefault("scan", kw) and SimpleNamespace(new=[], per_source={}))
+    monkeypatch.setattr(R, "git_push_access", lambda root, repo, token, gh: calls.setdefault("push", (repo, token)) and (False, "no write access"))
+    settings = SimpleNamespace(data_dir=tmp_path, claude_path="/nonexistent/claude")
+    deps = R.build_deps(settings, {"evolveGithubToken": "tok", "evolveRepo": "someone/O"})
+    assert deps.scan is not None and deps.can_push is not None and deps.git_reason is not None
+    deps.scan()
+    assert calls["scan"] == {"incremental": True, "github_token": "tok"}  # the evolve token reaches the scanner
+    assert deps.can_push() == (False, "no write access") and calls["push"] == ("someone/O", "tok")
+    assert deps.git_reason() == ""  # this checkout has git
+    assert deps.triage is not None and deps.triage.last_result is None
+    deps.triage.client = T.TriageClient("/nonexistent/claude-for-test")
+    from o_engine.evolve.schema import Signal
+
+    relevant = Signal(id="g1", kind="new_repo", source="github", title="org/gui-agent: GUI grounding with zoom", url="https://github.com/org/r1",
+                      repo="org/r1", stars=500, stars_7d=200, license="MIT", topics=["gui-agent", "computer-use"])
+    with pytest.raises(T.TriageError, match="not found"):
+        deps.triage([relevant], budget_usd=0.2)
+    assert deps.triage.last_result.failed == ["g1"] and deps.triage.last_result.errors

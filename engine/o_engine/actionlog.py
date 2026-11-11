@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import threading
 import time
 from pathlib import Path
@@ -17,8 +18,10 @@ from typing import Any
 
 import httpx
 
-KINDS = frozenset({"task", "tool", "result", "policy", "graph", "cache", "remediate", "verify", "settings", "note"})
+KINDS = frozenset({"task", "tool", "result", "policy", "graph", "cache", "remediate", "verify", "settings", "note", "error"})
 GENESIS = "0" * 64
+FORWARD_TIMEOUT_S = 0.5
+FORWARD_QUEUE_MAX = 10_000  # entries waiting for the app; beyond this the oldest waiting entry is dropped
 
 _registry: dict[Path, "ActionLog"] = {}
 _registry_lock = threading.Lock()
@@ -69,7 +72,15 @@ class ActionLog:
         self.token = token or ""
         self._lock = threading.Lock()
         self._prev = self._last_hash()
-        self._client = httpx.Client(timeout=0.5) if forward_url else None
+        # Forwarding to the app happens on one daemon thread (genui.UIStore has the same pattern): the job thread
+        # that records an entry never waits on the app's socket. The local files are the record.
+        self._client = httpx.Client(timeout=FORWARD_TIMEOUT_S) if forward_url else None
+        self._outbox: "queue.Queue[dict | None]" = queue.Queue(maxsize=FORWARD_QUEUE_MAX)
+        self._sender: threading.Thread | None = None
+        self.dropped = 0
+        if self._client is not None:
+            self._sender = threading.Thread(target=self._send_loop, name="o-log-forward", daemon=True)
+            self._sender.start()
 
     def _last_hash(self) -> str:
         try:
@@ -102,12 +113,41 @@ class ActionLog:
         return entry
 
     def _forward(self, entry: dict) -> None:
+        """Queue ``entry`` for the sender thread; never blocks. A full queue drops the oldest waiting entry."""
         if not self._client:
             return
-        try:
-            self._client.post(self.forward_url, json=entry, headers={"x-o-token": self.token})
-        except Exception:
-            pass  # the local file is the record; the app's view is a convenience
+        while True:
+            try:
+                self._outbox.put_nowait(entry)
+                return
+            except queue.Full:
+                try:
+                    self._outbox.get_nowait()
+                    self._outbox.task_done()
+                    self.dropped += 1
+                except queue.Empty:
+                    pass
+
+    def _send_loop(self) -> None:
+        while True:
+            entry = self._outbox.get()
+            if entry is None:
+                self._outbox.task_done()
+                return
+            try:
+                self._client.post(self.forward_url, json=entry, headers={"x-o-token": self.token})
+            except Exception:
+                pass  # the local file is the record; the app's view is a convenience
+            finally:
+                self._outbox.task_done()
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Wait (bounded) until every queued entry has been sent; tests and shutdown use it."""
+        if self._client is None:
+            return
+        deadline = time.monotonic() + timeout
+        while self._outbox.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
 
 
 def _jsonable(obj: Any) -> Any:

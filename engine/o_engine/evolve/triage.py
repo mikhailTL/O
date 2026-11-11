@@ -83,6 +83,23 @@ class TriageError(RuntimeError):
     pass
 
 
+_CLI_HINTS: tuple[tuple[str, str], ...] = (
+    (r"unknown option|unrecognized|unexpected argument|too many arguments|error: option", "the claude CLI is too old for the flags O uses: update Claude Code"),
+    (r"not logged in|please (run )?.?claude login|invalid api key|authentication|unauthori[sz]ed|401", "the claude CLI is not logged in: run `claude login`"),
+    (r"budget|credit|insufficient|quota|billing|429|rate limit", "the Claude account is out of budget or rate-limited"),
+    (r"ENOENT|not found|no such file|command not found", "the claude CLI was not found on this computer"),
+)
+
+
+def explain_cli_failure(returncode: int, output: str) -> str:
+    """One readable reason for a failed ``claude -p`` run, with the CLI's own words after it."""
+    tail = output.strip()[:300]
+    for pat, why in _CLI_HINTS:
+        if re.search(pat, tail, re.I):
+            return f"{why} (claude exited {returncode}: {tail[:160]})" if tail else f"{why} (claude exited {returncode})"
+    return f"claude cli exited {returncode}: {tail}" if tail else f"claude cli exited {returncode} with no JSON output"
+
+
 class TriageClient:
     """Lean ``claude -p``: no tools, no MCP, no session persistence, budget passed to the CLI."""
 
@@ -110,6 +127,8 @@ class TriageClient:
         try:
             proc = subprocess.run(self.command(system, max_budget_usd), input=user, capture_output=True,
                                   text=True, timeout=self.timeout)
+        except FileNotFoundError:
+            raise TriageError(f"the claude CLI was not found ({self.claude_path}): install Claude Code") from None
         except (OSError, subprocess.SubprocessError) as e:
             raise TriageError(f"claude cli failed to run: {e}") from None
         try:
@@ -121,7 +140,7 @@ class TriageClient:
             if isinstance(cost, (int, float)) and cost >= 0:
                 self.spent_usd += float(cost)
         if proc.returncode != 0 or not isinstance(payload, dict):
-            raise TriageError(f"claude cli exited {proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:300]}")
+            raise TriageError(explain_cli_failure(proc.returncode, (proc.stderr or proc.stdout or "").strip()))
         result = payload.get("result")
         if payload.get("is_error") or not isinstance(result, str):
             raise TriageError(f"claude cli returned no result ({payload.get('subtype', '')})")
@@ -146,6 +165,9 @@ class TriageResult:
     spent_usd: float = 0.0
     calls: int = 0
     errors: list[str] = field(default_factory=list)
+    done: list[str] = field(default_factory=list)  # signal ids triaged for good (prefiltered out, or in a batch that answered)
+    failed: list[str] = field(default_factory=list)  # signal ids whose batch failed: the caller keeps them and retries
+    unreached: list[str] = field(default_factory=list)  # signal ids never sent (budget ran out): kept, not a failure
 
 
 def license_ok(lic: str) -> bool:
@@ -340,7 +362,7 @@ def validate_proposal(raw: Any, batch: dict[str, Candidate], capmap: dict[str, A
     try:
         return Proposal(id=proposal_id(ids, raw["title"]), signal_ids=ids, subsystem=sub, title=raw["title"].strip(),
                         rationale=raw["rationale"].strip(), spec=spec, acceptance_test=raw["acceptance_test"].strip(),
-                        expected_gain=str(raw.get("expected_gain") or ""), score=float(score),
+                        expected_gain=str(raw.get("expected_gain") or ""), score=float(score), files=list(files),
                         risk=raw.get("risk", "medium"), dependency_only=dep_only, new_dependencies=deps,
                         licenses_ok=lic_ok)
     except ValidationError as e:
@@ -361,28 +383,42 @@ def parse_answer(text: str) -> list[Any]:
 def triage(signals: list[Signal], capmap: dict[str, Any], client: TriageClientLike, budget_usd: float, *,
            batch_size: int = BATCH, max_signals: int = MAX_SIGNALS, min_stars: int = MIN_STARS,
            store: Any = None, result: TriageResult | None = None) -> list[Proposal]:
-    """Prefilter, then ask the model in batches of <= ``batch_size`` while spend < ``budget_usd``."""
+    """Prefilter, then ask the model in batches of <= ``batch_size`` while spend < ``budget_usd``.
+
+    ``result.done`` lists the signals that are settled (filtered out deterministically, or in a batch the model
+    answered); ``result.failed`` the ones whose batch failed and ``result.unreached`` the ones the budget did not
+    reach, both of which the caller keeps for the next run. When every batch that was attempted failed, ``TriageError`` is raised with the first reason, so a
+    broken ``claude`` CLI (not logged in, old flags, no budget) is never mistaken for "nothing worth trying"."""
     res = result if result is not None else TriageResult()
     batch_size = max(1, min(batch_size, BATCH))
     kept, dropped = prefilter(signals, capmap, min_stars=min_stars, max_signals=max_signals)
     res.kept, res.filtered = kept, dropped
+    res.done.extend(sid for sid, _ in dropped)
     start = float(getattr(client, "spent_usd", 0.0))
     by_id: dict[str, Proposal] = {}
+    answered = 0
+    batch_errors: list[str] = []
     for i in range(0, len(kept), batch_size):
+        batch = kept[i:i + batch_size]
         spent = float(getattr(client, "spent_usd", 0.0)) - start
         remaining = budget_usd - spent
         if remaining <= 0.02:
             res.errors.append(f"budget reached before batch {i // batch_size + 1}")
+            res.unreached.extend(c.signal.id for c in kept[i:])
             break
-        batch = kept[i:i + batch_size]
         index = {c.signal.id: c for c in batch}
         res.calls += 1
         try:
             raw = client.complete(SYSTEM, build_user_prompt(batch, capmap), max_budget_usd=remaining)
             items = parse_answer(raw)
         except Exception as e:  # one bad batch must not lose the others
-            res.errors.append(f"batch {i // batch_size + 1}: {type(e).__name__}: {str(e)[:200]}")
+            msg = f"batch {i // batch_size + 1}: {type(e).__name__}: {str(e)[:200]}"
+            res.errors.append(msg)
+            batch_errors.append(msg)
+            res.failed.extend(index)
             continue
+        answered += 1
+        res.done.extend(index)
         for item in items:
             try:
                 p = validate_proposal(item, index, capmap)
@@ -397,4 +433,6 @@ def triage(signals: list[Signal], capmap: dict[str, Any], client: TriageClientLi
         for p in res.proposals:
             if store.add_proposal(p):
                 store.record_decision(p.id, "proposed", "triage", {"score": p.score, "spent_usd": res.spent_usd})
+    if batch_errors and not answered:
+        raise TriageError(f"every triage batch failed ({len(batch_errors)}): {batch_errors[0]}")
     return res.proposals

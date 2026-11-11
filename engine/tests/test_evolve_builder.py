@@ -207,3 +207,27 @@ def test_remove_checkout(repo, fake, tmp_path):
     builder.remove_checkout(repo, wd)
     assert not wd.exists()
     assert str(wd) not in _git(repo, "worktree", "list")
+
+
+def test_no_exec_build_proceeds_without_a_sandbox(repo, fake, tmp_path):
+    from o_engine.evolve.sandbox import SandboxChoice
+
+    none = lambda mode: SandboxChoice(False, "none", mode, reason="docker: not installed")  # noqa: E731
+    wd = tmp_path / "work" / "docs"
+    with pytest.raises(builder.BuildError, match="no sandbox"):
+        builder.build(_proposal("p-code"), repo, wd, fake, 1.0, env=_env(tmp_path, "patch"), timeout_s=60,
+                      sandbox_mode="auto", chooser=none)
+    res = builder.build(_proposal("p-docs"), repo, tmp_path / "work" / "docs2", fake, 1.0, env=_env(tmp_path, "patch"),
+                        timeout_s=60, sandbox_mode="auto", chooser=none, needs_sandbox=False)
+    assert res.branch == "evolve/p-docs" and len(res.commit) == 40
+    rec = json.loads((tmp_path / "record.json").read_text())
+    assert "Bash" not in " ".join(rec["argv"]) and "You cannot run commands" in rec["prompt"]  # no shell without a sandbox
+
+
+def test_build_without_git_fails_fast(fake, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "README.md").write_text("installed from a zip\n")
+    with pytest.raises(builder.BuildError, match="installed without git"):
+        builder.build(_proposal(), plain, tmp_path / "wd", fake, 1.0, env=_env(tmp_path, "patch"), timeout_s=60)
+    assert not (tmp_path / "wd").exists()

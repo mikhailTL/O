@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from o_engine.web import BrowserUseRunner, DomAction, PlaywrightDomRunner, WebResult, _scoped_display, get_web_runner
+from o_engine.web import BrowserUseRunner, DomAction, PlaywrightDomRunner, WebResult, get_web_runner, launch_env
 
 PAGE = b"""<!doctype html><html><head><title>t</title></head><body>
 <h1 id="h">Hello from the stub</h1>
@@ -89,20 +89,117 @@ def test_dom_action_schema_is_strict():
     assert r.ok is False and r.via == "playwright-dom" and "ValidationError" in (r.error or "")
 
 
-def test_scoped_display_strips_host_display_and_restores(monkeypatch):
+def test_launch_env_strips_host_display_without_touching_os_environ(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
-    with _scoped_display(None) as env:
-        assert env == {} and "DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ
-    assert os.environ["DISPLAY"] == ":0" and os.environ["WAYLAND_DISPLAY"] == "wayland-0"
+    monkeypatch.setenv("PATH_MARKER", "kept")
+    env = launch_env(None)
+    assert "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env and env["PATH_MARKER"] == "kept"
+    assert os.environ["DISPLAY"] == ":0" and os.environ["WAYLAND_DISPLAY"] == "wayland-0", "os.environ is never mutated"
 
     class D:
         def env(self):
             return {"DISPLAY": ":99", "SECRET": "x"}
 
-    with _scoped_display(D()) as env:
-        assert env == {"DISPLAY": ":99"} and os.environ["DISPLAY"] == ":99" and "WAYLAND_DISPLAY" not in os.environ
+    env = launch_env(D())
+    assert env["DISPLAY"] == ":99" and "WAYLAND_DISPLAY" not in env and "SECRET" not in env
     assert os.environ["DISPLAY"] == ":0"
+    assert launch_env({"DISPLAY": ":98"})["DISPLAY"] == ":98" and launch_env(":97")["DISPLAY"] == ":97"
+
+
+def test_dom_runner_passes_launch_env_to_chromium(monkeypatch):
+    """The browser gets ``env=`` at launch; nothing in the run path writes os.environ."""
+    import types
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    seen: dict = {}
+
+    class _Page:
+        def set_default_timeout(self, ms):
+            pass
+
+        def inner_text(self, sel):
+            return "body text"
+
+    class _Browser:
+        def new_page(self):
+            return _Page()
+
+        def close(self):
+            seen["closed"] = True
+
+    class _Chromium:
+        def launch(self, **kw):
+            seen["launch"] = kw
+            return _Browser()
+
+    class _PW:
+        chromium = _Chromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake = types.ModuleType("playwright.sync_api")
+    fake.sync_playwright = lambda: _PW()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
+    r = PlaywrightDomRunner(display={"DISPLAY": ":99"}).run([{"op": "read"}], timeout_s=5)
+    assert r.ok is True and r.final_text == "body text"
+    assert seen["launch"]["headless"] is True
+    assert seen["launch"]["env"]["DISPLAY"] == ":99" and "WAYLAND_DISPLAY" not in seen["launch"]["env"]
+    assert seen["closed"] is True
+    assert os.environ["DISPLAY"] == ":0"
+
+
+def test_browser_use_objects_are_created_and_closed_on_one_loop(monkeypatch):
+    """Browser start, agent run and browser close all happen inside the single asyncio.run of a job."""
+    import asyncio
+    import types
+
+    events: list = []
+
+    class _History:
+        def final_result(self):
+            return "done"
+
+        action_names = ["goto"]
+        screenshots = []
+
+    class _Browser:
+        def __init__(self, **kw):
+            events.append(("init", kw.get("env", {}).get("DISPLAY")))
+            self.loop = None
+
+        async def start(self):
+            self.loop = asyncio.get_running_loop()
+            events.append(("start", id(self.loop)))
+
+        async def close(self):
+            events.append(("close", id(asyncio.get_running_loop())))
+
+    class _Agent:
+        def __init__(self, task, llm, browser, **kw):
+            events.append(("agent", task))
+
+        async def run(self):
+            events.append(("run", id(asyncio.get_running_loop())))
+            return _History()
+
+    mod = types.ModuleType("browser_use")
+    mod.Agent, mod.Browser = _Agent, _Browser
+    monkeypatch.setitem(sys.modules, "browser_use", mod)
+    monkeypatch.setattr(BrowserUseRunner, "_make_llm", lambda self: object())
+    monkeypatch.setattr(BrowserUseRunner, "_agent_kwargs", lambda self: {})
+    r = BrowserUseRunner("http://127.0.0.1:1/v1", "m", display={"DISPLAY": ":99"}).run("task", url="http://x")
+    assert r.ok is True and r.final_text == "done", r.error
+    kinds = [e[0] for e in events]
+    assert kinds == ["init", "start", "agent", "run", "close"]
+    assert events[0][1] == ":99"
+    loops = {e[1] for e in events if e[0] in ("start", "run", "close")}
+    assert len(loops) == 1, "start, run and close used the same event loop"
 
 
 @needs_chromium

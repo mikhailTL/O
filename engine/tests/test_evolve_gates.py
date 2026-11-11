@@ -354,3 +354,44 @@ def test_registry_license_parses_pypi_and_npm(monkeypatch):
     assert gates.license_ok(gates.registry_license("pypi", "b"))
     assert gates.registry_license("npm", "@s/c") == "ISC"
     assert gates.registry_license("pypi", "missing") is None
+
+
+# ---------------------------------------------------------------- no sandbox: docs / dependency pins only
+
+def test_docs_only_diff_passes_without_a_sandbox(tiny, tmp_path):
+    wd, p = _candidate(tiny, tmp_path, {"docs/upgrades.md": "# Upgrades\n\nHow O evolves.\n", "README.md": "# t\n"})
+    r = gates.run_gates(p, wd, {"commit": tiny[1]["commit"], "sandbox": "none"}, _cfg(runner_for=None))
+    by = _by(r)
+    assert r.passed, [(c.name, c.detail) for c in r.checks if not c.passed]
+    assert all(by[n].passed and by[n].skipped and by[n].detail.startswith("waived") for n in gates.DYNAMIC_CHECKS)
+
+
+def test_dependency_pin_bump_passes_without_a_sandbox(tiny, tmp_path):
+    files = {"package.json": json.dumps({"name": "t", "dependencies": {"ws": "^8.18.0"}}, indent=2) + "\n",
+             "package-lock.json": json.dumps({"lockfileVersion": 3, "packages": {"": {"dependencies": {"ws": "^8.18.0"}}}})}
+    wd, p = _candidate(tiny, tmp_path, files, new_deps=["npm:ws@8.18.0"])
+    r = gates.run_gates(p, wd, {"commit": tiny[1]["commit"]}, _cfg(runner_for=None))
+    assert r.passed, [(c.name, c.detail) for c in r.checks if not c.passed]
+    assert _by(r)["engine_pytest"].skipped and _by(r)["declared_dependencies"].passed
+
+
+def test_code_diff_still_fails_without_a_sandbox(tiny, tmp_path):
+    wd, p = _candidate(tiny, tmp_path, dict(GOOD, **{"docs/x.md": "doc\n"}))
+    r = gates.run_gates(p, wd, {"commit": tiny[1]["commit"]}, _cfg(runner_for=None))
+    by = _by(r)
+    assert not r.passed and by["engine_pytest"].detail.startswith("not run: no sandbox") and not by["engine_pytest"].skipped
+    r2 = gates.run_gates(p, wd, {"commit": tiny[1]["commit"]}, _cfg(runner_for=None, waive_dynamic_for_no_exec=False))
+    assert not r2.passed  # the waiver can be switched off
+    wd3, p3 = _candidate(tiny, tmp_path / "b", {"docs/y.md": "doc\n"})
+    assert not gates.run_gates(p3, wd3, {"commit": tiny[1]["commit"]}, _cfg(runner_for=None, waive_dynamic_for_no_exec=False)).passed
+
+
+def test_make_checkout_fails_fast_without_git(tmp_path):
+    plain = tmp_path / "installed"
+    plain.mkdir()
+    (plain / "package.json").write_text("{}")
+    assert builder.git_checkout_reason(plain) == builder.NO_GIT_MESSAGE
+    assert builder.git_checkout_reason(tmp_path / "nowhere").startswith(builder.NO_GIT_MESSAGE)
+    with pytest.raises(builder.BuildError, match="installed without git"):
+        builder.make_checkout(plain, tmp_path / "wd", "evolve/x")
+    assert not (tmp_path / "wd").exists() or not any((tmp_path / "wd").iterdir())

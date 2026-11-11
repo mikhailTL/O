@@ -28,6 +28,7 @@ from typing import Any, Callable, Protocol
 
 from openai import OpenAI
 
+from ..llm import claude_cli, cli_command
 from ..schema import SchemaViolation
 from ..tokenfilter import TokenFilter
 from . import meter
@@ -321,27 +322,13 @@ class ClaudeCodeClient:
         self.timeout = timeout
 
     def _command(self) -> list[str]:
-        return [self.claude_path, "-p", "--output-format", "json"]
+        return cli_command(self.claude_path)
 
     def complete(self, system: str, user: str) -> str:
         meter.charge_paid("planner")
-        try:
-            proc = subprocess.run(
-                self._command(), input=system + "\n\n" + user, capture_output=True, text=True, timeout=self.timeout
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            raise SchemaViolation(f"claude cli failed to run: {e}") from None
-        if proc.returncode != 0:
-            raise SchemaViolation(f"claude cli exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
-        try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            raise SchemaViolation(f"claude cli output is not JSON: {e.msg}") from None
+        payload = claude_cli(user, system=system, claude_path=self.claude_path, timeout=self.timeout)
         meter.add_cost(payload)
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if not isinstance(result, str):
-            raise SchemaViolation("claude cli output has no string result")
-        return result
+        return payload["result"]
 
 
 class ModelClient:

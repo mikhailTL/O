@@ -10,6 +10,9 @@ dynamic (run the candidate's code, always inside the sandbox ``GateConfig.runner
 evolve/sandbox.py: offline, resource-limited, the worktree its only read-write mount):
   acceptance_test, engine_pytest, node_selftests, offline_osworld
 Without ``runner_for`` the dynamic checks are not run (reported failed): candidate code never runs on the host.
+The one exception is a diff that runs no code at all (docs, licence text, dependency pins only; see
+``sandbox.no_exec_paths``): with ``waive_dynamic_for_no_exec`` the dynamic checks are waived (passed, ``skipped``)
+so documentation and dependency-pin upgrades can ship from installs that have no Docker or E2B.
 
 With ``fail_fast`` (default) a failed static check skips the dynamic ones; they are then reported as
 failed with ``detail="not run: ..."`` so the report still lists every gate.
@@ -28,6 +31,7 @@ from typing import Any, Callable, Mapping
 
 from . import baseline as bl
 from . import protected
+from . import sandbox as sbx
 from .schema import OK_LICENSES, GateCheck, GateReport, Proposal
 
 try:  # Python 3.11+
@@ -56,6 +60,8 @@ class GateConfig:
     extra_env: dict[str, str] = field(default_factory=dict)
     # worktree -> evolve.sandbox.Runner. None: dynamic gates are not run (candidate code never runs on the host).
     runner_for: Callable[[Path], Any] | None = None
+    # With no runner: a diff that executes nothing (docs / dependency pins only) passes the dynamic gates as waived.
+    waive_dynamic_for_no_exec: bool = True
 
 
 # ---------------------------------------------------------------- scanners
@@ -543,6 +549,10 @@ def run_gates(proposal: Proposal, workdir: Path | str, baseline: Mapping[str, An
     static_failed = [c.name for c in checks if not c.passed]
     if static_failed and cfg.fail_fast:
         checks += [_check(n, False, "not run: static checks failed (" + ", ".join(static_failed) + ")")
+                   for n in DYNAMIC_CHECKS]
+    elif cfg.runner_for is None and cfg.waive_dynamic_for_no_exec and sbx.no_exec_paths(diff.files):
+        checks += [GateCheck(name=n, passed=True, skipped=True,
+                             detail="waived: the change runs no code (docs or dependency pins only), so there is nothing to execute")
                    for n in DYNAMIC_CHECKS]
     elif cfg.runner_for is None:
         checks += [_check(n, False, "not run: no sandbox (candidate code never runs on the host)")

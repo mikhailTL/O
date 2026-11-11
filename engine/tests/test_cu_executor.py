@@ -226,13 +226,32 @@ def test_miss_everywhere_is_structured_failure(log, tmp_path):
 
 
 def test_pixel_fallback_gated_by_allow_pixels(log):
+    """Pixels disabled (macOS host): the paid vision grounder is never called for an a11y miss, the find step
+    fails with a clear reason, and no guaranteed-to-fail click follows."""
     fb = FakeBackend(_tree(), allow_pixels=False)
-    runner = ScriptRunner(fb, log, grounder=_Grounder({"x": 1, "y": 1, "w": 2, "h": 2}))
+    g = _Grounder({"x": 1, "y": 1, "w": 2, "h": 2})
+
+    class Cache:
+        gets = 0
+
+        def get(self, app, target, screen_hash):
+            Cache.gets += 1
+            return {"x": 1, "y": 1, "w": 2, "h": 2}
+
+    runner = ScriptRunner(fb, log, grounder=g, locator_cache=Cache())
     res = runner.run(_script([{"op": "find", "as": "g", "target": {"name": "Ghost"}}, {"op": "click", "ref": "g"}]), "j")
-    assert res.steps[0].ok and res.steps[0].resolved_by == "vision"
-    assert res.ok is False and res.failed_index == 1
-    assert "pixel" in res.steps[1].error.lower()
+    assert res.ok is False and res.failed_index == 0 and len(res.steps) == 1
+    assert g.calls == [] and Cache.gets == 0, "no screen grounding is attempted without pixel actions"
+    err = res.steps[0].error.lower()
+    assert "ghost" in err and "pixel" in err and "allow_pixels" in err and "skipped" in err
     assert all(a[0] != "pixel_click" for a in fb.actions)
+
+
+def test_vision_still_used_when_pixels_allowed(log):
+    fb = FakeBackend(_tree(), allow_pixels=True)
+    g = _Grounder({"x": 1, "y": 1, "w": 2, "h": 2})
+    res = ScriptRunner(fb, log, grounder=g).run(_script([{"op": "find", "as": "g", "target": {"name": "Ghost"}}]), "j")
+    assert res.ok and res.steps[0].resolved_by == "vision" and len(g.calls) == 1
 
 
 def test_backend_exception_becomes_failed_step(log):
@@ -768,3 +787,49 @@ def test_describe_covers_every_op():
     assert _describe(s.steps[0]) == "2 check(s): file_exists 'a.txt', shell_true 'test -f b'"
     assert _describe(s.steps[1]) == "python 10 chars in ."
     assert _describe(s.steps[2]) == "calc.set_cell(cell, value)"
+
+
+# ------------------------------------------------------------- app scoping (macOS AX) and settle polls
+
+
+def test_default_find_settle_polls_is_two():
+    from o_engine.cu import executor as ex
+
+    assert ex.DEFAULT_FIND_SETTLE_POLLS == 2
+    assert ScriptRunner(FakeBackend(_tree()), ActionLog.__new__(ActionLog)).find_settle_polls == 2
+
+
+def test_every_tree_read_and_find_is_scoped_to_the_scripts_app(log):
+    """A backend whose tree()/find() take ``app`` (the AX backend) gets the script's app on every call the
+    executor makes: before/after digests, settle re-reads, finds, waits and asserts."""
+
+    class Scoped(FakeBackend):
+        def __init__(self, nodes):
+            super().__init__(nodes)
+            self.tree_apps = []
+            self.find_apps = []
+
+        def tree(self, window=None, app=None):
+            self.tree_apps.append(app)
+            return super().tree(window)
+
+        def find(self, target, within=None, app=None):
+            self.find_apps.append(app)
+            return super().find(target, within=within)
+
+    fb = Scoped(_tree())
+    runner = ScriptRunner(fb, log, sleep=lambda s: None)
+    res = runner.run(_script([
+        {"op": "key", "keys": "ctrl+n"},
+        {"op": "find", "as": "ghost", "target": {"name": "Ghost"}},
+    ], app="TextEdit"), "j")
+    assert res.ok is False and "Ghost" in res.steps[1].error
+    assert fb.tree_apps and set(fb.tree_apps) == {"TextEdit"}, fb.tree_apps
+    assert fb.find_apps and set(fb.find_apps) == {"TextEdit"}, fb.find_apps
+    assert len(fb.find_apps) == 2, "the first find plus one settle poll (the unchanged tree ends polling early)"
+
+
+def test_backends_without_an_app_parameter_get_the_plain_calls(log):
+    fb = FakeBackend(_tree())
+    res = ScriptRunner(fb, log).run(_script([{"op": "find", "as": "b", "target": {"name": "Save"}}], app="calc"), "j")
+    assert res.ok is True
