@@ -27,6 +27,27 @@ fi
 echo "Installing O (first run takes a few minutes)…"
 VLLM="--vllm-url http://127.0.0.1:11434/v1"
 [ -f .o-installed ] || { bash install/install.sh $VLLM && touch .o-installed; } || echo "Installer reported problems above — O will still start; paste any ✗ lines to Claude."
-[ -d node_modules/electron ] || npm install || { echo "npm install failed"; read -n1 -p "Press any key to close"; exit 1; }
+
+# Self-update: the latest main before every start (Windows' launcher does the same), then whatever the pull
+# changed gets installed: app packages when package.json moved, engine packages when pyproject did, Playwright's
+# Chromium when it is missing. A stale node_modules was why O fell back to `npx @playwright/mcp@latest` per task.
+if [ -d .git ] && command -v git >/dev/null 2>&1; then
+  git pull -q --ff-only origin main 2>/dev/null || echo "(could not pull the latest O; starting the version on disk)"
+fi
+if [ ! -d node_modules/electron ] || [ package.json -nt node_modules/.package-lock.json ]; then
+  echo "Installing app packages…"
+  npm install --no-audit --no-fund || { echo "npm install failed"; read -n1 -p "Press any key to close"; exit 1; }
+fi
+VENV_PY="engine/.venv/bin/python"
+if [ -x "$VENV_PY" ]; then
+  if [ engine/pyproject.toml -nt engine/.venv/.o-installed ]; then
+    echo "Updating engine packages…"
+    "$VENV_PY" -m pip install -q -e engine && touch engine/.venv/.o-installed
+  fi
+  "$VENV_PY" -c "from playwright.sync_api import sync_playwright
+import sys
+with sync_playwright() as p:
+    sys.exit(0 if __import__('os').path.exists(p.chromium.executable_path) else 1)" 2>/dev/null || "$VENV_PY" -m playwright install chromium >/dev/null 2>&1 || true
+fi
 echo "Starting O…"
 npm start
