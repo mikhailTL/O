@@ -619,6 +619,24 @@ const TOOLS = [
   },
 ];
 
+// Only tools that can work here are advertised: a tool the model can see but that always answers ENGINE_DOWN
+// or "not available on this OS" costs a wasted turn (and a retry) every time it is tried.
+const ENGINE_BACKED = new Set(['provision', 'cache_lookup', 'diagnose', 'verify_port', 'workspace_context', 'computer_run',
+  'computer_replay', 'computer_find', 'computer_tree', 'win_powershell', 'win_open_settings', 'win_winget_install',
+  'win_set_registry', 'mcp_tools', 'mcp_call', 'script_run', 'swarm_run', 'web_run', 'tabs_list', 'tab_read', 'tab_act', 'tab_open']);
+const NATIVE_TAB_TOOLS = new Set(['tabs_list', 'tab_read', 'tab_act', 'tab_open']);
+function availableTools() {
+  if (process.env.O_BRIDGE_ALL_TOOLS === '1') return TOOLS; // selftests exercise every tool's schema on any OS
+  const engine = !!ENGINE_URL;
+  const plat = process.platform;
+  return TOOLS.filter((t) => {
+    if (t.name.startsWith('win_') && plat !== 'win32') return false;
+    if (NATIVE_TAB_TOOLS.has(t.name) && plat !== 'darwin' && plat !== 'win32') return false;
+    if (!engine && ENGINE_BACKED.has(t.name)) return false;
+    return true;
+  });
+}
+
 // ---------------------------------------------------------------- helpers
 
 function send(msg) {
@@ -1179,6 +1197,12 @@ async function tabAct(args) {
     return nativeResult(r);
   }
   if (native.platform !== 'darwin') return nativeResult(native.unsupported(`Clicking and typing in a tab by number`));
+  // Clicking/typing in a tab by number used to run the whole computer-use loop (an AX walk of every app plus
+  // several model calls per step: minutes for one click). With O's own browser wired, clicks and typing belong
+  // to the Playwright tools; tab_act stays for navigation and for when there is no own browser.
+  if (process.env.O_OWN_BROWSER === '1') {
+    return textResult(pretty({ ok: false, error: 'tab_act only navigates when O\'s own browser is available. For clicks and typing use the mcp__playwright__ tools (browser_navigate to the same URL, browser_snapshot, then browser_click / browser_type by ref). The user\'s logged-in tab can still be read with tab_read.', next: 'mcp__playwright__browser_navigate' }), true);
+  }
   const { b, info } = await native.tabInfo(a);
   if (!info.ok) return nativeResult(info);
   if (typeof native.isPaymentUrl !== 'function' || native.isPaymentUrl(info.url)) {
@@ -1330,7 +1354,7 @@ async function handle(msg) {
     case 'ping':
       return isRequest && send({ jsonrpc: '2.0', id, result: {} });
     case 'tools/list':
-      return isRequest && send({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
+      return isRequest && send({ jsonrpc: '2.0', id, result: { tools: availableTools() } });
     case 'tools/call': {
       const name = params && params.name;
       const args = (params && params.arguments) || {};

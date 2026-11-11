@@ -315,7 +315,7 @@ function ok(cond, label) {
     ok(st && /stagehand-mcp\.js$/.test(st.args[0]) && st.env.O_STAGEHAND_MODULE === shDir, 'stagehand present: the stagehand server is wired');
     ok(st.env.O_STAGEHAND_LLM_URL === 'http://127.0.0.1:8799/v1' && st.env.O_STAGEHAND_LLM_TOKEN === 'ptok' && st.env.O_STAGEHAND_MODEL === 'o-ai-code', 'stagehand: LLM steps go to O\'s local API proxy (no API key)');
     ok(st.env.O_STAGEHAND_CACHE_DIR === path.join(userDataDir, 'stagehand-cache'), 'stagehand: action cache under the user data dir');
-    ok(st.env.O_STAGEHAND_PROFILE === path.join(userDataDir, 'o-browser') && !st.env.O_STAGEHAND_CDP_URL, 'stagehand without O Link: O\'s own browser profile');
+    ok(st.env.O_STAGEHAND_PROFILE === path.join(userDataDir, 'o-browser', 'stagehand') && !st.env.O_STAGEHAND_CDP_URL, 'stagehand without O Link: its own sub-profile of O\'s browser (no Chromium singleton clash)');
     ep = 'ws://127.0.0.1:47615/cdp/tok';
     c = cfgOf();
     ok(c.mcpServers.stagehand.env.O_STAGEHAND_CDP_URL === ep && !c.mcpServers.stagehand.env.O_STAGEHAND_PROFILE, 'stagehand with O Link: connects to O Link\'s CDP endpoint');

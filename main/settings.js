@@ -35,6 +35,7 @@ const DEFAULTS = Object.freeze({
   browserMode: 'auto', // 'auto' = your own browsers and apps natively, plus O Link's tools when it is connected (add-on) | 'link' = O Link first (falls back to native) | 'mine' = Playwright Extension (tab group) | 'separate' = O's own invisible browser
   extensionToken: '', // PLAYWRIGHT_MCP_EXTENSION_TOKEN from the Playwright Extension (skips the connect dialog)
   browserProfile: '', // optional Chrome profile dir name for extension mode, e.g. "Profile 1"
+  taskTimeoutMin: 20, // a task still running after this many minutes is cancelled with a clear error
   maxParallelTasks: 3, // 1..8 tasks run at once (each its own Claude Code process); more wait in a queue
   quiet: true, // never take keyboard focus on its own (safe while gaming)
   screenAccess: true, // let O take screenshots of your screen (see_screen tool)
@@ -205,6 +206,7 @@ function sanitize(obj) {
   if (MODES.includes(obj.permissionMode)) out.permissionMode = obj.permissionMode;
   if (typeof obj.browserHeadless === 'boolean') out.browserHeadless = obj.browserHeadless;
   if (typeof obj.sandboxVm === 'boolean') out.sandboxVm = obj.sandboxVm;
+  if (Number.isFinite(Number(obj.taskTimeoutMin)) && Number(obj.taskTimeoutMin) >= 1) out.taskTimeoutMin = Math.min(240, Math.round(Number(obj.taskTimeoutMin)));
   if (typeof obj.cwd === 'string' && obj.cwd.trim()) out.cwd = obj.cwd.trim();
   if (typeof obj.claudePath === 'string' && obj.claudePath.trim()) out.claudePath = obj.claudePath.trim();
   if (typeof obj.model === 'string') out.model = obj.model.trim();

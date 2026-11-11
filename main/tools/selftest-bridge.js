@@ -155,7 +155,10 @@ async function main() {
 
     const list = await rpc('tools/list', {});
     const names = (list.result.tools || []).map((t) => t.name).sort();
-    const want = ['approve', 'cache_lookup', 'cancel_schedule', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'evolve_proposals', 'evolve_status', 'goal_checkpoint', 'goal_create', 'goal_propose', 'goal_record_cycle', 'goal_status', 'list_schedules', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'recall_preferences', 'remember_preference', 'schedule_task', 'script_run', 'see_screen', 'swarm_run', 'tab_act', 'tab_open', 'tab_read', 'tabs_list', 'ui_dock', 'ui_emit', 'ui_morph', 'verify_port', 'web_run', 'workspace_context'];
+    // native tab tools only on macOS/Windows; win_* only on Windows; engine-backed tools only with O_ENGINE_URL
+    const tabTools = ['tab_act', 'tab_open', 'tab_read', 'tabs_list'].filter(() => process.platform === 'darwin' || process.platform === 'win32');
+    const winTools = ['win_open_settings', 'win_powershell', 'win_set_registry', 'win_winget_install'].filter(() => process.platform === 'win32');
+    const want = ['approve', 'cache_lookup', 'cancel_schedule', 'computer_find', 'computer_replay', 'computer_run', 'computer_tree', 'diagnose', 'evolve_proposals', 'evolve_status', 'goal_checkpoint', 'goal_create', 'goal_propose', 'goal_record_cycle', 'goal_status', 'list_schedules', 'log_note', 'mcp_call', 'mcp_tools', 'provision', 'recall_preferences', 'remember_preference', 'schedule_task', 'script_run', 'see_screen', 'swarm_run', ...tabTools, 'ui_dock', 'ui_emit', 'ui_morph', 'verify_port', 'web_run', ...winTools, 'workspace_context'].sort();
     check(JSON.stringify(names) === JSON.stringify(want), 'tools/list → ' + names.join(','));
     const prov = list.result.tools.find((t) => t.name === 'provision');
     const stepSchema = prov.inputSchema.properties.steps.items;
@@ -299,7 +302,7 @@ async function main() {
   });
 
   console.log('bridge native tab tools on ' + process.platform + ' (no O Link)');
-  await runWith({ ...env, O_PERMISSION_MODE: 'log' }, async (rpc) => {
+  await runWith({ ...env, O_PERMISSION_MODE: 'log', O_BRIDGE_ALL_TOOLS: '1' }, async (rpc) => {
     await rpc('initialize', { protocolVersion: '2024-11-05' });
     const list = await rpc('tools/list', {});
     const byName = Object.fromEntries(list.result.tools.map((t) => [t.name, t]));

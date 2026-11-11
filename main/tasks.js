@@ -53,10 +53,12 @@ class TaskManager extends EventEmitter {
    * @param {{match(prompt:string):object|null, run(plan:object):Promise<object>}|null} [o.fastPath]  main/fastpath.js; default: on in Electron
    * @param {{record(e:object):any}} [o.actionLog]  where fast-path runs are recorded
    */
-  constructor({ createAgent, getSettings, now, fastPath, actionLog } = {}) {
+  constructor({ createAgent, getSettings, now, fastPath, actionLog, routeModel, taskTimeoutMin } = {}) {
     super();
     if (typeof createAgent !== 'function') throw new Error('TaskManager needs createAgent');
     this.createAgent = createAgent;
+    this.routeModel = typeof routeModel === 'function' ? routeModel : null; // (prompt) -> {route} from main/agent.js
+    this.taskTimeoutMin = taskTimeoutMin;
     this.getSettings = getSettings || (() => ({}));
     this.now = now || (() => Date.now());
     this.tasks = new Map(); // id -> task (insertion order = creation order)
@@ -123,7 +125,12 @@ class TaskManager extends EventEmitter {
     } else {
       let id = null;
       // A goal cycle gets its own agent (its bridge gates checkpoint actions), never the generic pre-warmed one.
-      if (this._spare && !taskId && !goalId) { // the pre-warmed agent already carries this id: claim it for this task
+      // Claim the pre-warmed agent only when this task will actually use it: a fast-routed prompt or a non-normal
+      // priority would just dispose it (a cold start plus a wasted warm process).
+      const warmable = PRIORITIES.includes(priority) ? priority === 'normal' : true;
+      let fastRoute = false;
+      try { const rm = this.routeModel ? this.routeModel(prompt) : null; fastRoute = !!(rm && rm.route === 'fast'); } catch (_) { fastRoute = false; }
+      if (this._spare && !taskId && !goalId && warmable && !fastRoute) { // the pre-warmed agent already carries this id: claim it for this task
         id = this._spare.id;
         this._claimed.set(id, this._spare.agent);
         this._spare = null;
@@ -256,7 +263,20 @@ class TaskManager extends EventEmitter {
     agent.on('event', onEvent);
     this._changed();
     let r = { ok: false };
-    try { r = await agent.run(runPrompt); } catch (e) { r = { ok: false }; t.error = String(e && e.message || e); }
+    // Wall clock: a task that is still going after taskTimeoutMin (default 20) is cancelled with a clear error
+    // instead of running for an hour on retries.
+    const limitMin = Number(this.taskTimeoutMin) > 0 ? Number(this.taskTimeoutMin) : 20;
+    let timer = null;
+    const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false, timedOut: true }), limitMin * 60 * 1000); if (timer.unref) timer.unref(); });
+    try {
+      r = await Promise.race([agent.run(runPrompt), deadline]);
+      if (r && r.timedOut) {
+        t.error = `Timed out after ${limitMin} min`;
+        try { if (agent.cancel) await agent.cancel(); } catch (_) {}
+        r = { ok: false };
+      }
+    } catch (e) { r = { ok: false }; t.error = String(e && e.message || e); }
+    if (timer) clearTimeout(timer);
     agent.removeListener('event', onEvent);
     t.sessionId = agent.sessionId || t.sessionId;
     t.warm = !!agent.lastRunWarm;

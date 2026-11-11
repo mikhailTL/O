@@ -1477,6 +1477,8 @@ function loadAgent() {
   tasks = new TaskManager({
     getSettings: () => settings.get(),
     actionLog,
+    routeModel: (prompt) => mod.routeModel(prompt, settings.get()),
+    taskTimeoutMin: Number(settings.get().taskTimeoutMin) || 20,
     createAgent: (taskId, opts) => new mod.OAgent({
       ...common, taskId, getChatId: () => taskId, onSchedule: handleSchedule, onGoal: handleGoal,
       goalId: (opts && opts.goalId) || (goals && goals.goalForTask(taskId)) || null,
@@ -1507,14 +1509,29 @@ function loadAgent() {
   scheduler.start();
 }
 
+let engineRestartPending = false;
+function scheduleEngineRestart() {
+  if (engineRestartPending) return;
+  engineRestartPending = true;
+  const attempt = () => {
+    if (!engine) { engineRestartPending = false; return; }
+    const busy = tasks && typeof tasks.running === 'function' && tasks.running().length > 0;
+    if (busy) { setTimeout(attempt, 5000); return; }
+    engineRestartPending = false;
+    try { engine.restart(); } catch (err) { console.error('[o] engine restart:', err.message); }
+  };
+  attempt();
+}
+
 function onTaskEvent(ev) {
   if (ev.type === 'genui') { onGenuiFrame(ev.frame); return; } // stored + broadcast there; not chat history
   broadcast(ev);
   if (ev.type === 'permission-timeout') {
     // Ask mode: no answer in 60 s stops that task and drops the tasks still waiting (nothing runs on a stale approval).
+    // Only that task stops; the others waiting in the queue are unrelated and keep their turn.
     tasks.stop(ev.taskId);
-    const dropped = tasks.dropQueued();
-    logApp('policy', `Approval timed out after 60 s: ${ev.toolName || ev.summary || 'tool'} — task stopped, ${dropped} queued task(s) dropped`,
+    const dropped = 0;
+    logApp('policy', `Approval timed out after 60 s: ${ev.toolName || ev.summary || 'tool'} — that task stopped`,
       { id: ev.id, toolName: ev.toolName, summary: ev.summary, dropped, taskId: ev.taskId });
     sendToIsland({ type: 'status', mood: 'error', text: 'No answer in time. I stopped that task.' });
   }
@@ -1914,7 +1931,9 @@ function registerIpc() {
       try { actionLog.record({ kind: 'settings', summary: 'Settings changed: ' + keys.join(', '), detail: { keys } }); } catch (_) {}
     }
     if (engine && keys.some((k) => ENGINE_KEYS.includes(k))) {
-      try { engine.restart(); } catch (err) { console.error('[o] engine restart:', err.message); }
+      // Restarting the engine mid-task used to kill every running task's bridge ("Lost contact with the
+      // engine"): wait for the queue to drain, then restart once.
+      scheduleEngineRestart();
     }
     if (proxy && keys.some((k) => PROXY_KEYS.includes(k))) restartProxy();
     if (keys.includes('theme')) sendTheme(currentTheme());
@@ -2109,7 +2128,7 @@ app.whenReady().then(() => {
         checkAccessibility().catch(() => {});
       });
       engine.on('dead', () => broadcast({ type: 'engine', ...engineStatus() }));
-      engine.start();
+      engine.start().catch((err) => logApp('error', `engine start failed: ${err.message}`));
       startProxy();
     }).catch((err) => console.error('[o] engine not started:', err.message));
   } else {

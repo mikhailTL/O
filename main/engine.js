@@ -84,7 +84,12 @@ function resolvePython(setting, engineDir) {
   const candidates = [];
   if (setting && String(setting).trim()) candidates.push({ cmd: String(setting).trim(), args: [] });
   const vp = venvPython(engineDir);
-  if (vp && fs.existsSync(vp)) candidates.push({ cmd: vp, args: [] });
+  if (vp && fs.existsSync(vp)) {
+    // a venv whose install failed half-way would exit instantly five times: check it can import the engine
+    let imports = false;
+    try { imports = spawnSync(vp, ['-c', 'import o_engine'], { timeout: 15000, windowsHide: true, env: childEnv() }).status === 0; } catch (_) { imports = false; }
+    if (imports) candidates.push({ cmd: vp, args: [] });
+  }
   if (IS_WIN) candidates.push({ cmd: 'py', args: ['-3'] });
   candidates.push({ cmd: 'python3', args: [] }, { cmd: 'python', args: [] });
   for (const c of candidates) if (pythonWorks(c.cmd, c.args)) return c;
@@ -221,7 +226,8 @@ class EngineProcess extends EventEmitter {
         this.emit('dead', { error: this.lastError });
         return;
       }
-      this.port = await freePort();
+      // Keep the port across restarts: bridges of running tasks hold O_ENGINE_URL from when they started.
+      if (!this.port) this.port = await freePort();
       const args = [...this.python.args, '-m', 'o_engine', 'serve', '--port', String(this.port), '--data-dir', this.dataDir];
       let child;
       try {
@@ -243,6 +249,7 @@ class EngineProcess extends EventEmitter {
       this.lastError = null;
       this._log(`engine started (pid ${child.pid}, port ${this.port})`, { pid: child.pid, port: this.port, python: this.python.cmd });
       const onText = (buf) => {
+        this._lastStderrAt = Date.now();
         for (const line of String(buf).split(/\r?\n/)) {
           if (!line.trim()) continue;
           this.stderr.push(line);
@@ -261,6 +268,9 @@ class EngineProcess extends EventEmitter {
         this._stopHealthPoll();
         if (this._disposed) return;
         this.lastError = `engine exited (code ${code}, signal ${signal})`;
+        // A non-zero exit before it was ever ready: the interpreter is suspect (a venv whose packages failed
+        // to install) — resolve Python again next time so the next candidate gets a turn.
+        if (!wasReady && code !== 0) this.python = null;
         this.emit('exit', { code, signal, wasReady });
         this._scheduleRestart();
       });
@@ -308,8 +318,11 @@ class EngineProcess extends EventEmitter {
           return;
         }
       } catch (_) { /* not up yet */ }
-      if (Date.now() - started > HEALTH_TIMEOUT_MS) {
-        this.lastError = `engine did not answer /health within ${Math.round(HEALTH_TIMEOUT_MS / 1000)} s`;
+      // Still importing (stderr moved in the last 30 s, e.g. a cold Windows venv)? Give it more time rather
+      // than killing and restarting from zero, which could never converge.
+      const alive = this.child === child && child.exitCode === null && Date.now() - (this._lastStderrAt || 0) < 30000;
+      if (Date.now() - started > HEALTH_TIMEOUT_MS && !(alive && Date.now() - started < 4 * HEALTH_TIMEOUT_MS)) {
+        this.lastError = `engine did not answer /health within ${Math.round((Date.now() - started) / 1000)} s`;
         this._log(`engine: ${this.lastError}`, { stderr: this.stderr.slice(-20) });
         killTree(child);
         return;

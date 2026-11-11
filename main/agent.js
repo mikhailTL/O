@@ -33,7 +33,7 @@ const DEFAULT_FAST_MODEL = 'haiku'; // a Claude Code model alias; settings.fastM
 // Load every MCP tool up front instead of deferring them behind a ToolSearch step (one model round trip saved on
 // every task). Documented at https://code.claude.com/docs/en/mcp#configure-tool-search ("false: All MCP tools
 // loaded upfront, no deferral"); O_ENABLE_TOOL_SEARCH overrides it (e.g. 'auto' for people with huge MCP setups).
-const TOOL_SEARCH_ENV = { ENABLE_TOOL_SEARCH: process.env.O_ENABLE_TOOL_SEARCH || 'false' };
+const TOOL_SEARCH_ENV = { ENABLE_TOOL_SEARCH: process.env.O_ENABLE_TOOL_SEARCH || 'auto' }; // 'auto': ~75 tool schemas are not re-sent on every turn
 const LOG_CLIP = 2000;
 
 // Permission modes: log = allow everything and record it (default), ask = blocking card, auto = no gating, no record.
@@ -125,8 +125,7 @@ Your clicks and typing never go through the user's real mouse or keyboard, and t
 
 const BROWSER_RULES = {
   // Default: the user's own browsers natively; O Link (an add-on) adds the Playwright tools when it is connected.
-  auto: `${NATIVE_BROWSER}
-You ALSO have O's own browser: the mcp__playwright__ tools drive a separate, persistent Chromium profile of O's own, invisible by default. For anything that is a web task (open a site, read pages, search, fill forms, multi-step flows), use it FIRST — browser_navigate, then browser_snapshot to read, then click/type by ref — it is faster and more reliable than driving the user's browser from the outside. Use the native tab tools only when the task is about a tab the user already has open or needs their logged-in session; if a site needs a login O's browser doesn't have, ask the user once to sign in there (browser_navigate with headless off is not available; say which site).`,
+  auto: `Browser — one order, always: (1) mcp__playwright__ tools = O's OWN browser (a separate, persistent, invisible Chromium profile): browser_navigate, browser_snapshot to read, then browser_click / browser_type by ref. Every web task starts here: open a site, search, read pages, fill forms, multi-step flows. (2) mcp__o__tabs_list / mcp__o__tab_read (read-only) when the task is about a tab the user already has open ("my tab", "this page", "this quiz"): read what is there, then do the clicking in O's own browser at the same URL unless it needs the user's logged-in session; mcp__o__tab_act only navigates. (3) mcp__o__computer_* only for native desktop apps and browser-internal pages (chrome://, extensions, settings) — never for ordinary web pages: it is a screenshot-and-think loop that costs minutes per click. Never ask the user to install O Link or any extension. If a site needs a login O's browser does not have, say which site in one line and ask the user to sign in there themselves; do not keep retrying. For quick facts WebSearch and WebFetch are fine.`,
   autoLinked: `${NATIVE_BROWSER}
 O Link is connected right now, so you also have the mcp__playwright__ tools on the user's own Edge/Chrome, with every tab they have open (browser_tabs lists and selects them). Prefer them for heavy web work in Edge/Chrome (long pages, forms, many steps): read with browser_snapshot and click/type there. New tabs open in the background. Use the native tab tools for other browsers.`,
   // The user's own Edge/Chrome through O's own extension (O Link): every open tab.
@@ -346,6 +345,31 @@ function ownBrowserArgs(s, profile) {
   else if (s.browser) a.push('--browser', s.browser);
   else { const found = findInstalledBrowser(); if (found) a.push('--executable-path', found); }
   return a;
+}
+
+/** Copy the seed browser profile (cookies, logins, prefs) into a per-task profile; skip anything bulky. */
+const PROFILE_SKIP = new Set(['Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'ShaderCache', 'GrShaderCache', 'Service Worker', 'blob_storage', 'Crashpad', 'BrowserMetrics', 'Safe Browsing', 'component_crx_cache', 'extensions_crx_cache', 'optimization_guide_model_store', 'segmentation_platform', 'SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile', 'stagehand']);
+function seedProfile(seed, dest) {
+  try {
+    if (fs.existsSync(dest)) return;
+    fs.mkdirSync(dest, { recursive: true });
+    if (!fs.existsSync(path.join(seed, 'Default'))) return;
+    fs.cpSync(seed, dest, { recursive: true, filter: (src) => !PROFILE_SKIP.has(path.basename(src)) });
+  } catch (_) { /* a fresh profile is fine */ }
+}
+/** After a task: promote its profile to the seed (newest logins win), then delete it. */
+function releaseProfile(seed, dest) {
+  if (!dest || dest === seed) return;
+  try {
+    if (fs.existsSync(path.join(dest, 'Default'))) {
+      const tmp = seed + '.new';
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.cpSync(dest, tmp, { recursive: true, filter: (src) => !PROFILE_SKIP.has(path.basename(src)) });
+      fs.rmSync(seed, { recursive: true, force: true });
+      fs.renameSync(tmp, seed);
+    }
+  } catch (_) { /* keep the old seed */ }
+  try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_) {}
 }
 
 function findLocalPlaywrightMcp() {
@@ -763,8 +787,15 @@ class OAgent extends EventEmitter {
 
   _writeMcpConfig(s) {
     fs.mkdirSync(this.userDataDir, { recursive: true });
-    const profile = path.join(this.userDataDir, 'o-browser');
-    fs.mkdirSync(profile, { recursive: true });
+    // One Chromium profile per task: Chromium refuses a second instance on the same user-data-dir, so with up to
+    // three parallel tasks (and Stagehand beside Playwright) the second launch used to fail or time out. Each
+    // task starts from a copy of the seed profile (cookies, logins) and the seed is refreshed from the last
+    // task that finished cleanly (see _releaseProfile).
+    const seed = path.join(this.userDataDir, 'o-browser');
+    fs.mkdirSync(seed, { recursive: true });
+    const profile = this.fileTag ? path.join(this.userDataDir, 'o-browser-tasks', this.fileTag) : seed;
+    if (profile !== seed) seedProfile(seed, profile);
+    this._browserProfile = profile;
 
     let pwArgs;
     let noBrowser = false;
@@ -843,6 +874,7 @@ class OAgent extends EventEmitter {
       bridgeEnv.O_ENGINE_URL = String(engine.url);
       bridgeEnv.O_ENGINE_TOKEN = String(engine.token || '');
     }
+    if (!noBrowser && !linked) bridgeEnv.O_OWN_BROWSER = '1'; // tab_act then only navigates; clicks go to Playwright
 
     // The user's own MCP servers (Settings → Phase 2 → MCP servers), same shape as Claude Code's
     // mcpServers, on top of the pinned servers O installed itself (Evolution: approved, or installed with
@@ -887,7 +919,7 @@ class OAgent extends EventEmitter {
       };
       if (linked) shEnv.O_STAGEHAND_CDP_URL = pwArgs[pwArgs.indexOf('--cdp-endpoint') + 1];
       else {
-        shEnv.O_STAGEHAND_PROFILE = profile;
+        shEnv.O_STAGEHAND_PROFILE = path.join(profile, 'stagehand');
         shEnv.O_STAGEHAND_HEADLESS = s.browserHeadless ? '1' : '0';
         const exe = s.browserPath || findInstalledBrowser();
         if (exe) shEnv.O_STAGEHAND_EXECUTABLE = exe;
@@ -959,6 +991,7 @@ class OAgent extends EventEmitter {
   /** Remove this task agent's own MCP config / persona files (the shared, untagged ones are kept). */
   _cleanupFiles() {
     if (!this.fileTag) return;
+    releaseProfile(path.join(this.userDataDir, 'o-browser'), this._browserProfile);
     for (const f of [`o-mcp-${this.fileTag}.json`, `o-persona-${this.fileTag}.md`]) {
       try { fs.rmSync(path.join(this.userDataDir, f), { force: true }); } catch (_) {}
     }
