@@ -1,79 +1,62 @@
 'use strict';
-// O: the Island (status capsule) and the Command bar, in one transparent always-on-top window.
-// The Island reports what O is doing from the agent event stream without being asked. A click or the
-// global shortcut opens the Command bar; bubbles bud off it (OLiquid) with approvals, running tasks and
-// what O suggests. Enter starts a task and the bar morphs back into the Island.
+// O: the Island cluster, in one transparent always-on-top window.
+// One glass element with five modes (renderer/adapt.js decides, main/main.js drives): the dot, the pill
+// (ring + status line), the cluster (the O circle + one short input segment, task chips springing around it),
+// the card (one result / approval box anchored to a chip) and full (the dashboard window covers the screen).
+// Everything is transform / opacity / clip-path; the window never shows a rectangle.
 (function () {
   const bridge = window.o || {};
   const L = window.OLiquid;
+  const A = window.OAdapt;
+  const G = window.OIslandGeom;
   const $ = (id) => document.getElementById(id);
   const body = document.body;
+  const root = document.documentElement;
   const stage = $('stage');
-  const goo = $('goo');
   const island = $('island');
   const ring = $('ring');
   const lineEl = $('line');
   const metaEl = $('meta');
-  const bar = $('bar');
+  const seg = $('seg');
   const input = $('input');
-  const side = $('side');
-  const gSide = goo.querySelector('.g-side');
-  const bubblesEl = $('bubbles');
+  const expand = $('expand');
+  const chipsEl = $('chips');
+  const cardEl = $('card');
   const measure = $('measure');
-
-  const isMac = bridge.platform === 'darwin';
-  $('mod-key').textContent = isMac ? '⌘↵' : 'Ctrl ↵';
-  const shownKey = isMac ? '⌘↵' : 'Ctrl ↵';
+  const SHAPE_PAD = 2; // keeps the capsule's antialiased edge inside the Linux window shape
 
   // Geometry shared with island.css; placement (menu bar, notch, bottom, corners) from islandgeom.js.
-  const G = window.OIslandGeom;
-  const BAR_H = 56, BUB_H = 48, BUB_GAP = 16, FIRST_GAP = 18;
-  const MAX_BUBBLES = 6;
-  const SHAPE_PAD = 2; // keeps the capsule's antialiased edge inside the Linux window shape
-  const root = document.documentElement;
-  // The layout main computed for this display and setting; a fallback that matches the old top-centre one.
   let LY = (bridge.initialIslandLayout && bridge.initialIslandLayout.compact) ? bridge.initialIslandLayout
     : G.layout({ platform: bridge.platform, display: { bounds: { x: 0, y: 0, width: 1440, height: 900 }, workArea: { x: 0, y: 0, width: 1440, height: 900 } }, position: 'top' });
   let SZ = G.sizes(LY.ih);
-  // The capsule top inside the expanded window (bubbles are only placed while it is open).
-  const openTop = () => (LY.dir === 'up' ? G.C.EXP_H - LY.gap - LY.ih : LY.top);
-  // The opened bar drops below the capsule by G.barDrop (the menu-bar strip on mac/notch, else 0); the capsule
-  // itself stays put. Bubbles are measured from the bar, so they follow the drop.
-  const barTop = () => (LY.dir === 'up' ? openTop() + LY.ih - BAR_H : openTop() + G.barDrop(LY));
-  const slotTop = (i) => (LY.dir === 'up'
-    ? barTop() - FIRST_GAP - BUB_H - i * (BUB_H + BUB_GAP)
-    : barTop() + BAR_H + FIRST_GAP + i * (BUB_H + BUB_GAP));
-  const originTop = () => barTop() + 4; // where a bubble starts when it streams out of the bar
-  const nextDy = () => (LY.dir === 'up' ? 1 : -1) * (BUB_H + BUB_GAP); // budding off the bubble before it
+  const capTop = () => (LY.dir === 'up' ? window.innerHeight - LY.gap - LY.ih : LY.top);
 
   // ------------------------------------------------------------ state fed by agent events
   let tasks = [];
   let goals = [];
   let checkpoints = [];
-  const perms = new Map(); // id -> { id, toolName, summary, taskId }
+  const perms = new Map(); // id -> { id, toolName, summary, taskId, input }
   const lastTool = new Map(); // taskId -> tool name
   let evolve = null;
   let flash = null; // { k, v, tone, until }
   let setupNeeded = false;
   let pendingStart = null; // { title, at }: a prompt just sent, until the task list shows it
-  let proposals = { at: 0, list: [] };
-  let suggestions = { at: 0, list: [] };
-  // The Island's mode (renderer/adapt.js): dot | pill | bar | card | sheet. Main decides from context (the
-  // frontmost window, the cursor, tasks, approvals) and from what O asks through ui_morph; the user's clicks
-  // and the shortcut open the bar directly. The window grows or shrinks to fit in main (a bounds tween).
-  const A = window.OAdapt;
-  let mode = 'pill';
-  let cardOnly = false; // card mode: the bar with one card, never focused
-  // The user's locked mode and sheet dock live here (localStorage, per machine) and are told to main at boot.
+  const results = new Map(); // taskId -> one-line result (from 'done' events)
+  let mode = 'pill';     // dot | pill | cluster | card | full
+  let typing = false;    // the input has keyboard focus (main: commandBarOpen)
+  let hovering = false;
+  let openKey = null;    // the chip whose card is open
+  let cardH = 0;
+  // The user's locked mode lives here (localStorage, per machine) and is told to main at boot.
   const prefs = (() => { try { return JSON.parse(localStorage.getItem('o.island.prefs') || '{}') || {}; } catch (_) { return {}; } })();
   function savePrefs(next) {
     Object.assign(prefs, next || {});
     try { localStorage.setItem('o.island.prefs', JSON.stringify(prefs)); } catch (_) {}
-    if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto', dock: prefs.dock || 'none' });
   }
 
   const clean = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
   const clip = (s, n) => { s = clean(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const isBrowserTool = (name) => /playwright|browser/i.test(name || '');
   const running = () => tasks.filter((t) => t.status === 'running');
   const queued = () => tasks.filter((t) => t.status === 'queued');
@@ -85,7 +68,7 @@
     setTimeout(renderIsland, (ms || 4500) + 30);
   }
 
-  // ------------------------------------------------------------ the island line
+  // ------------------------------------------------------------ the island line (pill)
   function elapsed(since) {
     if (!since) return '';
     const s = Math.max(0, Math.round((Date.now() - since) / 1000));
@@ -141,17 +124,16 @@
     return m < 60 ? `next in ${m}m` : m < 24 * 60 ? `next in ${Math.round(m / 60)}h` : '';
   }
 
-  function lineHtml(k, v) {
-    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    return `<span class="k">${esc(k)}</span>${v ? `<span class="sep">·</span><span class="v">${esc(v)}</span>` : ''}`;
-  }
+  const lineHtml = (k, v) => `<span class="k">${esc(k)}</span>${v ? `<span class="sep">·</span><span class="v">${esc(v)}</span>` : ''}`;
 
   let lastKey = '';
+  let lastText = { textW: 0, meta: false };
+  let lastTone = 'idle';
   function renderIsland() {
     const s = status();
     const tone = s.tone === 'working' ? 'is-working' : s.tone === 'attention' ? 'is-attention' : s.tone === 'success' ? 'is-success' : s.tone === 'danger' ? 'is-danger' : 'is-idle';
     if (!ring.classList.contains(tone)) ring.className = 'ring ' + tone;
-    const key = s.k + '|' + clip(s.v, 80);
+    const key = s.k + '|' + clip(s.v, 80) + '|' + mode;
     metaEl.textContent = s.meta || '';
     if (key === lastKey) return;
     lastKey = key;
@@ -160,8 +142,7 @@
     lastText = { textW: Math.min(330, measure.offsetWidth), meta: !!s.meta };
     lastTone = s.tone;
     let w = effectiveWidth();
-    // A notch wing too narrow for "Key · value": the key alone (the tooltip has the whole line).
-    if (LY.mode === 'notch' && s.v) {
+    if (LY.mode === 'notch' && s.v && mode === 'pill') {
       measure.innerHTML = lineHtml(s.k, '');
       const kW = measure.offsetWidth;
       if (lineRoom(w) - kW < 56) { html = lineHtml(s.k, ''); lastText.textW = kW; w = effectiveWidth(); }
@@ -172,31 +153,23 @@
     void lineEl.offsetWidth; // restart the crossfade
     lineEl.classList.add('swap');
     const full = `${s.k}${s.v ? ' · ' + s.v : ''}`;
-    island.title = full; // the whole line, also when the capsule only has room for the ring
-    island.setAttribute('aria-label', `${s.k}${s.v ? ', ' + s.v : ''}. Open the command bar`);
+    island.title = full; // the whole line, also when only the ring shows
+    island.setAttribute('aria-label', `${s.k}${s.v ? ', ' + s.v : ''}. Click to type a task`);
   }
-
-  let lastText = { textW: 0, meta: false };
-  let lastTone = 'idle';
-  let lastW = 0;
 
   /** The ring alone: the caps overlap into a circle (notch: the notch plus the narrowest wings). */
   function dotWidth() {
     if (LY.mode === 'notch') return LY.notchW + 2 * G.C.RING_ONLY_WING;
     return LY.ih;
   }
+  /** The capsule width the mode wants: the circle in every mode but the pill. */
+  function effectiveWidth() { return mode === 'pill' ? islandWidth() : dotWidth(); }
 
-  /** The capsule width the mode wants: the ring alone in dot/sheet, the line in pill (and under the bar). */
-  function effectiveWidth() {
-    return (mode === 'dot' || mode === 'sheet') ? dotWidth() : islandWidth();
-  }
-
-  /** The capsule width for the current line and layout. */
+  /** The pill width for the current line and layout. */
   function islandWidth() {
     const { textW, meta } = lastText;
     const metaW = meta ? 52 : 0;
     if (LY.mode === 'notch') {
-      // Symmetric wings so the capsule stays centred on the notch.
       const inset = Math.round(LY.ih * 0.42);
       const left = inset + SZ.ring + (meta ? SZ.gap + 44 : 0) + inset;
       const right = 8 + Math.min(textW, 240) + inset;
@@ -207,25 +180,31 @@
     return Math.round(Math.max(LY.minW, Math.min(LY.maxW, textW + SZ.ring + SZ.gap + metaW + SZ.pad)));
   }
 
-  /** Room for the line inside a capsule of width w (the line clips with an ellipsis beyond it). */
   function lineRoom(w) {
     if (LY.mode === 'notch') return Math.max(0, Math.round(w / 2 - LY.notchW / 2 - 8 - LY.ih * 0.42));
     return Math.max(0, Math.round(w - SZ.pad - SZ.ring - SZ.gap - (lastText.meta ? 44 + SZ.gap : 0)));
+  }
+
+  let lastW = 0;
+  /** The capsule centre x in window px (what --cx resolves to). */
+  function capCx(w) {
+    const pad = G.C.PAD + w / 2;
+    return LY.anchor === 'left' ? pad : LY.anchor === 'right' ? window.innerWidth - pad : window.innerWidth / 2;
   }
 
   function setIslandWidth(w) {
     lastW = w;
     stage.style.setProperty('--w', String(w));
     stage.style.setProperty('--line-max', `${Math.min(330, lineRoom(w))}px`);
-    stage.style.setProperty('--bsx', String(Math.max(0.2, (w - 6) / 640)));
     const pad = G.C.PAD + w / 2;
     root.style.setProperty('--cx', LY.anchor === 'left' ? `${pad}px` : LY.anchor === 'right' ? `calc(100vw - ${pad}px)` : '50vw');
-    // The capsule rect (compact window px): main shapes the window to it on Linux (so the transparent strip
-    // around it passes clicks on) and fades the capsule when the cursor comes near it (every platform).
+    layoutCluster();
+    // The capsule rect (footprint px): main shapes the window to it on Linux and measures the cursor's distance.
     if (typeof bridge.setIslandShape === 'function') {
       const r = G.capsuleRect(LY, w);
+      const cdx = clusterOn() ? lastCluster.cdx : 0;
       bridge.setIslandShape({
-        x: r.x - SHAPE_PAD, y: r.y - SHAPE_PAD, width: r.width + 2 * SHAPE_PAD, height: r.height + 2 * SHAPE_PAD,
+        x: r.x + cdx - SHAPE_PAD, y: r.y - SHAPE_PAD, width: r.width + 2 * SHAPE_PAD, height: r.height + 2 * SHAPE_PAD,
         attention: lastTone === 'attention',
       });
     }
@@ -240,9 +219,8 @@
     root.style.setProperty('--fs', `${SZ.fs}px`);
     root.style.setProperty('--ring', `${SZ.ring}px`);
     root.style.setProperty('--gap', `${SZ.gap}px`);
-    root.style.setProperty('--bsy', String(0.62 * LY.ih / G.C.BASE_H));
     root.style.setProperty('--notch', `${LY.notchW || 0}px`);
-    root.style.setProperty('--drop', `${G.barDrop(LY)}px`); // how far the opened bar drops below the capsule
+    root.style.setProperty('--drop', `${G.barDrop(LY)}px`);
     body.classList.toggle('up', LY.dir === 'up');
     body.classList.toggle('mb', LY.mode === 'menubar' || LY.mode === 'notch');
     body.classList.toggle('notch', LY.mode === 'notch');
@@ -253,296 +231,258 @@
 
   setInterval(() => { if (running().length || (flash && flash.until <= Date.now())) renderIsland(); }, 1000);
 
-  // ------------------------------------------------------------ agent events
-  if (typeof bridge.onAgentEvent === 'function') bridge.onAgentEvent((ev) => {
-    if (!ev || typeof ev !== 'object') return;
-    switch (ev.type) {
-      case 'tasks':
-        tasks = Array.isArray(ev.tasks) ? ev.tasks : [];
-        if (pendingStart && tasks.some((t) => t.status === 'running' || t.status === 'queued')) pendingStart = null;
-        changed();
-        break;
-      case 'goals':
-        goals = Array.isArray(ev.goals) ? ev.goals : goals;
-        checkpoints = Array.isArray(ev.checkpoints) ? ev.checkpoints : checkpoints;
-        changed();
-        break;
-      case 'permission':
-        perms.set(ev.id, { id: ev.id, toolName: ev.toolName, summary: clean(ev.summary || ev.toolName), taskId: ev.taskId || null });
-        changed();
-        break;
-      case 'permission-resolved':
-        perms.delete(ev.id);
-        changed();
-        break;
-      case 'tool':
-        if (ev.taskId) lastTool.set(ev.taskId, ev.name || '');
-        renderIsland();
-        break;
-      case 'status':
-        // Task status lines reach the island through the task list; app-level lines are shown briefly.
-        if (!ev.taskId && ev.text) setFlash(toneLabel(ev.mood), ev.text, toneOf(ev.mood), 4500);
-        break;
-      case 'done':
-        if (ev.taskId) setFlash('Done', taskTitle(ev.taskId) || clip(ev.result, 80) || 'Task finished', 'success', 5000);
-        break;
-      case 'error':
-        setFlash('Stopped', ev.message || 'The task hit a snag', 'danger', 5000);
-        break;
-      case 'evolve':
-        evolve = ev.status || null;
-        renderIsland();
-        break;
-      case 'update':
-        if (ev.state === 'available') setFlash('Update ready', 'Tray menu, Update O now', 'attention', 6000);
-        else if (ev.state === 'restarting') setFlash('Updating', 'Back in a moment', 'working', 4000);
-        break;
-      case 'island':
-        if (ev.open) open(); else close();
-        break;
-      case 'island-mode':
-        applyAdapt(ev);
-        break;
-      case 'island-prefs':
-        // the right-click menu changed the lock or the dock: remember it here
-        savePrefs({ lock: ev.lock || prefs.lock || 'auto', dock: ev.dock || prefs.dock || 'none' });
-        break;
-      case 'island-layout':
-        applyLayout(ev.layout);
-        break;
-      case 'island-fade':
-        body.classList.toggle('faded', !!ev.faded);
-        break;
-      default:
-        break;
-    }
-  });
+  // ------------------------------------------------------------ the cluster: circle + segment + chips + card
+  const clusterOn = () => mode === 'cluster' || mode === 'card';
+  let lastCluster = { cdx: 0, chips: [], card: null, seg: null, circle: null };
 
-  function toneOf(mood) { return mood === 'error' ? 'danger' : mood === 'success' ? 'success' : mood === 'idle' ? 'idle' : 'working'; }
-  function toneLabel(mood) { return mood === 'error' ? 'Stopped' : mood === 'success' ? 'Done' : mood === 'browsing' ? 'Browsing' : 'Note'; }
-
-  let changeTimer = null;
-  function changed() {
-    renderIsland();
-    if (!isOpen || changeTimer) return;
-    changeTimer = setTimeout(() => { changeTimer = null; if (isOpen && opened) syncBubbles(); }, 80);
+  function chipItems() {
+    const out = [];
+    for (const p of perms.values()) out.push({ key: 'perm:' + p.id, kind: 'perm', label: p.summary || p.toolName || 'Needs your OK', title: 'Needs your OK', p });
+    for (const c of checkpoints) out.push({ key: 'cp:' + c.id, kind: 'checkpoint', label: c.headline || 'A goal step is ready', title: 'Ready for review', c });
+    if (setupNeeded) out.push({ key: 'setup', kind: 'failed', label: 'Set up O', title: 'Claude Code is not installed', tip: 'O needs it to think', setup: true });
+    if (pendingStart && Date.now() - pendingStart.at < 8000 && !tasks.some((t) => clean(t.title) === clean(pendingStart.title) && (t.status === 'running' || t.status === 'queued'))) out.push({ key: 'start', kind: 'queued', label: pendingStart.title, title: 'Starting', tip: 'O is picking it up' });
+    const live = tasks.filter((t) => t.status === 'running' || t.status === 'queued').sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
+    for (const t of live) out.push({ key: 'task:' + t.id, kind: t.status, label: t.title, title: t.title, tip: t.status === 'running' ? (t.statusLine || 'Working') : `Queued${t.position ? ' · #' + t.position : ''}`, t });
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    const done = tasks.filter((t) => (t.status === 'done' || t.status === 'failed' || t.status === 'stopped') && (t.endedAt || 0) > cutoff).sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0)).slice(0, 4);
+    for (const t of done) out.push({ key: 'task:' + t.id, kind: t.status === 'done' ? 'done' : 'failed', label: t.title, title: t.title, tip: results.get(t.id) || clip(t.result || t.error || t.statusLine || (t.status === 'done' ? 'Done' : 'Stopped'), 120), t });
+    return out;
   }
 
-  // ------------------------------------------------------------ first load
-  async function boot() {
-    try { const r = await bridge.listTasks(); if (r && Array.isArray(r.tasks)) tasks = r.tasks; } catch (_) {}
-    try {
-      const st = await bridge.getState();
-      for (const p of (st && st.pendingPermissions) || []) perms.set(p.id, { id: p.id, toolName: p.toolName, summary: clean(p.summary || p.toolName), taskId: p.taskId || null });
-    } catch (_) {}
-    try { const g = await bridge.listGoals(); if (g && g.ok) { goals = g.goals || []; checkpoints = g.checkpoints || []; } } catch (_) {}
-    try { const c = await bridge.checkClaude(); setupNeeded = !!(c && c.installed === false); } catch (_) {}
-    renderIsland();
-  }
-
-  // ------------------------------------------------------------ bubbles: what the bar shows
-  const ICONS = {
-    run: '<svg viewBox="0 0 16 16"><path d="M13 3.5v4.5a2 2 0 0 1-2 2H3.5"/><path d="M6 7.5 3.5 10 6 12.5"/></svg>',
-    goal: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2"/></svg>',
+  const ICON = {
+    running: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" opacity="0.3"/><path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5"/></svg>',
+    queued: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2.3"/></svg>',
+    done: '<svg viewBox="0 0 16 16"><path d="m4 8.3 2.6 2.6L12.2 5.3"/></svg>',
+    failed: '<svg viewBox="0 0 16 16"><path d="M8 2 14.5 13.5h-13Z"/><path d="M8 6.5v3M8 11.6v.1"/></svg>',
     perm: '<svg viewBox="0 0 16 16"><path d="M8 1.8 13 3.6v4c0 3-2.1 5.4-5 6.6-2.9-1.2-5-3.6-5-6.6v-4Z"/><path d="m5.8 8 1.5 1.5 3-3"/></svg>',
     checkpoint: '<svg viewBox="0 0 16 16"><path d="M3.5 14V2.5"/><path d="M3.5 3h8l-1.6 2.75L11.5 8.5h-8"/></svg>',
-    task: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" opacity="0.3"/><path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5"/></svg>',
-    queued: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2.3"/></svg>',
-    proposal: '<svg viewBox="0 0 16 16"><path d="M8 2v3M8 11v3M2 8h3M11 8h3M4.2 4.2l1.6 1.6M10.2 10.2l1.6 1.6M11.8 4.2l-1.6 1.6M5.8 10.2l-1.6 1.6"/></svg>',
-    schedule: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg>',
-    setup: '<svg viewBox="0 0 16 16"><path d="M8 2 14.5 13.5h-13Z"/><path d="M8 6.5v3M8 11.6v.1"/></svg>',
-    hint: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 7.2v3.6M8 5v.1"/></svg>',
+    stopped: '<svg viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/></svg>',
   };
 
-  function items() {
-    const text = clean(input.value);
-    const out = [];
-    if (text) {
-      out.push({ key: 'run', kind: 'run', t1: text, tag: ['↵', 'Start task'], primary: () => submit() });
-      out.push({ key: 'goal', kind: 'goal', t1: 'Make it a long-term goal', t2: 'O plans the steps and runs them on a schedule', acts: [{ label: 'Set goal', run: () => makeGoal(text) }] });
-    }
-    if (setupNeeded) out.push({ key: 'setup', kind: 'setup', t1: 'Claude Code is not installed', t2: 'O needs it to think', acts: [{ label: 'Open setup', primary: true, run: () => openPanel() }] });
-    for (const p of perms.values()) {
-      out.push({ key: 'perm:' + p.id, kind: 'perm', t1: p.summary || p.toolName, t2: taskTitle(p.taskId) || p.toolName,
-        acts: [{ label: 'Allow', primary: true, run: () => answer(p.id, true) }, { label: 'Deny', run: () => answer(p.id, false) }] });
-    }
-    for (const c of checkpoints) {
-      out.push({ key: 'cp:' + c.id, kind: 'checkpoint', t1: c.headline || 'A goal step is ready', t2: c.goalTitle || c.kindLabel || '',
-        open: () => { bridge.checkpointFromNotify(c.id, 'edit'); close(); },
-        acts: [{ label: 'Approve', primary: true, run: () => checkpoint(c.id, 'approve') }, { label: 'Skip', run: () => checkpoint(c.id, 'skip') }] });
-    }
-    for (const t of tasks.filter((x) => x.status === 'running' || x.status === 'queued')) {
-      const run = t.status === 'running';
-      out.push({ key: 'task:' + t.id, kind: 'task', running: run, icon: run ? 'task' : 'queued', t1: t.title, t2: run ? (t.statusLine || 'Working') : `Queued${t.position ? ' · #' + t.position : ''}`,
-        open: () => { bridge.openTaskFromNotify(t.id); close(); },
-        acts: [{ label: 'Stop', run: () => stop(t.id) }] });
-    }
-    const goalTitles = new Set(goals.map((g) => clean(g.title).toLowerCase()));
-    for (const p of proposals.list) {
-      if (goalTitles.has(clean(p.title).toLowerCase())) continue;
-      out.push({ key: 'prop:' + (p.proposal_id || p.title), kind: 'proposal', t1: p.title, t2: 'Suggested goal',
-        acts: [{ label: 'Start', run: () => acceptProposal(p) }] });
-    }
-    for (const sg of suggestions.list) {
-      out.push({ key: 'sug:' + (sg.id || sg.text), kind: 'schedule', t1: sg.text, t2: sg.label || 'Suggested schedule',
-        acts: [{ label: 'Schedule', run: () => acceptSuggestion(sg) }] });
-    }
-    if (!out.length) {
-      const active = goals.filter((g) => g.status === 'active').length;
-      out.push({ key: 'hint', kind: 'hint', passive: true, t1: active ? `Nothing needs you. O is working on ${active} goal${active === 1 ? '' : 's'}.` : 'Nothing needs you right now.',
-        tag: ['↵', 'runs a task', shownKey, 'opens the panel'] });
-    }
-    if (cardOnly) {
-      // card mode: the one thing that waits for the person (an approval, a checkpoint, setup), else the newest task
-      const pick = out.find((x) => x.kind === 'perm' || x.kind === 'checkpoint' || x.kind === 'setup') || out.find((x) => x.kind === 'task') || out[0];
-      return pick ? [pick] : [];
-    }
-    return out.slice(0, MAX_BUBBLES);
+  const live = new Map(); // key -> { item, el }
+
+  function buildChip(item) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = `chip ${item.kind}`;
+    el.setAttribute('role', 'listitem');
+    el.innerHTML = `<span class="c-ic">${ICON[item.kind] || ICON.queued}</span><span class="c-t">${esc(clip(item.label, 28))}</span><span class="c-dot" aria-hidden="true"></span>${item.tip ? `<span class="c-tip">${esc(clip(item.tip, 90))}</span>` : ''}`;
+    el.title = `${item.title}${item.tip ? ' — ' + item.tip : ''}`;
+    el.addEventListener('mousedown', (e) => e.preventDefault()); // the caret stays in the input
+    el.addEventListener('click', (e) => { e.stopPropagation(); toggleCard(item.key); });
+    return el;
   }
 
-  // key -> { item, el, blob, slot }
-  const live = new Map();
-  let sel = -1;
-
-  function buildBubble(item) {
-    const el = document.createElement('div');
-    el.className = `bubble ol-glass k-${item.kind}${item.passive ? ' passive' : ''}${item.running ? ' running' : ''}`;
-    el.setAttribute('role', item.passive ? 'note' : 'option');
-    const ic = document.createElement('span');
-    ic.className = 'ic';
-    ic.innerHTML = ICONS[item.icon || item.kind] || ICONS.hint;
-    const tx = document.createElement('span');
-    tx.className = 'tx';
-    const t1 = document.createElement('span'); t1.className = 't1'; t1.textContent = clip(item.t1, 120);
-    tx.appendChild(t1);
-    if (item.t2) { const t2 = document.createElement('span'); t2.className = 't2'; t2.textContent = clip(item.t2, 120); tx.appendChild(t2); }
-    el.append(ic, tx);
-    if (item.tag) {
-      const tag = document.createElement('span'); tag.className = 'tag';
-      for (let i = 0; i < item.tag.length; i += 2) {
-        const k = document.createElement('kbd'); k.textContent = item.tag[i];
-        const s = document.createElement('span'); s.textContent = item.tag[i + 1] || '';
-        tag.append(k, s);
-      }
-      el.appendChild(tag);
-    }
-    if (item.acts && item.acts.length) {
-      const acts = document.createElement('span'); acts.className = 'acts';
-      for (const a of item.acts) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'act' + (a.primary ? ' primary' : '');
-        b.textContent = a.label;
-        // Keep the caret in the bar: the button never takes focus, and focus is put back after the action,
-        // so a following Enter goes to #input (it cannot re-press this button).
-        b.addEventListener('mousedown', (e) => e.preventDefault());
-        b.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (b.disabled || el.inert) return;
-          a.run();
-          refocus();
-        });
-        acts.appendChild(b);
-      }
-      el.appendChild(acts);
-    }
-    el.addEventListener('click', () => { if (el.inert) return; activate(item); refocus(); });
-    el.addEventListener('mouseenter', () => setSel(-1));
-    const blob = document.createElement('div');
-    blob.className = 'ol-blob g-bub';
-    return { item, el, blob, slot: -1 };
+  function buildMore(n) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'chip more';
+    el.innerHTML = `<span class="c-t">+${n}</span>`;
+    el.title = `${n} more. Open the dashboard`;
+    el.addEventListener('mousedown', (e) => e.preventDefault());
+    el.addEventListener('click', (e) => { e.stopPropagation(); openFull(); });
+    return el;
   }
 
-  /** A retracting bubble is done: its buttons go disabled and the bubble inert, so nothing fires twice. */
-  function retire(rec) {
-    rec.el.inert = true;
-    rec.el.setAttribute('aria-hidden', 'true');
-    for (const b of rec.el.querySelectorAll('button')) b.disabled = true;
-  }
-
-  function refocus() {
-    if (isOpen && document.activeElement !== input) input.focus();
-  }
-
-  function place(rec, slot) {
-    rec.slot = slot;
-    rec.el.style.top = slotTop(slot) + 'px';
-    rec.blob.style.top = (slotTop(slot) + 2) + 'px';
-  }
-
-  /** Diff the wanted bubbles against the live ones: new ones bud, gone ones retract, the rest slide. */
-  function syncBubbles(first) {
-    const want = isOpen ? items() : [];
+  /** Diff the wanted chips against the live ones, then spring everything to its slot. */
+  function syncChips() {
+    const want = clusterOn() ? chipItems() : [];
     const keys = new Set(want.map((x) => x.key));
-    const step = 30; // rows stagger in by 30 ms
-    // gone
-    let gone = 0;
+    if (openKey && !keys.has(openKey) && openKey !== '+more') closeCard();
+    const n = want.length;
+    const shown = n > A.C.MAX_CHIPS ? A.C.MAX_CHIPS - 1 : n;
+    const wantShown = want.slice(0, shown);
+    if (n > A.C.MAX_CHIPS) wantShown.push({ key: '+more', kind: 'more', more: n - shown });
+    const shownKeys = new Set(wantShown.map((x) => x.key));
     for (const [key, rec] of live) {
-      if (keys.has(key)) continue;
+      if (shownKeys.has(key)) continue;
       live.delete(key);
-      retire(rec);
-      const dy = rec.slot === 0 ? originTop() - slotTop(0) : nextDy();
-      L.retract([rec.blob, rec.el], { dy, duration: 220, delay: gone++ * 30, fade: [rec.el, rec.blob] }).then(() => { rec.el.remove(); rec.blob.remove(); });
+      rec.el.inert = true;
+      const c = lastCluster.circle || { cx: window.innerWidth / 2, cy: capTop() + LY.ih / 2 };
+      L.spring(rec.el, { x: c.cx - 10, y: c.cy - 15, s: 0.5, o: 0 }, { stiffness: 420, damping: 36 }).then(() => rec.el.remove());
     }
-    // stay + new
-    let born = 0;
-    want.forEach((item, i) => {
+    wantShown.forEach((item) => {
       let rec = live.get(item.key);
       if (rec) {
-        const was = rec.slot;
-        if (rec.item.t1 !== item.t1 || rec.item.t2 !== item.t2 || rec.item.running !== item.running) {
-          const t1 = rec.el.querySelector('.t1');
-          const t2 = rec.el.querySelector('.t2');
-          if (rec.item.kind === item.kind && t1 && !!t2 === !!item.t2 && rec.item.running === item.running) {
-            // Same shape: update the words in place so the bubble does not flicker while typing.
-            t1.textContent = clip(item.t1, 120);
-            if (t2) t2.textContent = clip(item.t2, 120);
-          } else {
-            const fresh = buildBubble(item);
-            fresh.el.style.top = rec.el.style.top;
-            const hadFocus = rec.el.contains(document.activeElement);
-            rec.el.replaceWith(fresh.el);
-            if (hadFocus) refocus();
-            rec.el = fresh.el;
-          }
+        if (item.kind === 'more') { rec.el.querySelector('.c-t').textContent = `+${item.more}`; return; }
+        if (rec.item.kind !== item.kind || rec.item.label !== item.label || rec.item.tip !== item.tip) {
+          const fresh = buildChip(item);
+          fresh.style.transform = rec.el.style.transform; fresh.style.opacity = rec.el.style.opacity;
+          const st = L.springState(rec.el);
+          rec.el.replaceWith(fresh);
+          L.springForget(rec.el);
+          rec.el = fresh;
+          if (st) L.spring(fresh, st, { from: st });
         }
         rec.item = item;
-        if (was !== i) {
-          place(rec, i);
-          const dy = slotTop(was) - slotTop(i);
-          for (const n of [rec.el, rec.blob]) n.animate([{ transform: `translate3d(0, ${dy}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }], { duration: 280, easing: L.EASE_OUT });
-        }
         return;
       }
-      rec = buildBubble(item);
+      const el = item.kind === 'more' ? buildMore(item.more) : buildChip(item);
+      rec = { item, el };
       live.set(item.key, rec);
-      place(rec, i);
-      goo.appendChild(rec.blob);
-      bubblesEl.appendChild(rec.el);
-      // On open, every bubble streams out of the bar; later arrivals bud off the bubble above.
-      const dy = first || i === 0 ? originTop() - slotTop(i) : nextDy();
-      const delay = born++ * step;
-      L.bud([rec.blob, rec.el], { dy, delay, duration: first ? 300 + i * 26 : 300, scale: 0.94, fade: [rec.el] });
+      chipsEl.appendChild(el);
+      const c = lastCluster.circle || { cx: window.innerWidth / 2, cy: capTop() + LY.ih / 2 };
+      el.style.transform = `translate3d(${c.cx - 10}px, ${c.cy - 15}px, 0) scale(0.5)`;
+      el.style.opacity = '0';
     });
     // DOM order follows slots so keyboard order matches.
-    want.forEach((item) => { const r = live.get(item.key); if (r) bubblesEl.appendChild(r.el); });
-    if (sel >= selectable().length) setSel(selectable().length - 1);
+    wantShown.forEach((item) => { const r = live.get(item.key); if (r) chipsEl.appendChild(r.el); });
+    for (const [key, rec] of live) rec.el.classList.toggle('open', key === openKey);
+    layoutCluster();
   }
 
-  const selectable = () => [...live.values()].filter((r) => !r.item.passive).sort((a, b) => a.slot - b.slot);
-  function setSel(i) {
-    sel = i;
-    const list = selectable();
-    list.forEach((r, j) => { r.el.classList.toggle('sel', j === i); r.el.setAttribute('aria-selected', j === i ? 'true' : 'false'); });
-    // With nothing selected, the "Start task" bubble carries the highlight (Enter runs it).
-    for (const r of live.values()) if (r.item.kind === 'run') r.el.classList.toggle('dim', i >= 0);
+  /** Positions from adapt.clusterLayout → CSS variables (circle, segment) and springs (chips, card). */
+  function layoutCluster() {
+    const on = clusterOn();
+    const order = [...live.keys()];
+    const openIndex = openKey ? order.indexOf(openKey) : -1;
+    const lay = A.clusterLayout({
+      cx: capCx(on ? dotWidth() : lastW), top: capTop(), ih: LY.ih, winW: window.innerWidth, typing: typing || !!clean(input.value),
+      chips: live.has('+more') ? (live.size - 1) + (live.get('+more').item.more || 0) : live.size,
+      openCard: openKey ? { index: openIndex, height: cardH || 120 } : null, drop: 0,
+    });
+    lastCluster = lay;
+    root.style.setProperty('--cdx', on ? `${lay.cdx}px` : '0px');
+    root.style.setProperty('--seg-x', `${lay.seg.x}px`);
+    root.style.setProperty('--seg-y', `${lay.seg.y}px`);
+    root.style.setProperty('--seg-w', `${lay.seg.w}px`);
+    const drop = G.barDrop(LY);
+    order.forEach((key, i) => {
+      const rec = live.get(key);
+      const slot = lay.chips[i];
+      if (!rec || !slot) return;
+      L.spring(rec.el, { x: slot.x, y: slot.y + drop, s: 1, o: 1 });
+    });
+    if (openKey && lay.card && !cardEl.hidden) L.spring(cardEl, { x: lay.card.x, y: lay.card.y + drop, s: 1, o: 1 });
   }
 
-  function activate(item) {
-    if (item.primary) return item.primary();
-    if (item.open) return item.open();
-    if (item.acts && item.acts.length === 1) return item.acts[0].run();
-    return undefined;
+  // ------------------------------------------------------------ the card
+  function cardSpec(item) {
+    if (!item) return null;
+    if (item.kind === 'perm') {
+      const p = item.p;
+      return { kind: 'Needs your OK', title: p.summary || p.toolName, body: `<b>${esc(p.toolName || '')}</b>${p.taskId && taskTitle(p.taskId) ? ' · ' + esc(taskTitle(p.taskId)) : ''}`,
+        acts: [{ label: 'Allow', primary: true, run: () => answer(p.id, true) }, { label: 'Deny', run: () => answer(p.id, false) }] };
+    }
+    if (item.kind === 'checkpoint') {
+      const c = item.c;
+      return { kind: c.goalTitle || c.kindLabel || 'Goal checkpoint', title: c.headline || 'A goal step is ready', body: esc(clip(c.summary || '', 240)),
+        acts: [{ label: 'Approve', primary: true, run: () => checkpoint(c.id, 'approve') }, { label: 'Edit', run: () => { bridge.checkpointFromNotify(c.id, 'edit'); closeCard(); } }, { label: 'Skip', quiet: true, run: () => checkpoint(c.id, 'skip') }] };
+    }
+    if (item.setup) return { kind: 'Setup', title: 'Claude Code is not installed', body: 'O needs it to think. The dashboard sets it up in one click.', acts: [{ label: 'Open setup', primary: true, run: () => openFull() }] };
+    const t = item.t;
+    if (!t) return { kind: 'Starting', title: item.label, body: 'O is picking it up.', acts: [] };
+    if (t.status === 'running' || t.status === 'queued') {
+      return { kind: t.status === 'running' ? `Working · ${elapsed(t.startedAt)}` : 'Queued', title: t.title, body: esc(t.statusLine || (t.status === 'running' ? 'Working' : 'Waiting for a free slot')),
+        acts: [{ label: 'Open', quiet: true, run: () => { bridge.openTaskFromNotify(t.id); closeCard(); } }, { label: 'Stop', danger: true, run: () => stop(t.id) }] };
+    }
+    const text = results.get(t.id) || t.result || t.error || t.statusLine || '';
+    return { kind: t.status === 'done' ? 'Done' : t.status === 'failed' ? 'Stopped with a snag' : 'Stopped', title: t.title, body: esc(clip(text, 360)) || (t.status === 'done' ? 'Finished.' : ''),
+      acts: [{ label: 'Open', primary: true, run: () => { bridge.openTaskFromNotify(t.id); closeCard(); } }, { label: 'Dismiss', quiet: true, run: () => closeCard() }] };
+  }
+
+  function renderCard(item) {
+    const spec = cardSpec(item);
+    if (!spec) return false;
+    cardEl.innerHTML = `<div class="card-kind">${esc(spec.kind)}</div><div class="card-title">${esc(clip(spec.title, 120))}</div>${spec.body ? `<div class="card-body">${spec.body}</div>` : ''}<div class="card-acts"></div>`;
+    const acts = cardEl.querySelector('.card-acts');
+    for (const a of spec.acts) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'act' + (a.primary ? ' primary' : '') + (a.quiet ? ' quiet' : '') + (a.danger ? ' danger' : '');
+      b.textContent = a.label;
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', (e) => { e.stopPropagation(); a.run(); });
+      acts.appendChild(b);
+    }
+    return true;
+  }
+
+  function toggleCard(key) { if (openKey === key) closeCard(); else openCard(key); }
+
+  function openCard(key) {
+    const rec = live.get(key);
+    if (!rec || rec.item.kind === 'more') return;
+    if (!renderCard(rec.item)) return;
+    const first = !openKey;
+    openKey = key;
+    cardEl.hidden = false;
+    cardH = cardEl.offsetHeight;
+    for (const [k, r] of live) r.el.classList.toggle('open', k === key);
+    const st = L.springState(rec.el) || { x: 0, y: 0 };
+    layoutCluster();
+    const lay = lastCluster;
+    if (first && lay.card) L.spring(cardEl, { x: lay.card.x, y: lay.card.y + G.barDrop(LY), s: 1, o: 1 }, { from: { x: st.x, y: st.y + 10, s: 0.9, o: 0 } });
+    if (typeof bridge.islandCard === 'function') bridge.islandCard(true);
+  }
+
+  function closeCard() {
+    if (!openKey) return;
+    const rec = live.get(openKey);
+    openKey = null;
+    cardH = 0;
+    for (const r of live.values()) r.el.classList.remove('open');
+    const st = rec ? L.springState(rec.el) : null;
+    L.spring(cardEl, { x: st ? st.x : lastCluster.seg.x, y: (st ? st.y : lastCluster.seg.y) + 10, s: 0.9, o: 0 }).then(() => { if (!openKey) cardEl.hidden = true; });
+    layoutCluster();
+    if (typeof bridge.islandCard === 'function') bridge.islandCard(false);
+  }
+
+  /** Refresh the open card's words (a status line moved on) without re-springing it. */
+  function refreshCard() {
+    if (!openKey) return;
+    const rec = live.get(openKey);
+    if (rec) { renderCard(rec.item); const h = cardEl.offsetHeight; if (h !== cardH) { cardH = h; layoutCluster(); } }
+  }
+
+  // ------------------------------------------------------------ modes
+  function setMode(m) {
+    if (!A.MODES.includes(m) || m === mode) return;
+    const wasCluster = clusterOn();
+    mode = m;
+    body.dataset.mode = m;
+    for (const k of A.MODES) body.classList.toggle(k, k === m);
+    lastKey = '';
+    renderIsland();
+    setIslandWidth(effectiveWidth());
+    if (clusterOn() !== wasCluster) syncChips();
+    if (!clusterOn() && typing) blurInput();
+    if (!clusterOn() && openKey) closeCard();
+    if (m === 'card' && !openKey) {
+      const first = [...live.keys()].find((k) => /^(perm|cp):/.test(k)) || [...live.keys()][0];
+      if (first && first !== '+more') openCard(first);
+    }
+  }
+
+  /** Main's decision (renderer/adapt.js): mode, opacity and whether clicks pass through. */
+  function applyAdapt(ev) {
+    const m = A.cleanMode(ev && ev.mode);
+    if (!m) return;
+    root.style.setProperty('--adapt-opacity', String(typeof ev.opacity === 'number' ? Math.max(0.2, Math.min(1, ev.opacity)) : 1));
+    setMode(m);
+  }
+
+  // ------------------------------------------------------------ typing (the segment has focus)
+  function focusInput(opts) {
+    if (!clusterOn()) setMode('cluster');
+    if (!typing) {
+      typing = true;
+      body.classList.add('typing');
+      if (typeof bridge.islandOpen === 'function' && !(opts && opts.fromMain)) bridge.islandOpen();
+      setIgnore(false);
+      layoutCluster();
+    }
+    requestAnimationFrame(() => input.focus());
+    setTimeout(() => input.focus(), 60);
+  }
+
+  function blurInput(opts) {
+    if (!typing) return;
+    typing = false;
+    body.classList.remove('typing');
+    if (document.activeElement === input) input.blur();
+    if (typeof bridge.islandClose === 'function' && !(opts && opts.fromMain)) bridge.islandClose();
+    layoutCluster();
   }
 
   // ------------------------------------------------------------ actions
@@ -551,35 +491,18 @@
     if (!text) return;
     pendingStart = { title: clip(text, 80), at: Date.now() };
     input.value = '';
-    close();
+    body.classList.remove('has-text');
     renderIsland();
+    syncChips();
     try {
       const r = await bridge.sendPrompt(text);
-      if (r && r.ok === false) { pendingStart = null; setFlash('Could not start', r.error || 'unknown error', 'danger', 5000); }
-    } catch (err) { pendingStart = null; setFlash('Could not start', err && err.message, 'danger', 5000); }
-  }
-
-  async function submitToPanel() {
-    const text = clean(input.value);
-    input.value = '';
-    close();
-    if (!text) { openPanel(); return; }
-    pendingStart = { title: clip(text, 80), at: Date.now() };
-    try {
-      const r = await bridge.sendPrompt(text);
-      if (r && r.ok && r.taskId && typeof bridge.openTaskFromNotify === 'function') bridge.openTaskFromNotify(r.taskId);
-      else openPanel();
-    } catch (_) { openPanel(); }
-  }
-
-  function openPanel() {
-    if (typeof bridge.showPanel === 'function') bridge.showPanel(); else bridge.togglePanel();
-    close();
+      if (r && r.ok === false) { pendingStart = null; setFlash('Could not start', r.error || 'unknown error', 'danger', 5000); syncChips(); }
+    } catch (err) { pendingStart = null; setFlash('Could not start', err && err.message, 'danger', 5000); syncChips(); }
   }
 
   async function makeGoal(text) {
+    if (!text) return;
     input.value = '';
-    close();
     setFlash('Setting goal', text, 'working', 30000);
     try {
       const r = await bridge.createGoal(text);
@@ -588,7 +511,12 @@
     } catch (err) { setFlash('Could not set goal', err && err.message, 'danger', 5000); }
   }
 
-  const answered = new Set(); // permission ids already answered from this window
+  function openFull() {
+    if (typeof bridge.showPanel === 'function') bridge.showPanel(); else bridge.togglePanel();
+    blurInput();
+  }
+
+  const answered = new Set();
   function answer(id, allow) {
     if (answered.has(id)) return;
     answered.add(id);
@@ -607,158 +535,117 @@
     try { await bridge.stopTask(id); } catch (_) {}
   }
 
-  async function acceptProposal(p) {
-    proposals.list = proposals.list.filter((x) => x !== p);
-    changed();
-    setFlash('Setting goal', p.title, 'working', 30000);
-    try {
-      const r = await bridge.acceptGoal(p);
-      setFlash(r && r.ok ? 'Goal set' : 'Could not set goal', r && r.ok ? p.title : (r && r.error) || p.title, r && r.ok ? 'success' : 'danger', 5000);
-    } catch (err) { setFlash('Could not set goal', err && err.message, 'danger', 5000); }
-  }
-
-  async function acceptSuggestion(sg) {
-    suggestions.list = suggestions.list.filter((x) => x !== sg);
-    changed();
-    try {
-      const r = await bridge.acceptSuggestion(sg);
-      setFlash(r && r.ok ? 'Scheduled' : 'Could not schedule', r && r.ok ? `${sg.text}${sg.label ? ' · ' + sg.label : ''}` : (r && r.error) || sg.text, r && r.ok ? 'success' : 'danger', 5000);
-    } catch (err) { setFlash('Could not schedule', err && err.message, 'danger', 5000); }
-  }
-
-  // What O proposes: cached so opening the bar stays instant and cheap.
-  async function refreshSuggestions() {
-    const now = Date.now();
-    const jobs = [];
-    if (now - suggestions.at > 2 * 60 * 1000 && typeof bridge.learnProfile === 'function') {
-      suggestions.at = now;
-      jobs.push(bridge.learnProfile().then((r) => { if (r && r.ok) suggestions.list = (r.suggestions || []).slice(0, 2); }).catch(() => {}));
-    }
-    if (now - proposals.at > 10 * 60 * 1000 && typeof bridge.proposeGoals === 'function') {
-      proposals.at = now;
-      jobs.push(bridge.proposeGoals().then((r) => { if (r && r.ok) proposals.list = (r.proposals || []).slice(0, 2); }).catch(() => {}));
-    }
-    if (typeof bridge.listGoals === 'function') {
-      jobs.push(bridge.listGoals().then((g) => { if (g && g.ok) { goals = g.goals || goals; checkpoints = g.checkpoints || checkpoints; } }).catch(() => {}));
-    }
-    await Promise.all(jobs);
-  }
-
-  // ------------------------------------------------------------ open / close
-  let isOpen = false;
-  let opened = false; // the opening morph has finished laying out bubbles
-  let closeTimer = null;
-
-  /** Open the bar (focused, the user asked) or, with { card: true }, the card: the bar with one card, unfocused. */
-  function open(opts) {
-    const card = !!(opts && opts.card);
-    if (isOpen) {
-      if (cardOnly && !card) { cardOnly = false; setMode('bar'); input.focus(); syncBubbles(); if (typeof bridge.islandOpen === 'function') bridge.islandOpen(); }
-      else if (!cardOnly && !card) input.focus();
-      return;
-    }
-    isOpen = true;
-    opened = false;
-    cardOnly = card;
-    clearTimeout(closeTimer);
-    if (typeof bridge.islandOpen === 'function' && !card) bridge.islandOpen();
-    setMode(card ? 'card' : 'bar');
-    setIgnore(false);
-    for (const rec of live.values()) { rec.el.remove(); rec.blob.remove(); }
-    live.clear();
-    sel = -1;
-    body.classList.add('open', 'ext');
-    body.classList.remove('faded');
-    L.bud([gSide, side], { dx: -84, delay: 90, duration: 260, scale: 0.9, fade: [side] });
-    if (!card) { requestAnimationFrame(() => input.focus()); setTimeout(() => input.focus(), 60); }
-    setTimeout(() => { if (isOpen) { opened = true; syncBubbles(true); } }, 110);
-    if (!card) refreshSuggestions().then(() => { if (isOpen && opened) syncBubbles(); });
-  }
-
-  /** The mode class on <body> (dot | pill | bar | card | sheet); the capsule re-measures for it. */
-  function setMode(m) {
-    if (!A || !A.MODES.includes(m) || m === mode) return;
-    mode = m;
-    body.dataset.mode = m;
-    for (const k of A.MODES) body.classList.toggle(k, k === m);
-    lastKey = '';
+  // ------------------------------------------------------------ agent events
+  let changeTimer = null;
+  function changed() {
     renderIsland();
-    setIslandWidth(effectiveWidth());
+    if (changeTimer) return;
+    changeTimer = setTimeout(() => { changeTimer = null; syncChips(); refreshCard(); }, 60);
   }
 
-  /** Main's decision (renderer/adapt.js): mode, opacity and whether clicks pass through. */
-  function applyAdapt(ev) {
-    const m = A && A.cleanMode(ev && ev.mode);
-    if (!m) return;
-    root.style.setProperty('--adapt-opacity', String(typeof ev.opacity === 'number' ? Math.max(0.2, Math.min(1, ev.opacity)) : 1));
-    if (m === 'bar') { if (!isOpen || cardOnly) open(); return; }
-    if (m === 'card') { if (!isOpen) open({ card: true }); else if (!cardOnly) { /* the user has the bar: keep it */ } return; }
-    if (isOpen) { if (cardOnly || m === 'dot' || m === 'sheet') close({ keepMode: m }); else return; }
-    setMode(m);
-  }
-
-  function close(opts) {
-    if (!isOpen) return;
-    const wasCard = cardOnly;
-    isOpen = false;
-    opened = false;
-    cardOnly = false;
-    clearTimeout(changeTimer); changeTimer = null;
-    if (typeof bridge.islandClose === 'function' && !wasCard) bridge.islandClose();
-    setMode((opts && A && A.cleanMode(opts.keepMode)) || 'pill');
-    const recs = [...live.values()].sort((a, b) => b.slot - a.slot);
-    live.clear();
-    recs.forEach(retire);
-    recs.forEach((rec, i) => {
-      L.retract([rec.blob, rec.el], { dy: originTop() - slotTop(rec.slot), duration: 220, delay: i * 25, fade: [rec.el, rec.blob] })
-        .then(() => { rec.el.remove(); rec.blob.remove(); });
-    });
-    L.retract([gSide, side], { dx: -84, duration: 200, scale: 0.9, fade: [side, gSide] });
-    if (!wasCard) input.blur();
-    closeTimer = setTimeout(() => body.classList.remove('open'), recs.length ? 110 : 40);
-    setTimeout(() => {
-      if (isOpen) return;
-      body.classList.remove('ext');
-      input.value = '';
-      bar.classList.remove('has-text');
-    }, 420);
-    renderIsland();
-  }
-
-  island.addEventListener('click', () => open());
-  bar.addEventListener('mousedown', () => { if (isOpen && cardOnly) open(); });
-  island.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    if (typeof bridge.petMenu === 'function') bridge.petMenu(); else open();
+  if (typeof bridge.onAgentEvent === 'function') bridge.onAgentEvent((ev) => {
+    if (!ev || typeof ev !== 'object') return;
+    switch (ev.type) {
+      case 'tasks':
+        tasks = Array.isArray(ev.tasks) ? ev.tasks : [];
+        if (pendingStart && tasks.some((t) => t.status === 'running' || t.status === 'queued')) pendingStart = null;
+        changed();
+        break;
+      case 'goals':
+        goals = Array.isArray(ev.goals) ? ev.goals : goals;
+        checkpoints = Array.isArray(ev.checkpoints) ? ev.checkpoints : checkpoints;
+        changed();
+        break;
+      case 'permission':
+        perms.set(ev.id, { id: ev.id, toolName: ev.toolName, summary: clean(ev.summary || ev.toolName), taskId: ev.taskId || null });
+        changed();
+        // an approval opens its card as soon as the cluster is up
+        setTimeout(() => { if (clusterOn() && !openKey && live.has('perm:' + ev.id)) openCard('perm:' + ev.id); }, 120);
+        break;
+      case 'permission-resolved':
+        perms.delete(ev.id);
+        changed();
+        break;
+      case 'tool':
+        if (ev.taskId) lastTool.set(ev.taskId, ev.name || '');
+        renderIsland();
+        break;
+      case 'status':
+        if (!ev.taskId && ev.text) setFlash(toneLabel(ev.mood), ev.text, toneOf(ev.mood), 4500);
+        break;
+      case 'done':
+        if (ev.taskId) { results.set(ev.taskId, clip(ev.result || '', 300)); setFlash('Done', taskTitle(ev.taskId) || clip(ev.result, 80) || 'Task finished', 'success', 5000); changed(); }
+        break;
+      case 'error':
+        setFlash('Stopped', ev.message || 'The task hit a snag', 'danger', 5000);
+        break;
+      case 'evolve':
+        evolve = ev.status || null;
+        renderIsland();
+        break;
+      case 'update':
+        if (ev.state === 'available') setFlash('Update ready', 'Tray menu, Update O now', 'attention', 6000);
+        else if (ev.state === 'restarting') setFlash('Updating', 'Back in a moment', 'working', 4000);
+        break;
+      case 'island':
+        if (ev.open) focusInput({ fromMain: true }); else blurInput({ fromMain: true });
+        break;
+      case 'island-mode':
+        applyAdapt(ev);
+        break;
+      case 'island-layout':
+        applyLayout(ev.layout);
+        break;
+      case 'island-fade':
+        body.classList.toggle('faded', !!ev.faded);
+        break;
+      case 'island-prefs':
+        savePrefs({ lock: ev.lock || prefs.lock || 'auto' });
+        break;
+      default:
+        break;
+    }
   });
-  bar.addEventListener('contextmenu', (e) => { e.preventDefault(); if (typeof bridge.petMenu === 'function') bridge.petMenu(); });
-  side.addEventListener('click', () => submitToPanel());
-  input.addEventListener('input', () => {
-    bar.classList.toggle('has-text', !!clean(input.value));
-    setSel(-1);
-    if (opened) syncBubbles();
-  });
+
+  function toneOf(mood) { return mood === 'error' ? 'danger' : mood === 'success' ? 'success' : mood === 'idle' ? 'idle' : 'working'; }
+  function toneLabel(mood) { return mood === 'error' ? 'Stopped' : mood === 'success' ? 'Done' : mood === 'browsing' ? 'Browsing' : 'Note'; }
+
+  // ------------------------------------------------------------ first load
+  async function boot() {
+    try { const r = await bridge.listTasks(); if (r && Array.isArray(r.tasks)) tasks = r.tasks; } catch (_) {}
+    try {
+      const st = await bridge.getState();
+      for (const p of (st && st.pendingPermissions) || []) perms.set(p.id, { id: p.id, toolName: p.toolName, summary: clean(p.summary || p.toolName), taskId: p.taskId || null });
+    } catch (_) {}
+    try { const g = await bridge.listGoals(); if (g && g.ok) { goals = g.goals || []; checkpoints = g.checkpoints || []; } } catch (_) {}
+    try { const c = await bridge.checkClaude(); setupNeeded = !!(c && c.installed === false); } catch (_) {}
+    changed();
+  }
+
+  // ------------------------------------------------------------ input + clicks
+  island.addEventListener('click', () => { if (mode === 'full') { bridge.togglePanel(); return; } focusInput(); });
+  island.addEventListener('contextmenu', (e) => { e.preventDefault(); if (typeof bridge.petMenu === 'function') bridge.petMenu(); });
+  seg.addEventListener('mousedown', (e) => { if (e.target !== input) { e.preventDefault(); focusInput(); } else if (!typing) focusInput(); });
+  seg.addEventListener('contextmenu', (e) => { e.preventDefault(); if (typeof bridge.petMenu === 'function') bridge.petMenu(); });
+  expand.addEventListener('mousedown', (e) => e.preventDefault());
+  expand.addEventListener('click', (e) => { e.stopPropagation(); openFull(); });
+  input.addEventListener('focus', () => { if (!typing) focusInput(); });
+  input.addEventListener('input', () => { body.classList.toggle('has-text', !!clean(input.value)); layoutCluster(); });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); if (sel >= 0) setSel(-1); else close(); return; }
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitToPanel(); return; }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const list = selectable();
-      if (sel >= 0 && list[sel]) activate(list[sel].item); else submit();
-      return;
-    }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const n = selectable().length;
-      if (!n) return;
-      setSel(e.key === 'ArrowDown' ? Math.min(n - 1, sel + 1) : Math.max(-1, sel - 1));
-    }
+    if (e.key === 'Escape') { e.preventDefault(); if (openKey) closeCard(); else if (clean(input.value)) { input.value = ''; body.classList.remove('has-text'); layoutCluster(); } else blurInput(); return; }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) { e.preventDefault(); makeGoal(clean(input.value)); return; }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); const text = clean(input.value); if (text) submit(); openFull(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); submit(); return; }
+    if (e.key === 'ArrowDown' && live.size) { e.preventDefault(); const keys = [...live.keys()].filter((k) => k !== '+more'); const i = keys.indexOf(openKey); openCard(keys[(i + 1) % keys.length]); }
+    if (e.key === 'ArrowUp' && live.size) { e.preventDefault(); const keys = [...live.keys()].filter((k) => k !== '+more'); const i = keys.indexOf(openKey); openCard(keys[(i - 1 + keys.length) % keys.length]); }
   });
-  // A click on empty glass-free space closes the bar (macOS and Windows pass it through instead).
-  stage.addEventListener('mousedown', (e) => { if (isOpen && (e.target === stage || e.target === bubblesEl)) close(); });
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen && document.activeElement !== input) close(); });
+  // A click on empty glass-free space ends typing (macOS and Windows pass it through instead).
+  stage.addEventListener('mousedown', (e) => { if (e.target === stage || e.target === chipsEl) { if (openKey) closeCard(); else blurInput(); } });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.activeElement !== input) { if (openKey) closeCard(); else blurInput(); } });
+  window.addEventListener('blur', () => { if (typing) blurInput(); });
+  window.addEventListener('resize', () => layoutCluster());
 
-  // ------------------------------------------------------------ click-through
+  // ------------------------------------------------------------ click-through + hover
   // macOS and Windows forward mouse moves while ignoring clicks, so transparent pixels pass through.
   // Linux cannot forward, so the window stays solid there (it is small while compact).
   const clickThrough = bridge.platform === 'darwin' || bridge.platform === 'win32';
@@ -768,19 +655,19 @@
     ignoring = v;
     bridge.setIgnoreMouse(v);
   }
+  function setHover(v) {
+    if (v === hovering) return;
+    hovering = v;
+    body.classList.toggle('hover', v);
+    if (typeof bridge.islandHover === 'function') bridge.islandHover(v);
+  }
   window.addEventListener('mousemove', (e) => {
     const t = e.target;
-    const solid = t !== stage && t !== bubblesEl && t !== document.body && t !== document.documentElement && !!t.closest && !!t.closest('#island, #bar, #side, .bubble');
+    const solid = t !== stage && t !== chipsEl && t !== document.body && t !== document.documentElement && !!t.closest && !!t.closest('#island, #seg, #expand, .chip, #card');
     setIgnore(!solid);
     setHover(solid);
   });
-  window.addEventListener('mouseleave', () => setHover(false));
-  let hovering = false;
-  function setHover(v) {
-    if (v === hovering || typeof bridge.islandHover !== 'function') return;
-    hovering = v;
-    bridge.islandHover(v);
-  }
+  document.addEventListener('mouseleave', () => setHover(false));
   setIgnore(true);
 
   applyLayout(LY);
@@ -788,6 +675,6 @@
   body.classList.add(mode);
   setIslandWidth(effectiveWidth());
   renderIsland();
-  if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto', dock: prefs.dock || 'none' });
+  if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto' });
   boot();
 })();

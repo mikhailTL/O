@@ -24,6 +24,8 @@
  *                                  delay=0, duration=320, scale=0.94 (start scale), fade=[elements whose
  *                                  opacity goes 0 -> 1 after they separate] }. Returns a Promise.
  *   OLiquid.retract(targets, opts) the reverse: travel back into the parent; same opts. Returns a Promise.
+ *   OLiquid.spring(el, {x,y,s,o}, opts)  Motion-style spring (stiffness 260, damping 26) on translate/scale/opacity;
+ *                                  interruptible: a new target mid-flight keeps the velocity. Returns a Promise.
  *   OLiquid.stagger(list, fn, step=50)  calls fn(item, i, delay) with delay = i * step (40-60 ms reads well).
  *   OLiquid.EASE_OUT / EASE_IO     the shared curves; OLiquid.MORPH_MS = 240.
  *
@@ -107,11 +109,69 @@
   function bud(targets, opts) { return run(targets, opts, false); }
   function retract(targets, opts) { return run(targets, opts, true); }
 
+  // ---- spring: Motion-style (stiffness 260, damping 26, mass 1), transform/opacity only, interruptible.
+  // spring(el, { x, y, s, o }, opts) moves el's translate/scale/opacity to the target from wherever it is now,
+  // keeping its velocity, so a new target mid-flight just bends the path. One rAF loop drives every spring.
+  // Reduced motion: the target is set at once (opacity still eases through CSS if the element transitions it).
+  const S = new Map(); // el -> { x, y, s, o, vx, vy, vs, vo, tx, ty, ts, to, k, d, m, done }
+  let loop = 0;
+  function spring(el, target, opts) {
+    if (!el) return Promise.resolve();
+    const o = Object.assign({ stiffness: 260, damping: 26, mass: 1, from: null }, opts || {});
+    let st = S.get(el);
+    if (!st) {
+      const f = o.from || {};
+      st = { x: f.x || 0, y: f.y || 0, s: f.s == null ? 1 : f.s, o: f.o == null ? 1 : f.o, vx: 0, vy: 0, vs: 0, vo: 0 };
+      S.set(el, st);
+    } else if (o.from) Object.assign(st, { x: o.from.x == null ? st.x : o.from.x, y: o.from.y == null ? st.y : o.from.y, s: o.from.s == null ? st.s : o.from.s, o: o.from.o == null ? st.o : o.from.o });
+    st.tx = target.x == null ? st.x : target.x;
+    st.ty = target.y == null ? st.y : target.y;
+    st.ts = target.s == null ? st.s : target.s;
+    st.to = target.o == null ? st.o : target.o;
+    st.k = o.stiffness; st.d = o.damping; st.m = o.mass;
+    st.settled = false;
+    if (st.resolve) st.resolve();
+    const p = new Promise((res) => { st.resolve = res; });
+    if (reduced()) { st.x = st.tx; st.y = st.ty; st.s = st.ts; st.o = st.to; paint(el, st); settle(el, st); return p; }
+    if (!loop) { last = 0; loop = requestAnimationFrame(tick); }
+    return p;
+  }
+  function paint(el, st) {
+    el.style.transform = `translate3d(${st.x.toFixed(2)}px, ${st.y.toFixed(2)}px, 0) scale(${st.s.toFixed(4)})`;
+    el.style.opacity = String(Math.max(0, Math.min(1, st.o)));
+  }
+  function settle(el, st) { st.settled = true; const r = st.resolve; st.resolve = null; if (r) r(); if (st.onSettle) st.onSettle(); }
+  let last = 0;
+  function tick(now) {
+    const dt = Math.min(0.064, last ? (now - last) / 1000 : 1 / 60);
+    last = now;
+    let active = 0;
+    for (const [el, st] of S) {
+      if (st.settled) continue;
+      if (!el.isConnected) { S.delete(el); continue; }
+      let moving = false;
+      for (const [k, v, t] of [['x', 'vx', 'tx'], ['y', 'vy', 'ty'], ['s', 'vs', 'ts'], ['o', 'vo', 'to']]) {
+        const dx = st[k] - st[t];
+        const a = (-st.k * dx - st.d * st[v]) / st.m;
+        st[v] += a * dt;
+        st[k] += st[v] * dt;
+        const eps = k === 's' || k === 'o' ? 0.002 : 0.15;
+        if (Math.abs(st[v]) > eps * 4 || Math.abs(st[k] - st[t]) > eps) moving = true;
+        else { st[k] = st[t]; st[v] = 0; }
+      }
+      paint(el, st);
+      if (!moving) settle(el, st); else active++;
+    }
+    loop = active ? requestAnimationFrame(tick) : 0;
+  }
+  function springState(el) { const st = S.get(el); return st ? { x: st.x, y: st.y, s: st.s, o: st.o } : null; }
+  function springForget(el) { S.delete(el); }
+
   function stagger(items, fn, step) {
     step = step == null ? 50 : step;
     return Array.prototype.map.call(items || [], (item, i) => fn(item, i, i * step));
   }
 
-  window.OLiquid = Object.freeze({ install, reduced, bud, retract, stagger, EASE_OUT, EASE_IO, MORPH_MS, FILTER_ID });
+  window.OLiquid = Object.freeze({ install, reduced, bud, retract, spring, springState, springForget, stagger, EASE_OUT, EASE_IO, MORPH_MS, FILTER_ID });
   if (document.body) install(); else document.addEventListener('DOMContentLoaded', () => install(), { once: true });
 })();

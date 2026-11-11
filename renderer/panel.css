@@ -42,7 +42,7 @@
   --surface-3: rgba(255, 255, 255, 0.10);
   --surface-inset: rgba(0, 0, 0, 0.24);
   --sheet-bg: rgba(8, 8, 10, 0.72);
-  --sticky-bg: #0B0B0C;
+  --sticky-bg: rgba(10, 10, 11, 0.85);
   --bg-solid: #0B0B0C;
   --blob: rgb(24, 24, 26);
   --accent-soft: rgba(255, 255, 255, 0.06);
@@ -99,6 +99,9 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
+/* "full" mode: this window covers the work area; the html element is the translucent layer and the body the
+   centred dashboard column. No system material, frame or shadow paints anything: these are the only pixels. */
+html { background: rgba(0, 0, 0, 0.72); }
 html, body {
   margin: 0;
   height: 100%;
@@ -112,17 +115,14 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
-  background: var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-sheet);
-  box-shadow: var(--highlight), 0 0 32px rgba(255, 255, 255, 0.05);
-  will-change: clip-path, transform;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  background: transparent;
+  will-change: opacity, transform;
 }
-/* docked as a column on a screen edge: squarer on the edge side */
-body.docked[data-dock="left"] { border-radius: 12px var(--r-sheet) var(--r-sheet) 12px; }
-body.docked[data-dock="right"] { border-radius: var(--r-sheet) 12px 12px var(--r-sheet); }
+:root[data-theme="light"] { background: rgba(247, 247, 247, 0.92); }
+:root[data-theme="dark"] { background: rgba(11, 11, 12, 0.94); }
 
 button {
   font: inherit;
@@ -203,13 +203,8 @@ button.icon {
 
 #nav { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px 6px 12px; flex: 0 0 auto; position: relative; z-index: 6; border-bottom: 1px solid var(--hairline); }
 .seg-ic { width: 13px; height: 13px; flex: 0 0 auto; display: none; }
-/* narrow (under 420 px, the docked column): the tabs collapse to icons */
-body.narrow .seg-ic { display: block; }
-body.narrow .seg-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-body.narrow .seg-item { padding: 0 6px; }
-body.narrow #state-line { display: none; }
-body.narrow .autonomy #autonomy-label { display: none; }
-body.narrow .autonomy { padding: 0 6px; }
+/* the tabs show their icons beside the words in the full layer */
+.seg-ic { display: block; }
 .seg {
   flex: 1; min-width: 0; display: flex; gap: 2px; padding: 2px;
   background: var(--surface-inset); border: 1px solid var(--hairline); border-radius: var(--r-ctl);
@@ -442,8 +437,8 @@ body:not(.chatting) #task-strip { display: none; }
 /* ---------------------------------------------------------------- sheets (Settings, Tasks, Goals, Evolution, Chats, Activity) */
 #setup, #settings, #actionlog, #runs, #goals, #evolve, #drawer {
   position: absolute; inset: var(--head-h) 0 0 0; z-index: 5;
-  background: var(--sheet-bg); overflow-y: auto; overscroll-behavior: contain;
-  border-radius: 0 0 var(--r-sheet) var(--r-sheet);
+  background: transparent; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 0;
   padding: 0 14px 16px;
   animation: fadein 180ms var(--ease-out);
 }
@@ -750,7 +745,7 @@ details.group[open] { padding-bottom: 12px; }
 .s-avail:empty { display: none; }
 .s-avail[data-state="ok"] { color: var(--success); }
 .sensor-list.off .sensor-row { opacity: .5; }
-.confirm-sheet { position: fixed; inset: 0; z-index: 30; display: flex; align-items: flex-end; justify-content: center; padding: 14px; background: rgba(0, 0, 0, .55); border-radius: var(--r-sheet); }
+.confirm-sheet { position: fixed; inset: 0; z-index: 30; display: flex; align-items: flex-end; justify-content: center; padding: 14px; background: rgba(0, 0, 0, .55); }
 .confirm-card { width: 100%; padding: 16px 18px 14px; border-radius: var(--r-bubble); background: var(--sticky-bg); border: 1px solid var(--line-strong); box-shadow: var(--highlight), 0 20px 50px rgba(0, 0, 0, 0.5); animation: rise var(--t-morph) var(--ease-out) both; }
 .confirm-card h4 { margin: 0 0 6px; font: 600 15px/1.3 var(--sans); color: var(--text); }
 .sc-line { margin: 0 0 10px; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }

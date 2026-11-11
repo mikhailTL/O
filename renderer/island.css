@@ -1,26 +1,27 @@
-/* O: the Island (status capsule) and the Command bar. Tokens come from liquid.css.
-   Geometry: everything hangs from the horizontal centre of the window and a shared top edge, so the
-   main process can swap the window between its compact and expanded bounds without moving anything.
-   --w is the island width in px (unitless, set by app.js); --bsx/--bsy are the bar's closed scale.
-   Placement comes from islandgeom.js through app.js: --top (capsule top; for bottom positions a
-   calc() from 100vh, so it holds while the window swaps height), --ih (capsule height, unitless: 20-34 in
-   the macOS menu bar, 36 elsewhere), --cx (capsule centre x: 50vw, or pinned to a corner edge; never a %, since transforms use it too), --fs/--ring/
-   --gap (type and ring scaled with the capsule). The bar and bubbles stay at the window's horizontal centre. */
+/* O: the Island cluster. Tokens come from liquid.css.
+   One morphing glass element with five modes (body.dot / .pill / .cluster / .card / .full, see adapt.js):
+     dot      a 22 px disc with the ring
+     pill     the capsule: ring + one status line
+     cluster  the O circle + one short input segment beside it; task chips float around it
+     card     the cluster with one result / approval card anchored to a chip
+     full     the dot (the dashboard window covers the screen)
+   Everything is transform / opacity / clip-path. No background on html or body: the shapes are the only
+   pixels, so no window rectangle ever shows. The goo layer joins the circle and the segment with a liquid neck.
+   Geometry from islandgeom.js through app.js: --top, --ih, --cx (the capsule's centre), --w (its width);
+   --cdx is how far left the circle moves in cluster mode so the whole cluster is centred on --cx. */
 :root {
   --top: 12px;
   --ih: 36;
   --island-h: calc(var(--ih) * 1px);
   --cx: 50vw;
-  --dx: calc(50vw - var(--cx)); /* capsule centre -> bar centre */
+  --cdx: 0px;
   --fs: 13px;
   --ring: 14px;
   --gap: 9px;
-  --bsy: 0.62;
-  --drop: 0px; /* menu bar / notch: how far the opened bar drops below the capsule (set by app.js) */
-  --bar-w: 640px;
-  --bar-h: 56px;
-  --side: 56px;
-  --side-gap: 16px;
+  --drop: 0px; /* menu bar / notch: how far the cluster hangs below the strip (set by app.js) */
+  --seg-x: 0px; --seg-y: 0px; --seg-w: 300px; /* the input segment (clusterLayout) */
+  --seg-max: 420px;
+  --seg-h: 36px;
 }
 
 html, body {
@@ -41,30 +42,26 @@ html, body {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
 button:focus { outline: none; }
 
-#stage { position: fixed; inset: 0; --w: 240; --bsx: 0.37; opacity: var(--adapt-opacity, 1); transition: opacity 200ms linear; }
-/* Proximity fade (main.js): the cursor is near the capsule but has not dwelt on it, so it steps aside. */
-body.faded:not(.open) #stage { opacity: 0.25; }
-/* Modes (body[data-mode]): dot = the ring alone (the caps overlap into a circle: --w is the capsule height);
-   sheet = the same dot, the panel grows out of it; pill = the capsule; bar/card = body.open. All morphs are
-   transform/opacity only on the same parts, so dot <-> pill <-> bar never pop. */
-body.dot .island-row .line, body.dot .island-row .meta, body.sheet .island-row .line, body.sheet .island-row .meta { position: absolute; opacity: 0; pointer-events: none; transition: opacity 90ms linear; }
-body.dot .island-row, body.sheet .island-row { gap: 0; }
-body.dot.notch .ring, body.sheet.notch .ring { left: calc(50% - var(--notch) / 2 - var(--ring) - 6px); }
-/* the dot is a 22 px disc (the caps, both centred, scaled down: transform only); the ring inside stays 14 px */
-body.dot:not(.notch):not(.open) .g-cap-l, body.sheet:not(.notch):not(.open) .g-cap-l { transform: translateX(calc(var(--w) * -0.5px)) scale(0.78); }
-body.dot:not(.notch):not(.open) .g-cap-r, body.sheet:not(.notch):not(.open) .g-cap-r { transform: translateX(calc(var(--w) * 0.5px)) scale(0.78); }
-body.dot:not(.notch):not(.open) .g-mid, body.sheet:not(.notch):not(.open) .g-mid { transform: scaleX(0.01); }
-body.dot:not(.notch):not(.open) .rim-l, body.sheet:not(.notch):not(.open) .rim-l { transform: translateX(calc(var(--w) * -0.5px)) scale(0.62); transform-origin: 100% 50%; }
-body.dot:not(.notch):not(.open) .rim-r, body.sheet:not(.notch):not(.open) .rim-r { transform: translateX(calc(var(--w) * 0.5px)) scale(0.62); transform-origin: 0% 50%; }
-body.dot:not(.notch):not(.open) .rim-m, body.sheet:not(.notch):not(.open) .rim-m { opacity: 0; }
+#stage { position: fixed; inset: 0; --w: 240; opacity: var(--adapt-opacity, 1); transition: opacity 200ms linear; }
+body.faded #stage { opacity: 0.25; }
+#goo { position: absolute; inset: 0; }
+
+/* ------------------------------------------------------------------ dot: the ring alone, a 22 px disc
+   (the caps overlap into a circle, scaled down: transform only); the ring inside stays 14 px */
+body.dot .island-row .line, body.dot .island-row .meta, body.full .island-row .line, body.full .island-row .meta,
+body.cluster .island-row .line, body.cluster .island-row .meta, body.card .island-row .line, body.card .island-row .meta { position: absolute; opacity: 0; pointer-events: none; transition: opacity 90ms linear; }
+body:not(.pill) .island-row { gap: 0; }
+body:is(.dot, .full).notch .ring, body:is(.cluster, .card).notch .ring { left: calc(50% - var(--notch) / 2 - var(--ring) - 6px); }
+body:is(.dot, .full):not(.notch) .g-cap-l { transform: translateX(calc(var(--w) * -0.5px + var(--cdx))) scale(0.78); }
+body:is(.dot, .full):not(.notch) .g-cap-r { transform: translateX(calc(var(--w) * 0.5px + var(--cdx))) scale(0.78); }
+body:is(.dot, .full):not(.notch) .g-mid { transform: translateX(var(--cdx)) scaleX(0.01); }
+body:is(.dot, .full):not(.notch) #island > .rim-l { transform: translateX(calc(var(--w) * -0.5px)) scale(0.62); transform-origin: 100% 50%; }
+body:is(.dot, .full):not(.notch) #island > .rim-r { transform: translateX(calc(var(--w) * 0.5px)) scale(0.62); transform-origin: 0% 50%; }
+body:is(.dot, .full):not(.notch) #island > .rim-m { opacity: 0; }
 body.dot #island { box-shadow: 0 0 18px rgba(255, 255, 255, 0.10); }
 body.dot .ring-halo { opacity: 0.7; }
-body.sheet #island { box-shadow: none; }
-body.sheet .ring-halo { opacity: 0.35; animation: none; }
-/* card: the bar with one card under it; the input is not focused, so its placeholder reads as the handle */
-body.card .keys { opacity: 0 !important; }
-body.card #input::placeholder { color: var(--ol-text-3); }
-#goo { position: absolute; inset: 0; }
+body.full #island { box-shadow: none; }
+body.full .ring-halo { opacity: 0.35; animation: none; }
 
 /* ------------------------------------------------------------------ island: three parts, so its width
    morphs with transforms only (caps translate, the middle scales on X) */
@@ -79,9 +76,9 @@ body.card #input::placeholder { color: var(--ol-text-3); }
    Round caps are not inset: at that curvature the blur erodes about as much as the threshold grows. */
 .g-mid { top: calc(var(--top) + 2px); height: calc(var(--island-h) - 4px); }
 .g-cap { width: var(--island-h); border-radius: calc(var(--island-h) / 2); }
-.g-cap-l { transform: translateX(calc(var(--w) * -0.5px)); }
-.g-cap-r { margin-left: calc(var(--island-h) * -1); transform: translateX(calc(var(--w) * 0.5px)); }
-.g-mid { width: 100px; margin-left: -50px; transform: scaleX(calc((var(--w) - var(--ih) + 6) / 100)); }
+.g-cap-l { transform: translateX(calc(var(--w) * -0.5px + var(--cdx))); }
+.g-cap-r { margin-left: calc(var(--island-h) * -1); transform: translateX(calc(var(--w) * 0.5px + var(--cdx))); }
+.g-mid { width: 100px; margin-left: -50px; transform: translateX(var(--cdx)) scaleX(calc((var(--w) - var(--ih) + 6) / 100)); }
 
 .rim { border: 1px solid var(--ol-line); box-shadow: var(--ol-highlight); pointer-events: none; }
 .rim-l { width: calc(var(--island-h) / 2); border-right: 0; border-radius: calc(var(--island-h) / 2) 0 0 calc(var(--island-h) / 2); transform: translateX(calc(var(--w) * -0.5px)); }
@@ -95,12 +92,12 @@ body.card #input::placeholder { color: var(--ol-text-3); }
   width: calc(var(--w) * 1px);
   height: var(--island-h);
   margin-left: calc(var(--w) * -0.5px);
+  transform: translateX(var(--cdx));
   border-radius: var(--ol-r-island);
   /* the hit area, plus the island's soft white bloom; the glass is the absolutely positioned parts inside */
   box-shadow: 0 0 24px rgba(255, 255, 255, 0.07);
-  transition: box-shadow 160ms linear;
+  transition: box-shadow 160ms linear, transform var(--ol-morph) var(--ol-ease-out);
 }
-body.open #island { box-shadow: none; }
 #island > .rim { top: 0; left: calc(var(--w) * 0.5px); }
 #island:active .island-row { opacity: 0.8; transition: opacity var(--ol-press) linear; }
 #island:focus-visible > .rim { box-shadow: var(--ol-highlight), var(--ol-glow); }
@@ -172,176 +169,151 @@ body.notch.ring-only .meta { display: none; }
 .ring.is-danger svg { filter: none; }
 .ring.is-danger .ring-halo { opacity: 0; }
 
-/* ------------------------------------------------------------------ the bar */
-.g-bar, #bar {
+
+/* ------------------------------------------------------------------ the expand circle (hover): the dashboard */
+#expand {
   position: absolute;
-  top: var(--top);
-  left: 50%;
-  width: var(--bar-w);
-  height: var(--bar-h);
-  margin-left: calc(var(--bar-w) / -2);
-  border-radius: var(--ol-r-bar);
-  transform-origin: 50% 0;
-  /* closed: shrunk onto the capsule (which may sit off centre in a corner position) */
-  transform: translateX(calc(var(--cx) - 50vw)) scale(var(--bsx), var(--bsy));
-  transition: transform var(--ol-morph) var(--ol-ease-out), opacity 120ms linear;
+  top: calc(var(--top) + var(--island-h) / 2 - 11px + var(--drop));
+  left: calc(var(--cx) + var(--cdx) - var(--w) * 0.5px - 10px - 22px);
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ol-text-2);
+  background: var(--ol-glass);
+  border: 1px solid var(--ol-line);
+  box-shadow: var(--ol-highlight);
+  opacity: 0; pointer-events: none;
+  transform: translateX(6px) scale(0.8);
+  transition: opacity 140ms linear, transform 200ms var(--ol-ease-out), color var(--ol-hover) linear;
 }
-.g-bar { opacity: 0; top: calc(var(--top) + 2px); width: calc(var(--bar-w) - 4px); height: calc(var(--bar-h) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); border-radius: 20px; }
-#bar { pointer-events: none; display: flex; align-items: center; padding: 0 18px 0 20px; gap: 14px; }
-.bar-rim { position: absolute; inset: 0; border-radius: inherit; opacity: 0; transition: opacity 160ms linear; }
-.bar-rim::after {
-  /* the focus glow: a white halo, not an outline */
-  content: '';
+#expand svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+body:is(.cluster, .card, .pill).hover #expand, body:is(.cluster, .card).typing #expand { opacity: 1; pointer-events: auto; transform: none; }
+body.mb #expand { top: calc(var(--top) + var(--island-h) / 2 - 11px); }
+@media (hover: hover) { #expand:hover { color: var(--ol-text); } }
+#expand:active { transform: scale(0.92); }
+
+/* ------------------------------------------------------------------ the input segment: one short capsule
+   beside the circle. It is drawn at its typing width and clipped to its rest width: the growth is a clip-path
+   morph (no animated width). The goo blob behind it joins it to the circle. */
+.g-seg, #seg {
   position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  box-shadow: var(--ol-glow);
-  opacity: 0;
-  transition: opacity var(--ol-hover) linear;
+  top: calc(var(--seg-y) + var(--drop));
+  left: var(--seg-x);
+  width: var(--seg-max);
+  height: var(--seg-h);
+  border-radius: 999px;
+  clip-path: inset(0 calc(var(--seg-max) - var(--seg-w)) 0 0 round 999px);
+  transition: clip-path var(--ol-morph) var(--ol-ease-out), opacity 160ms linear, transform var(--ol-morph) var(--ol-ease-out);
 }
-#bar:focus-within .bar-rim::after { opacity: 1; }
-.bar-ring, #input, .keys { position: relative; opacity: 0; transition: opacity 80ms linear; }
-.bar-ring { width: 16px; height: 16px; flex: none; }
-.bar-ring svg { display: block; overflow: visible; filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.7)); }
-.bar-ring circle { fill: none; stroke: var(--ol-text); stroke-width: 1.75; }
+.g-seg { top: calc(var(--seg-y) + var(--drop) + 2px); height: calc(var(--seg-h) - 4px); left: calc(var(--seg-x) + 2px); width: calc(var(--seg-max) - 4px); clip-path: inset(0 calc(var(--seg-max) - var(--seg-w)) 0 0 round 999px); }
+#seg { display: flex; align-items: center; padding: 0 12px 0 16px; gap: 10px; }
+/* closed: shrunk into the circle */
+body:not(.cluster):not(.card) .g-seg, body:not(.cluster):not(.card) #seg { opacity: 0; pointer-events: none; transform: translateX(calc(var(--seg-w) * -0.5 - 20px)) scale(0.3, 0.6); transform-origin: 0 50%; }
+body:not(.cluster):not(.card) .g-seg { transition-delay: 0ms; }
+body:is(.cluster, .card) .g-seg, body:is(.cluster, .card) #seg { opacity: 1; transform: none; }
+.seg-rim { position: absolute; inset: 0; border-radius: inherit; clip-path: inherit; }
+.seg-rim::after {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit;
+  box-shadow: var(--ol-glow); opacity: 0; transition: opacity var(--ol-hover) linear;
+}
+#seg:focus-within .seg-rim::after { opacity: 1; }
 #input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  border: 0;
-  outline: none;
-  background: transparent;
+  position: relative;
+  flex: 1; min-width: 0; height: 100%;
+  border: 0; outline: none; background: transparent;
   color: var(--ol-text);
   caret-color: var(--ol-hint);
-  font: 600 20px/1 var(--ol-font);
-  letter-spacing: -0.01em;
-  user-select: text;
-  -webkit-user-select: text;
+  font: 500 14px/1 var(--ol-font);
+  letter-spacing: -0.005em;
+  user-select: text; -webkit-user-select: text;
 }
 #input::placeholder { color: var(--ol-text-2); font-weight: 500; }
 #input::selection { background: rgba(255, 255, 255, 0.22); }
-.keys { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ol-text-2); flex: none; }
-.keys { gap: 14px; }
-.kg { display: inline-flex; align-items: center; gap: 6px; transition: opacity var(--ol-hover) linear; }
-#bar.has-text .kg-run { opacity: 0; }
-.bubble.k-run:not(.dim)::after { opacity: 1; }
+.keys { position: relative; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ol-text-2); flex: none; opacity: 0; transition: opacity 120ms linear; }
+body.typing .keys { opacity: 1; }
 kbd {
   font: 500 11px/1 var(--ol-font);
   color: var(--ol-text-2);
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
   border-radius: var(--ol-r-control);
   border: 1px solid var(--ol-line);
   background: rgba(255, 255, 255, 0.04);
 }
 
-body.open .g-bar, body.open #bar { transform: none; }
-body.open .g-bar { opacity: 1; transition: transform var(--ol-morph) var(--ol-ease-out), opacity 60ms linear; }
-body.open #bar { pointer-events: auto; }
-body.open .bar-rim { opacity: 1; transition-delay: 70ms; }
-body.open .bar-ring, body.open #input, body.open .keys { opacity: 1; transition-delay: 130ms; }
-
-/* open: the island stretches into the bar and its rim and text go */
-body.open .g-cap-l { transform: translateX(calc(var(--dx) + var(--bar-w) / -2 + 4px)); }
-body.open .g-cap-r { transform: translateX(calc(var(--dx) + var(--bar-w) / 2 - 4px)); }
-body.open .g-mid { transform: translateX(var(--dx)) scaleX(calc((640 - var(--ih) * 1.4) / 100)); }
-
-/* menu bar / notch: the window never moves, so the opened bar drops below the strip by --drop while the
-   compact capsule stays in the strip. The capsule parts morph diagonally (out + down) into the bar; closing
-   runs it in reverse, back up into the strip. The capsule's screen position is identical open and closed. */
-body.mb.open .g-cap-l { transform: translate(calc(var(--dx) + var(--bar-w) / -2 + 4px), var(--drop)); }
-body.mb.open .g-cap-r { transform: translate(calc(var(--dx) + var(--bar-w) / 2 - 4px), var(--drop)); }
-body.mb.open .g-mid { transform: translate(var(--dx), var(--drop)) scaleX(calc((640 - var(--ih) * 1.4) / 100)); }
-body.mb.open .g-bar, body.mb.open #bar { transform: translateY(var(--drop)); }
-body.mb .g-side, body.mb #side { top: calc(var(--top) + var(--drop)); }
-
-/* bottom positions: the bar sits on the capsule's bottom edge and buds upward (bubbles stack above it) */
-body.up .g-bar, body.up #bar, body.up .g-side, body.up #side { top: calc(var(--top) + var(--island-h) - var(--bar-h)); }
-body.up .g-bar, body.up .g-side { top: calc(var(--top) + var(--island-h) - var(--bar-h) + 2px); }
-body.up .g-bar, body.up #bar { transform-origin: 50% 100%; }
-body.open .rim { opacity: 0; transition-duration: var(--ol-morph), 100ms; }
-body.open .island-row { opacity: 0; transition: opacity 90ms linear; }
-body.open #island { pointer-events: none; }
-
-/* ------------------------------------------------------------------ the side bud (open the panel) */
-.g-side, #side {
-  position: absolute;
-  top: var(--top);
-  left: 50%;
-  width: var(--side);
-  height: var(--side);
-  margin-left: calc(var(--bar-w) / 2 + var(--side-gap));
-  border-radius: 28px;
-  visibility: hidden;
-}
-body.ext .g-side, body.ext #side { visibility: visible; }
-.g-side { top: calc(var(--top) + 2px); width: calc(var(--side) - 4px); height: calc(var(--side) - 4px); margin-left: calc(var(--bar-w) / 2 + var(--side-gap) + 2px); border-radius: 26px; }
-#side { display: flex; align-items: center; justify-content: center; color: var(--ol-text-2); isolation: isolate; }
-#side svg { position: relative; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; transition: opacity var(--ol-hover) linear; }
-.side-rim { position: absolute; inset: 0; border-radius: inherit; }
-.side-rim::after, .bubble::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: var(--ol-raised);
-  box-shadow: var(--ol-glow);
-  opacity: 0;
-  transition: opacity var(--ol-hover) linear;
-  pointer-events: none;
-  z-index: -1;
-}
-@media (hover: hover) {
-  #side:hover .side-rim::after { opacity: 0.6; }
-  #side:hover { color: var(--ol-text); }
-}
-#side:active svg { opacity: 0.7; transition-duration: var(--ol-press); }
-
-/* ------------------------------------------------------------------ bubbles */
-#bubbles { position: absolute; top: 0; left: 50%; width: var(--bar-w); margin-left: calc(var(--bar-w) / -2); height: 100%; pointer-events: none; }
-.g-bub { position: absolute; left: 50%; width: calc(var(--bar-w) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); height: 44px; border-radius: 16px; }
-.bubble {
-  position: absolute;
-  left: 0;
-  width: 100%;
-  height: 48px;
-  border-radius: var(--ol-r-bubble);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 8px 0 16px;
+/* ------------------------------------------------------------------ chips: small glass capsules */
+#chips { position: absolute; inset: 0; pointer-events: none; }
+.chip {
+  position: absolute; top: 0; left: 0;
+  height: 30px; max-width: 190px;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 0 10px 0 9px;
+  border-radius: 999px;
+  background: var(--ol-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid var(--ol-line);
+  box-shadow: var(--ol-highlight), 0 0 16px rgba(255, 255, 255, 0.05);
+  color: var(--ol-text);
+  font-size: 12.5px; white-space: nowrap;
   pointer-events: auto;
-  isolation: isolate;
+  will-change: transform, opacity;
+  transform-origin: 0 50%;
 }
-.bubble.passive { pointer-events: none; }
-@media (hover: hover) { .bubble:hover::after { opacity: 0.55; box-shadow: none; } }
-.bubble.sel::after { opacity: 1; }
-.bubble .ic { width: 18px; height: 18px; flex: none; color: var(--ol-text-2); display: flex; align-items: center; justify-content: center; }
-.bubble .ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
-.bubble.k-run .ic, .bubble.k-perm .ic, .bubble.k-checkpoint .ic { color: var(--ol-text); }
-.bubble.k-task.running .ic svg { animation: o-spin 1.15s linear infinite; }
-.bubble.k-setup .ic { color: var(--ol-danger); }
-.bubble .tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
-.bubble .t1 { color: var(--ol-text); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
-.bubble .t2 { color: var(--ol-text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
-.bubble.passive .t1 { color: var(--ol-text-2); }
-.bubble .tag { font-size: 12px; color: var(--ol-text-2); flex: none; display: flex; align-items: center; gap: 6px; padding-right: 8px; }
-.bubble .acts { display: flex; gap: 6px; flex: none; }
+.chip .c-ic { width: 14px; height: 14px; flex: none; color: var(--ol-text-2); display: flex; }
+.chip .c-ic svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+.chip .c-t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.chip .c-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ol-text-3); }
+.chip.running .c-dot { background: var(--ol-text); animation: o-pulse 1.6s ease-in-out infinite; box-shadow: 0 0 6px rgba(255, 255, 255, 0.6); }
+.chip.running .c-ic svg { animation: o-spin 1.15s linear infinite; }
+.chip.queued .c-dot { background: transparent; box-shadow: inset 0 0 0 1.2px var(--ol-text-3); }
+.chip.done .c-dot { background: var(--ol-text); }
+.chip.failed .c-dot { background: var(--ol-danger); }
+.chip.perm, .chip.checkpoint { border-color: rgba(255, 255, 255, 0.28); }
+.chip.perm .c-dot, .chip.checkpoint .c-dot { background: var(--ol-text); box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6), 0 0 0 3px var(--ol-text); }
+.chip.more { justify-content: center; padding: 0 10px; color: var(--ol-text-2); }
+.chip.open { border-color: rgba(255, 255, 255, 0.3); }
+.chip::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; box-shadow: var(--ol-glow); opacity: 0; transition: opacity var(--ol-hover) linear; pointer-events: none; }
+@media (hover: hover) { .chip:hover::after { opacity: 0.7; } }
+.chip:active { transform: scale(0.97); }
+@keyframes o-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+/* the one-line result on hover (done chips) */
+.chip .c-tip {
+  position: absolute; left: 0; top: calc(100% + 6px);
+  max-width: 320px; padding: 5px 10px; border-radius: 12px;
+  background: var(--ol-glass); border: 1px solid var(--ol-line); box-shadow: var(--ol-highlight);
+  color: var(--ol-text-2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; transform: translateY(-3px); pointer-events: none;
+  transition: opacity 120ms linear, transform 160ms var(--ol-ease-out);
+}
+@media (hover: hover) { .chip:hover .c-tip { opacity: 1; transform: none; } }
+body.card .chip.open .c-tip { display: none; }
+
+/* ------------------------------------------------------------------ the card: one curved box per chip */
+#card {
+  position: absolute; top: 0; left: 0;
+  width: 420px; max-width: 420px;
+  padding: 12px 14px 12px;
+  border-radius: 22px;
+  background: var(--ol-glass);
+  color: var(--ol-text);
+  will-change: transform, opacity;
+  transform-origin: 12px 0;
+}
+#card[hidden] { display: none; }
+.card-kind { font-size: 11.5px; color: var(--ol-text-2); margin-bottom: 2px; }
+.card-title { font: 600 13.5px/1.35 var(--ol-font); overflow-wrap: anywhere; }
+.card-body { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--ol-text-2); overflow-wrap: anywhere; max-height: 7.5em; overflow: hidden; }
+.card-body b { color: var(--ol-text); font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 500; font-size: 11.5px; }
+.card-acts { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
 .act {
-  height: 32px;
-  padding: 0 14px;
+  height: 30px; padding: 0 13px;
   border-radius: var(--ol-r-control);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 12px; font-weight: 600;
   color: var(--ol-text);
   border: 1px solid var(--ol-line);
   background: rgba(255, 255, 255, 0.05);
   box-shadow: var(--ol-highlight);
-  transition: opacity var(--ol-press) linear, transform 160ms ease-out;
+  transition: opacity var(--ol-press) linear, transform 160ms ease-out, background-color var(--ol-hover) linear;
   font-variant-numeric: tabular-nums;
 }
 @media (hover: hover) {
@@ -351,19 +323,16 @@ body.ext .g-side, body.ext #side { visibility: visible; }
 .act:active { opacity: 0.85; transform: scale(0.97); }
 .act:focus-visible { box-shadow: var(--ol-highlight), var(--ol-glow); }
 .act.primary { color: #0A0A0B; border-color: transparent; background: #FFFFFF; box-shadow: 0 0 16px rgba(255, 255, 255, 0.18); }
+.act.quiet { background: transparent; color: var(--ol-text-2); border-color: transparent; box-shadow: none; }
 .act.danger { color: var(--ol-danger); }
-#side:active { transform: scale(0.97); transition: transform 160ms ease-out; }
 
 /* ------------------------------------------------------------------ reduced motion: crossfades only */
 @media (prefers-reduced-motion: reduce) {
-  .g-cap, .g-mid, .rim, .g-bar, #bar { transition: opacity 180ms linear !important; }
-  .act, #side { transition: opacity 120ms linear !important; transform: none !important; }
-  .ring.is-idle .ring-halo, .ring.is-working svg, .bubble.k-task.running .ic svg { animation: none; }
+  .g-cap, .g-mid, .rim, .g-seg, #seg, #island, #expand { transition: opacity 180ms linear !important; }
+  .ring.is-idle .ring-halo, .ring.is-working svg, .chip.running .c-ic svg, .chip.running .c-dot { animation: none; }
   .ring.is-working .ring-base { opacity: 1; }
   .ring.is-working .ring-arc { opacity: 0; }
   .line.swap { animation: o-fade 180ms linear both; }
   @keyframes o-fade { from { opacity: 0; } to { opacity: 1; } }
-  .g-bar, #bar { transform: none; }
-  body:not(.open) .g-bar { opacity: 0; top: calc(var(--top) + 2px); width: calc(var(--bar-w) - 4px); height: calc(var(--bar-h) - 4px); margin-left: calc(var(--bar-w) / -2 + 2px); border-radius: 20px; }
-  body.open .g-cap, body.open .g-mid { opacity: 0; }
+  .act, .chip, #expand { transform: none !important; }
 }

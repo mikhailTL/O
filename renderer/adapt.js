@@ -1,35 +1,46 @@
 'use strict';
-// O: the adaptive rules for the Island and the sheet. Pure functions, no Electron, no DOM: the main process
+// O: the adaptive rules for the Island cluster. Pure functions, no Electron, no DOM: the main process
 // (main/main.js) feeds them what it knows every ~1.2 s (the frontmost window, the cursor, the task state) and
 // applies what comes back; tools/e2e/islandgeom.test.js checks them.
 //
 // Modes of the one morphing glass element:
-//   dot    the 14 px ring only                     (fullscreen apps, games, video, presentations; idle rest)
-//   pill   ring + one status line, ~36 px          (a task is running, a flash, the cursor comes near)
-//   bar    the command bar                         (the user opened it: shortcut or click)
-//   card   bar + one result / approval card        (an approval is pending)
-//   sheet  the full panel grows out of the island  (the user asked for the panel, or O did)
+//   dot      the 22 px disc with the ring            (fullscreen apps, games, video, presentations; idle rest)
+//   pill     ring + one status line, ~36 px          (a task is running and the cursor is elsewhere)
+//   cluster  the O circle + one short input segment, task chips around it (awake: the cursor came near, typing)
+//   card     cluster + one result / approval card anchored to a chip (an approval waits; a chip was opened)
+//   full     the whole dashboard as a fullscreen glass layer (the user asked for it)
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.OAdapt = api;
 })(typeof self !== 'undefined' ? self : this, function () {
-  const MODES = Object.freeze(['dot', 'pill', 'bar', 'card', 'sheet']);
-  const LOCKS = Object.freeze(['auto', 'dot', 'pill']);
-  const DOCKS = Object.freeze(['none', 'left', 'right']);
+  const MODES = Object.freeze(['dot', 'pill', 'cluster', 'card', 'full']);
+  const LOCKS = Object.freeze(['auto', 'dot', 'pill', 'cluster']);
   const EDGES = Object.freeze(['top', 'bottom', 'left', 'right', 'auto']);
   const C = Object.freeze({
-    NEAR_PX: 40,          // the cursor this close to the capsule expands dot -> pill
+    NEAR_PX: 40,          // the cursor this close to the capsule wakes the cluster
     DIM_OPACITY: 0.6,     // the dot over a fullscreen app
-    SHEET_MIN_W: 380,
-    SHEET_MAX_W: 560,
-    SHEET_MAX_FRAC: 0.62, // of the work-area height
-    SHEET_GAP: 10,        // between the capsule and the sheet
-    SHEET_MARGIN: 12,     // from the work-area edges
-    SNAP_PX: 24,          // a dragged sheet this close to an edge snaps to it
-    NARROW_W: 420,        // below this the sheet's tabs collapse to icons
-    DOCK_W: 380,
     TITLEBAR_H: 36,       // what a title bar occupies when the OS gives no better figure
+    HUG_GAP: 6,           // the cluster hangs this far below the active window's title bar
+    // the cluster
+    CIRCLE: 36,           // the O circle
+    SEG_W: 300,           // the input segment at rest
+    SEG_W_TYPING: 420,    // ... while typing
+    SEG_GAP: 10,          // circle -> segment
+    CHIP_H: 30,
+    CHIP_GAP: 6,
+    CHIP_W: 190,          // a chip at most (icon + 28 chars + dot)
+    CHIP_ARC: 8,          // each chip steps this far left of the one above: a gentle arc around the circle
+    MAX_CHIPS: 5,         // older ones collapse into a "+N" chip
+    CARD_W: 420,
+    CARD_GAP: 8,
+    // "actively moving": the cluster steps aside when the cursor dwells on it without clicking
+    NUDGE_DWELL_MS: 1500,
+    NUDGE_MIN_PX: 120,
+    NUDGE_MAX_PX: 200,
+    NUDGE_EVERY_MS: 4000,
+    // the spring every move uses (Motion-style)
+    SPRING: Object.freeze({ stiffness: 260, damping: 26, mass: 1 }),
   });
 
   // Apps whose frontmost window means "leave the screen alone" even when not literally fullscreen.
@@ -54,9 +65,9 @@
   function isBrowser(name) { return BROWSER_RE.test(String(name || '')); }
 
   /**
-   * Which mode the Island should be in. ctx: { lock ('auto'|'dot'|'pill'), barOpen, sheetOpen, approvalPending,
-   * taskRunning, hasStatus (a line worth showing: a flash, queued, goals), cursorDist (px from the capsule),
-   * hover (the cursor is on it), front: { app, title, bounds, fullscreen? }, display }.
+   * Which mode the Island should be in. ctx: { lock ('auto'|'dot'|'pill'|'cluster'), focused (the input has
+   * keyboard focus), fullOpen, cardOpen (the user opened a chip's card), approvalPending, taskRunning,
+   * hasStatus, cursorDist (px from the cluster), hover, front: { app, title, bounds, fullscreen? }, display }.
    * Returns { mode, opacity, clickThrough, reason }.
    */
   function decideMode(ctx) {
@@ -64,10 +75,12 @@
     const front = c.front || null;
     const out = (mode, reason, extra) => Object.assign({ mode, opacity: 1, clickThrough: false, reason }, extra || {});
     // What the user did on purpose always wins.
-    if (c.barOpen) return out('bar', 'command bar open');
-    if (c.sheetOpen) return out('sheet', 'sheet open');
+    if (c.fullOpen) return out('full', 'dashboard open');
+    if (c.focused) return out('cluster', 'typing');
+    if (c.cardOpen) return out('card', 'card open');
     const lock = LOCKS.includes(c.lock) ? c.lock : 'auto';
     const immersive = !!front && (front.fullscreen === true || isFullscreen(front.bounds, c.display) || isImmersiveApp(front.app, front.title));
+    const near = c.hover || (typeof c.cursorDist === 'number' && c.cursorDist < C.NEAR_PX);
     if (lock !== 'auto') {
       // A locked mode holds, but an approval still gets through as a card (it waits for the person).
       if (c.approvalPending) return out('card', 'approval pending (locked ' + lock + ')');
@@ -76,20 +89,20 @@
     if (c.approvalPending) return out('card', 'approval pending');
     if (immersive) {
       // Over a fullscreen app, a game or a presentation: a 60% dot that lets clicks through unless hovered.
-      if (c.hover || (typeof c.cursorDist === 'number' && c.cursorDist < C.NEAR_PX)) return out('pill', 'fullscreen, cursor near', { opacity: 1, clickThrough: false });
+      if (near) return out('cluster', 'fullscreen, cursor near', { opacity: 1, clickThrough: false });
       return out('dot', 'fullscreen or immersive app', { opacity: C.DIM_OPACITY, clickThrough: true });
     }
+    if (near) return out('cluster', 'cursor near');
     if (c.taskRunning) return out('pill', 'task running');
-    if (c.hover || (typeof c.cursorDist === 'number' && c.cursorDist < C.NEAR_PX)) return out('pill', 'cursor near');
     if (c.hasStatus) return out('pill', 'status to show');
     return out('dot', 'idle');
   }
 
   /**
    * Where the capsule's centre should be (screen px). ctx: { home: {cx, cy} the user's chosen spot (the
-   * layout's capsule centre), capsule: {width, height}, workArea, front: {app, bounds, titleBarH?},
-   * dock ('none'|'left'|'right'), lock }.
-   * Returns { cx, cy, reason }.
+   * layout's capsule centre), capsule: {width, height}, workArea, front: {app, bounds, titleBarH?}, display }.
+   * The cluster hugs the active window's top edge, just below its title bar (so the title bar is never
+   * covered), centred on that window; without one it keeps the user's spot. Returns { cx, cy, reason }.
    */
   function placeIsland(ctx) {
     const c = ctx || {};
@@ -98,31 +111,12 @@
     const home = c.home || { cx: wa ? wa.x + wa.width / 2 : 0, cy: wa ? wa.y + 4 + cap.height / 2 : 0 };
     const front = c.front || null;
     let cx = home.cx, cy = home.cy, reason = 'home';
-    if (front && front.bounds && isBrowser(front.app) && !isFullscreen(front.bounds, c.display)) {
-      // A browser in front: hug the top centre of that window (just inside its title bar, so the tabs stay
-      // reachable left and right of the capsule).
-      const b = front.bounds;
-      cx = b.x + b.width / 2;
-      cy = b.y + 4 + cap.height / 2;
-      reason = 'browser top-centre';
-    } else if (front && front.bounds && !isFullscreen(front.bounds, c.display)) {
-      // Any other window: never sit on its title bar. If the home spot would cover it, slide to the nearest free
-      // edge of that title bar (left or right of the window, whichever is closer and fits), else just below it.
+    if (front && front.bounds && front.bounds.width > 0 && !isFullscreen(front.bounds, c.display)) {
       const b = front.bounds;
       const tbH = Number(front.titleBarH) > 0 ? Number(front.titleBarH) : C.TITLEBAR_H;
-      const capRect = { x: home.cx - cap.width / 2, y: home.cy - cap.height / 2, w: cap.width, h: cap.height };
-      const titleRect = { x: b.x, y: b.y, w: b.width, h: tbH };
-      const overlaps = capRect.x < titleRect.x + titleRect.w && capRect.x + capRect.w > titleRect.x && capRect.y < titleRect.y + titleRect.h && capRect.y + capRect.h > titleRect.y;
-      if (overlaps && wa) {
-        const leftCx = b.x - 8 - cap.width / 2;
-        const rightCx = b.x + b.width + 8 + cap.width / 2;
-        const fitsLeft = leftCx - cap.width / 2 >= wa.x;
-        const fitsRight = rightCx + cap.width / 2 <= wa.x + wa.width;
-        const dl = Math.abs(leftCx - home.cx), dr = Math.abs(rightCx - home.cx);
-        if ((fitsLeft && (!fitsRight || dl <= dr))) { cx = leftCx; reason = 'slid left of the title bar'; }
-        else if (fitsRight) { cx = rightCx; reason = 'slid right of the title bar'; }
-        else { cy = b.y + tbH + 4 + cap.height / 2; reason = 'slid below the title bar'; }
-      }
+      cx = b.x + b.width / 2;
+      cy = b.y + tbH + C.HUG_GAP + cap.height / 2;
+      reason = isBrowser(front.app) ? 'browser top edge' : 'active window top edge';
     }
     if (wa) {
       cx = clamp(cx, wa.x + cap.width / 2 + 4, wa.x + wa.width - cap.width / 2 - 4);
@@ -132,62 +126,72 @@
   }
 
   /**
-   * The sheet's bounds. ctx: { anchor: {cx, cy, height} the capsule's centre and height, workArea, want: {width,
-   * height} what the content asks for, dock ('none'|'left'|'right'), saved: {x, y, width, height}|null (what the
-   * user dragged it to on this display) }.
+   * "Actively moving": when the cursor has dwelt on the cluster for NUDGE_DWELL_MS without a click, it steps
+   * 120-200 px aside (away from the cursor, along the edge it hugs), at most once per NUDGE_EVERY_MS.
+   * ctx: { now, dwellSince (0 = not on it), lastNudgeAt, cursor: {x,y}, rect: {x,y,width,height} (the cluster,
+   * screen px), workArea }. Returns { dx, dy } or null.
    */
-  function sheetGeometry(ctx) {
+  function nudge(ctx) {
     const c = ctx || {};
-    const wa = c.workArea || { x: 0, y: 0, width: 1440, height: 900 };
-    const want = c.want || {};
-    const dock = DOCKS.includes(c.dock) ? c.dock : 'none';
-    const maxH = Math.floor(wa.height * C.SHEET_MAX_FRAC);
-    const minH = Math.min(380, maxH);
-    const M = C.SHEET_MARGIN;
-    if (dock !== 'none') {
-      // A slim column on the left or right edge, the full work-area height less the margins.
-      const width = clamp(r(Number(want.width) || C.DOCK_W), C.SHEET_MIN_W, C.DOCK_W);
-      const height = wa.height - 2 * M;
-      const x = dock === 'left' ? wa.x + M : wa.x + wa.width - M - width;
-      return { x, y: wa.y + M, width, height, dock, narrow: width < C.NARROW_W, anchored: false };
+    if (!c.dwellSince || !c.rect || !c.workArea) return null;
+    if (c.now - c.dwellSince < C.NUDGE_DWELL_MS) return null;
+    if (c.lastNudgeAt && c.now - c.lastNudgeAt < C.NUDGE_EVERY_MS) return null;
+    const wa = c.workArea;
+    const cx = c.rect.x + c.rect.width / 2;
+    const cur = c.cursor || { x: cx, y: c.rect.y };
+    // Distance scales with how deep in the cluster the cursor sits; direction is away from the cursor.
+    const depth = clamp(Math.abs(cur.x - cx) / Math.max(1, c.rect.width / 2), 0, 1);
+    const px = r(C.NUDGE_MAX_PX - (C.NUDGE_MAX_PX - C.NUDGE_MIN_PX) * depth);
+    let dir = cur.x >= cx ? -1 : 1;
+    const roomL = c.rect.x - wa.x, roomR = wa.x + wa.width - (c.rect.x + c.rect.width);
+    if (dir < 0 && roomL < px) dir = roomR >= px ? 1 : 0;
+    else if (dir > 0 && roomR < px) dir = roomL >= px ? -1 : 0;
+    if (dir === 0) {
+      // No room sideways: step down (or up, at the bottom of the screen).
+      const roomD = wa.y + wa.height - (c.rect.y + c.rect.height);
+      const dy = roomD >= C.NUDGE_MIN_PX ? C.NUDGE_MIN_PX : -C.NUDGE_MIN_PX;
+      return { dx: 0, dy };
     }
-    const width = clamp(r(Number(want.width) || 440), C.SHEET_MIN_W, Math.min(C.SHEET_MAX_W, wa.width - 2 * M));
-    const height = clamp(r(Number(want.height) || maxH), minH, maxH);
-    if (c.saved && Number.isFinite(c.saved.x) && Number.isFinite(c.saved.y)) {
-      const x = clamp(r(c.saved.x), wa.x, wa.x + wa.width - width);
-      const y = clamp(r(c.saved.y), wa.y, wa.y + wa.height - height);
-      return { x, y, width, height, dock, narrow: width < C.NARROW_W, anchored: false };
-    }
-    const a = c.anchor || { cx: wa.x + wa.width / 2, cy: wa.y + 22, height: 36 };
-    let x = r(a.cx - width / 2);
-    x = clamp(x, wa.x + M, wa.x + wa.width - M - width);
-    // Below the capsule when it is in the top half, above it otherwise (bottom positions).
-    let y = r(a.cy + (a.height || 36) / 2 + C.SHEET_GAP);
-    let dir = 'down';
-    if (a.cy > wa.y + wa.height / 2) { y = r(a.cy - (a.height || 36) / 2 - C.SHEET_GAP - height); dir = 'up'; }
-    y = clamp(y, wa.y + M, wa.y + wa.height - M - height);
-    return { x, y, width, height, dock, narrow: width < C.NARROW_W, anchored: true, dir, originX: clamp(a.cx - x, 0, width) };
+    return { dx: dir * px, dy: 0 };
   }
 
-  /** Snap a dragged rect to a work-area edge it came within SNAP_PX of. Returns the (possibly moved) rect. */
-  function snapToEdges(rect, wa, snap) {
-    const s = Number.isFinite(snap) ? snap : C.SNAP_PX;
-    const M = C.SHEET_MARGIN;
-    let { x, y } = rect;
-    const right = wa.x + wa.width - rect.width, bottom = wa.y + wa.height - rect.height;
-    if (Math.abs(x - (wa.x + M)) <= s || x < wa.x + M) x = wa.x + M;
-    else if (Math.abs(x - (right - M)) <= s || x > right - M) x = right - M;
-    if (Math.abs(y - (wa.y + M)) <= s || y < wa.y + M) y = wa.y + M;
-    else if (Math.abs(y - (bottom - M)) <= s || y > bottom - M) y = bottom - M;
-    return { ...rect, x: r(x), y: r(y), snapped: x !== rect.x || y !== rect.y };
-  }
-
-  /** Which dock a drop at rect implies: fully against the left or right edge → that column, else none. */
-  function dockFor(rect, wa) {
-    const M = C.SHEET_MARGIN;
-    if (rect.x <= wa.x + M && rect.height >= wa.height - 2 * M - 2) return 'left';
-    if (rect.x + rect.width >= wa.x + wa.width - M && rect.height >= wa.height - 2 * M - 2) return 'right';
-    return 'none';
+  /**
+   * The cluster's layout inside the Island window (window px). ctx: { cx, top, ih (the capsule's centre x and
+   * top, as islandgeom lays the capsule out), winW, typing, chips: n (how many chips there are), openCard:
+   * { index, height } (a card under chip index), drop (menu bar: how far the cluster hangs below the strip) }.
+   * Returns { circle: {cx, cy, d}, seg: {x, y, w, h}, chips: [{x, y, w, h, more}], card: {x, y, w}|null,
+   * cdx (how far left of cx the circle moved so the cluster is centred on cx) }.
+   */
+  function clusterLayout(ctx) {
+    const c = ctx || {};
+    const ih = c.ih || C.CIRCLE;
+    const top = (c.top || 0) + (c.drop || 0);
+    const segW = c.typing ? C.SEG_W_TYPING : C.SEG_W;
+    const total = C.CIRCLE + C.SEG_GAP + C.SEG_W; // the cluster at rest is centred on cx; typing grows rightward
+    let cdx = -r(total / 2 - C.CIRCLE / 2);
+    const winW = c.winW || 820;
+    // keep the typing segment inside the window
+    const right = c.cx + cdx + C.CIRCLE / 2 + C.SEG_GAP + segW + 8;
+    if (right > winW) cdx -= right - winW;
+    const circleCx = c.cx + cdx;
+    const circle = { cx: circleCx, cy: top + ih / 2, d: C.CIRCLE };
+    const seg = { x: r(circleCx + C.CIRCLE / 2 + C.SEG_GAP), y: top + r((ih - C.CIRCLE) / 2), w: segW, h: C.CIRCLE };
+    const n = Math.max(0, Number(c.chips) || 0);
+    const shown = n > C.MAX_CHIPS ? C.MAX_CHIPS - 1 : n;
+    const chips = [];
+    let y = seg.y + C.CIRCLE + 12;
+    let card = null;
+    for (let i = 0; i < shown + (n > C.MAX_CHIPS ? 1 : 0); i++) {
+      const more = n > C.MAX_CHIPS && i === shown;
+      chips.push({ x: seg.x - i * C.CHIP_ARC, y, w: more ? 56 : C.CHIP_W, h: C.CHIP_H, more, count: more ? n - shown : 0 });
+      y += C.CHIP_H + C.CHIP_GAP;
+      if (c.openCard && c.openCard.index === i && !more) {
+        card = { x: Math.max(4, Math.min(winW - C.CARD_W - 4, seg.x - i * C.CHIP_ARC)), y: y + 2, w: C.CARD_W };
+        y += (Number(c.openCard.height) || 120) + C.CARD_GAP + 2;
+      }
+    }
+    if (c.openCard && !card && c.openCard.index === -1) card = { x: Math.max(4, Math.min(winW - C.CARD_W - 4, seg.x)), y: seg.y + C.CIRCLE + 12, w: C.CARD_W };
+    return { circle, seg, chips, card, cdx, bottom: y };
   }
 
   /** Normalise what a tool or a menu asks for. */
@@ -196,21 +200,17 @@
 
   /**
    * The Island window height a mode needs (the window is top- or bottom-anchored, so only height changes).
-   * L is the islandgeom layout; dims: { barH, bubH, firstGap }.
+   * L is the islandgeom layout. The cluster, card and full modes keep the whole footprint (chips and the card
+   * float in it; the window itself is transparent, so nothing shows).
    */
-  function modeHeight(L, mode, dims) {
-    const d = Object.assign({ barH: 56, bubH: 48, firstGap: 18 }, dims || {});
+  function modeHeight(L, mode) {
     const strip = (L.mode === 'menubar' || L.mode === 'notch') ? L.menuBarH : 0;
     const full = L.compact.height;
-    if (mode === 'bar' || mode === 'sheet') return full;
-    if (mode === 'card') {
-      const drop = strip ? Math.max(0, L.menuBarH - L.top) : 0;
-      return Math.min(full, L.top + drop + d.barH + d.firstGap + d.bubH + 28 + (L.dir === 'up' ? L.gap : 0));
-    }
+    if (mode === 'cluster' || mode === 'card' || mode === 'full') return full;
     // dot / pill: the capsule strip plus a little room for its glow
     if (L.dir === 'up') return Math.min(full, L.gap + L.ih + 16);
     return Math.min(full, Math.max(strip, L.top + L.ih + 16));
   }
 
-  return Object.freeze({ C, MODES, LOCKS, DOCKS, EDGES, isFullscreen, isImmersiveApp, isBrowser, decideMode, placeIsland, sheetGeometry, snapToEdges, dockFor, cleanMode, cleanEdge, modeHeight });
+  return Object.freeze({ C, MODES, LOCKS, EDGES, isFullscreen, isImmersiveApp, isBrowser, decideMode, placeIsland, nudge, clusterLayout, cleanMode, cleanEdge, modeHeight });
 });

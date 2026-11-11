@@ -77,24 +77,25 @@ let islandDwellSince = 0;
 let islandProxTimer = null;
 let rendererIgnore = true; // what the renderer's own hit test wants (macOS/Windows click-through)
 // ---- the adaptive Island (renderer/adapt.js)
-let islandMode = 'pill';        // dot | pill | bar | card | sheet: what the renderer is showing
-let islandLock = 'auto';        // the user's lock from the right-click menu: auto | dot | pill
-let sheetDock = 'none';         // the sheet as a column: none | left | right
+let islandMode = 'pill';        // dot | pill | cluster | card | full: what the renderer is showing
+let islandLock = 'auto';        // the user's lock from the right-click menu: auto | dot | pill | cluster
+let islandCardOpen = false;     // the user opened a chip's card in the cluster
 let islandHover = false;        // the cursor is on the glass (cancels click-through)
+let islandDwell = 0;            // when the cursor settled on the cluster (0 = not on it): the nudge rule
+let lastNudgeAt = 0;
+let nudgeOffset = { dx: 0, dy: 0 }; // "actively moving": where the cluster stepped aside to
 let islandClickThrough = false; // the dot over a fullscreen app lets clicks through
 let islandOffset = { dx: 0, dy: 0 }; // where context moved the capsule from its home spot (float layouts)
 let islandEdge = null;          // ui_dock top|bottom: a session override of the position setting
 let frontWin = null;            // { app, title, bounds } of the frontmost window, from the OS
 let frontKey = '';              // last frontWin as a string (debounce)
 let contextTimer = null;
+let setupSvc = null; // main/setup.js service (created lazily by getSetup in the ipc section)
+let getSetupSvc = null;
 let contextBusy = false;
 let uiRequest = null;           // { mode, until, reason }: what O asked for through ui_morph
 let lastAdaptKey = '';
 let boundsTween = null;         // the running window tween { timer }
-let sheetWant = { width: 0, height: 0 }; // what the panel's content asked for (sheet:fit)
-let sheetSaved = {};            // display id -> { x, y, width, height, dock } the user dragged the sheet to
-let sheetMoveTimer = null;
-let sheetPlacing = false;       // true while main itself moves the sheet (the 'move' handler ignores those)
 let panelHideTimer = null;
 let link = null; // O Link: the bridge to the user's own browser
 let chats = null; // chat history
@@ -300,6 +301,24 @@ function probePython(explicit) {
 
 /** Hard requirements as a flat list for the Settings page (green/red). Never throws; 10 s bound. */
 async function checkRequirements() {
+  // The Setup service knows the real answers (the engine's venv Python, Claude's login, the running engine):
+  // its rows come first and are the only ones that count as "missing". The legacy probes below (vLLM,
+  // screenpipe, Xvfb, Playwright) are optional add-ons and are reported as such, never as missing requirements.
+  const svc = typeof getSetupSvc === 'function' ? getSetupSvc() : setupSvc;
+  if (svc) {
+    try {
+      const st = await withTimeout(svc.status(), 9000, null);
+      if (st && Array.isArray(st.steps)) {
+        const rows = st.steps.map((r) => ({ name: r.label || r.step, ok: !!r.ok, detail: r.detail || '', fix: r.ok ? '' : (r.fix || 'Open Setup → "Set up O".') }));
+        const h = engine ? await withTimeout(Promise.resolve().then(() => engine.call('GET', '/health')).catch(() => null), 6000, null) : null;
+        for (const k of ['vllm', 'screenpipe', 'playwright']) {
+          const ok = !!(h && h[k]);
+          rows.push({ name: k + ' (optional)', ok: true, detail: ok ? 'ready' : (h ? 'not installed — optional' : 'unknown — optional'), fix: '' });
+        }
+        return rows;
+      }
+    } catch (_) { /* fall through to the legacy probes */ }
+  }
   const rows = [];
   const nodeMajor = parseInt(process.versions.node, 10);
   rows.push({
@@ -440,17 +459,25 @@ function placeIslandWindow({ animate = true } = {}) {
   if (cur.x === target.x && cur.y === target.y && cur.width === target.width && cur.height === target.height) return;
   if (boundsTween) { clearInterval(boundsTween.timer); boundsTween = null; }
   if (!animate) { islandWin.setBounds(target); return; }
-  if (process.platform === 'darwin') { try { islandWin.setBounds(target, true); return; } catch (_) { islandWin.setBounds(target); return; } }
-  const from = { ...cur };
-  const t0 = Date.now();
-  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  // The same spring the chips use (adapt.C.SPRING: stiffness 260, damping 26): position and size are integrated
+  // every 16 ms from wherever the window is now, so a new target mid-flight just bends the path.
+  const { stiffness: K, damping: D, mass: M } = Adapt.C.SPRING;
+  const st = { x: cur.x, y: cur.y, w: cur.width, h: cur.height, vx: 0, vy: 0, vw: 0, vh: 0 };
+  let lastT = Date.now();
   const timer = setInterval(() => {
     if (!islandWin || islandWin.isDestroyed()) { clearInterval(timer); boundsTween = null; return; }
-    const k = Math.min(1, (Date.now() - t0) / BOUNDS_TWEEN_MS);
-    const e = ease(k);
-    const lerp = (a, b) => Math.round(a + (b - a) * e);
-    try { islandWin.setBounds({ x: lerp(from.x, target.x), y: lerp(from.y, target.y), width: lerp(from.width, target.width), height: lerp(from.height, target.height) }); } catch (_) {}
-    if (k >= 1) { clearInterval(timer); boundsTween = null; }
+    const now = Date.now();
+    const dt = Math.min(0.05, (now - lastT) / 1000);
+    lastT = now;
+    let moving = false;
+    for (const [k, v, t] of [['x', 'vx', target.x], ['y', 'vy', target.y], ['w', 'vw', target.width], ['h', 'vh', target.height]]) {
+      const a = (-K * (st[k] - t) - D * st[v]) / M;
+      st[v] += a * dt;
+      st[k] += st[v] * dt;
+      if (Math.abs(st[k] - t) > 0.5 || Math.abs(st[v]) > 2) moving = true; else { st[k] = t; st[v] = 0; }
+    }
+    try { islandWin.setBounds({ x: Math.round(st.x), y: Math.round(st.y), width: Math.round(st.w), height: Math.round(st.h) }); } catch (_) {}
+    if (!moving) { clearInterval(timer); boundsTween = null; }
   }, 16);
   boundsTween = { timer };
 }
@@ -470,6 +497,7 @@ function relayoutIsland() {
   islandL = computeIslandLayout();
   sendToIsland({ type: 'island-layout', layout: islandL });
   islandOffset = { dx: 0, dy: 0 };
+  nudgeOffset = { dx: 0, dy: 0 };
   placeIslandWindow({ animate: false });
   applyIslandShape();
   applyIslandLevel();
@@ -525,11 +553,29 @@ function islandProximityTick() {
   if (!islandCompactShown()) { syncIslandProximity(); return; }
   let p;
   try { p = screen.getCursorScreenPoint(); } catch (_) { return; }
-  const d = IslandGeom.distanceToRect(p, islandCapsuleScreenRect());
-  // The capsule no longer fades away from the cursor: coming near it grows the dot into the pill (adapt.js).
+  const rect = islandClusterScreenRect();
+  const d = IslandGeom.distanceToRect(p, rect);
+  // The capsule no longer fades away from the cursor: coming near it wakes the cluster (adapt.js).
   setIslandFaded(false);
   const near = d < Adapt.C.NEAR_PX;
   if (near !== (cursorDist < Adapt.C.NEAR_PX)) { cursorDist = d; applyAdapt('cursor'); } else cursorDist = d;
+  // "Actively moving": the cursor sits on the cluster without clicking → it steps aside (adapt.nudge).
+  if (d === 0 && !islandCardOpen && (islandMode === 'cluster' || islandMode === 'pill')) {
+    if (!islandDwell) islandDwell = Date.now();
+    const L = currentIslandLayout();
+    if (L.mode === 'float') {
+      const n = Adapt.nudge({ now: Date.now(), dwellSince: islandDwell, lastNudgeAt, cursor: p, rect, workArea: screen.getDisplayMatching(rect).workArea });
+      if (n) { lastNudgeAt = Date.now(); islandDwell = 0; nudgeOffset = { dx: nudgeOffset.dx + n.dx, dy: nudgeOffset.dy + n.dy }; applyAdapt('nudge'); }
+    }
+  } else islandDwell = 0;
+}
+
+/** The whole cluster (circle + segment) in screen px while it is up; the capsule otherwise. */
+function islandClusterScreenRect() {
+  const r = islandCapsuleScreenRect();
+  if (islandMode !== 'cluster' && islandMode !== 'card') return r;
+  const w = Adapt.C.CIRCLE + Adapt.C.SEG_GAP + Adapt.C.SEG_W;
+  return { x: Math.round(r.x + r.width / 2 - w / 2), y: r.y, width: w, height: r.height };
 }
 
 function setIslandFaded(v) {
@@ -577,7 +623,9 @@ const WIN11 = process.platform === 'win32' && WIN_BUILD >= 22000;
  * by the renderer (liquid.css) on every platform; only the panel, a solid sheet, takes the system material.
  */
 function win32OverlayOptions() {
-  return process.platform === 'win32' ? { thickFrame: false, roundedCorners: true, skipTaskbar: true } : {};
+  // roundedCorners:false — DWM's own corner rounding paints a faint rounded-rect edge around the whole transparent
+  // window, which showed as a second outline around the renderer's glass shapes on Windows 11.
+  return process.platform === 'win32' ? { thickFrame: false, roundedCorners: false, skipTaskbar: true } : {};
 }
 
 function createIslandWindow() {
@@ -740,7 +788,7 @@ async function contextTick() {
   try {
     const f = await frontmostWindow();
     const key = f ? `${f.app}|${f.title}|${f.bounds ? [f.bounds.x, f.bounds.y, f.bounds.width, f.bounds.height].join(',') : ''}` : '';
-    if (key !== frontKey) { frontKey = key; frontWin = f; applyAdapt('frontmost changed'); }
+    if (key !== frontKey) { frontKey = key; frontWin = f; nudgeOffset = { dx: 0, dy: 0 }; applyAdapt('frontmost changed'); }
   } catch (_) { /* best-effort */ } finally { contextBusy = false; }
 }
 
@@ -831,22 +879,27 @@ function applyAdapt(why) {
   const now = Date.now();
   if (uiRequest && uiRequest.until < now) uiRequest = null;
   const ctx = {
-    lock: islandLock, barOpen: commandBarOpen, sheetOpen: panelVisible(),
+    lock: islandLock, focused: commandBarOpen, fullOpen: panelVisible(), cardOpen: islandCardOpen,
     approvalPending: pendingPerms.size > 0 || !!(goals && goals.pendingCards && goals.pendingCards().length),
     taskRunning: !!(tasks && tasks.running().length), hasStatus: islandHasStatus(),
     cursorDist, hover: islandHover, front, display,
   };
   let d = Adapt.decideMode(ctx);
-  // O's own request (ui_morph) holds for a while unless the user has the bar or the sheet open or something waits for them.
-  if (uiRequest && !ctx.barOpen && !ctx.sheetOpen && !ctx.approvalPending && islandLock === 'auto') d = { mode: uiRequest.mode, opacity: 1, clickThrough: false, reason: 'ui_morph: ' + (uiRequest.reason || '') };
-  // Where: hug a browser, or step off a title bar (float layouts only; the menu bar / notch strip is its own place).
+  // O's own request (ui_morph) holds for a while unless the user is typing, has the dashboard open or something waits for them.
+  if (uiRequest && !ctx.focused && !ctx.fullOpen && !ctx.approvalPending && islandLock === 'auto') d = { mode: uiRequest.mode, opacity: 1, clickThrough: false, reason: 'ui_morph: ' + (uiRequest.reason || '') };
+  // Where: hug the active window's top edge, below its title bar (float layouts only; the menu bar / notch strip
+  // is its own place), plus the step aside the nudge rule took.
   let off = { dx: 0, dy: 0 };
-  if (L.mode === 'float' && !ctx.barOpen) {
-    const cap = IslandGeom.capsuleRect(L, islandShape ? islandShape.width : L.minW);
+  if (L.mode === 'float' && !ctx.focused) {
+    const capW = (d.mode === 'cluster' || d.mode === 'card') ? Adapt.C.CIRCLE + Adapt.C.SEG_GAP + Adapt.C.SEG_W : (islandShape ? islandShape.width : L.minW);
+    const cap = IslandGeom.capsuleRect(L, capW);
     const home = { cx: L.compact.x + cap.x + cap.width / 2, cy: L.compact.y + cap.y + cap.height / 2 };
-    const place = Adapt.placeIsland({ home, capsule: { width: cap.width, height: cap.height }, workArea: display.workArea, display, front, dock: sheetDock });
-    off = { dx: place.cx - home.cx, dy: place.cy - home.cy };
+    const place = Adapt.placeIsland({ home, capsule: { width: cap.width, height: cap.height }, workArea: display.workArea, display, front });
+    off = { dx: place.cx - home.cx + nudgeOffset.dx, dy: place.cy - home.cy + nudgeOffset.dy };
     if (islandEdge && islandOffsetUser) off.dx += islandOffsetUser;
+    // keep the footprint on the display
+    const wa = display.workArea;
+    off.dx = Math.max(wa.x - L.compact.x, Math.min(wa.x + wa.width - L.compact.width - L.compact.x, off.dx));
   }
   const changedOff = off.dx !== islandOffset.dx || off.dy !== islandOffset.dy;
   islandOffset = off;
@@ -862,7 +915,6 @@ function applyAdapt(why) {
   const growing = islandModeBounds().height > islandWin.getBounds().height;
   if (growing || changedOff) placeIslandWindow();
   else setTimeout(() => { if (islandWin && !islandWin.isDestroyed()) placeIslandWindow(); }, 260);
-  if (changedOff && panelVisible()) positionPanel({ animate: true });
 }
 let islandOffsetUser = 0; // ui_dock offset along the edge (px)
 
@@ -871,42 +923,32 @@ function uiMorph(mode, reason, source) {
   const m = Adapt.cleanMode(mode);
   if (!m) return { ok: false, error: 'mode must be one of ' + Adapt.MODES.join(', ') };
   logApp('tool', `ui_morph → ${m}${reason ? ': ' + String(reason).slice(0, 120) : ''}`, { name: 'ui_morph', input: { mode: m, reason: String(reason || '').slice(0, 200) }, source: source || 'bridge' });
-  if (m === 'sheet') { showPanel({ focus: false }); uiRequest = null; return { ok: true, mode: m }; }
-  if (m === 'bar') { openCommandBar({ notify: true }); uiRequest = null; return { ok: true, mode: m }; }
-  if (panelVisible() && m !== 'sheet') hidePanel();
-  if (commandBarOpen) closeCommandBar({ notify: true });
+  if (m === 'full') { showPanel({ focus: false }); uiRequest = null; return { ok: true, mode: m }; }
+  if (panelVisible()) hidePanel();
+  if (commandBarOpen && m !== 'cluster' && m !== 'card') closeCommandBar({ notify: true });
   uiRequest = { mode: m, until: Date.now() + UI_REQUEST_MS, reason: String(reason || '') };
   lastAdaptKey = '';
   applyAdapt('ui_morph');
   return { ok: true, mode: m, holdsMs: UI_REQUEST_MS };
 }
 
-/** ui_dock from O: left/right dock the sheet as a column; top/bottom move the Island to that edge; auto clears. */
+/** ui_dock from O: move the cluster to an edge for this session (top/bottom centre, left/right = the top corners); auto clears. */
 function uiDock(edge, offset, source) {
   const e = Adapt.cleanEdge(edge);
   if (!e) return { ok: false, error: 'edge must be one of ' + Adapt.EDGES.join(', ') };
   const off = Math.max(-2000, Math.min(2000, Math.round(Number(offset) || 0)));
   logApp('tool', `ui_dock → ${e}${off ? ' +' + off + 'px' : ''}`, { name: 'ui_dock', input: { edge: e, offset: off }, source: source || 'bridge' });
-  if (e === 'left' || e === 'right') { setSheetDock(e); }
-  else if (e === 'auto') { setSheetDock('none'); islandEdge = null; islandOffsetUser = 0; islandL = null; relayoutIsland(); }
-  else {
-    islandEdge = e; islandOffsetUser = off; islandL = null; relayoutIsland();
-  }
+  if (e === 'auto') { islandEdge = null; islandOffsetUser = 0; }
+  else { islandEdge = e === 'left' ? 'top-left' : e === 'right' ? 'top-right' : e; islandOffsetUser = off; }
+  islandL = null; relayoutIsland();
   lastAdaptKey = '';
   applyAdapt('ui_dock');
   return { ok: true, edge: e, offset: off };
 }
 
-function setSheetDock(dock) {
-  sheetDock = Adapt.DOCKS.includes(dock) ? dock : 'none';
-  sendToIsland({ type: 'island-prefs', lock: islandLock, dock: sheetDock });
-  if (panelVisible()) positionPanel({ animate: true });
-  rebuildTrayMenu();
-}
-
 function setIslandLock(lock) {
   islandLock = Adapt.LOCKS.includes(lock) ? lock : 'auto';
-  sendToIsland({ type: 'island-prefs', lock: islandLock, dock: sheetDock });
+  sendToIsland({ type: 'island-prefs', lock: islandLock });
   uiRequest = null;
   lastAdaptKey = '';
   applyAdapt('lock');
@@ -968,34 +1010,32 @@ function toggleCommandBar() {
   if (commandBarOpen) closeCommandBar({ notify: true }); else openCommandBar({ notify: true });
 }
 
-// The panel is a rounded glass sheet: a transparent, frameless window whose renderer paints the
-// translucent background (renderer/panel.css). macOS and Windows blur the desktop behind it;
-// Linux has no such material, so there it is simply translucent. Drag/resize/Escape are unchanged.
+// The dashboard ("full" mode) is a fullscreen glass layer: a transparent, frameless window the size of the work
+// area whose renderer paints translucent black (0.72) with the content centred (renderer/panel.css). No DWM
+// backgroundMaterial, no system frame, no shadow: acrylic/mica and WS_THICKFRAME paint the window's whole
+// rectangle, which showed as a dark square on Windows 11. The renderer is the only thing that paints.
 function glassWindowOptions() {
-  const o = { transparent: true, backgroundColor: '#00000000', roundedCorners: true };
-  if (process.platform === 'darwin') { o.vibrancy = 'under-window'; o.visualEffectState = 'active'; }
-  else if (process.platform === 'win32') {
-    o.thickFrame = false; // no system frame edge on a transparent window
-    // No DWM backgroundMaterial: acrylic/mica paint the window's whole rectangle, so the sheet's rounded
-    // corners show as a dark square behind the glass. The renderer paints the translucent glass itself.
-  }
+  const o = { transparent: true, backgroundColor: '#00000000', roundedCorners: false, hasShadow: false };
+  if (process.platform === 'win32') o.thickFrame = false;
   return o;
 }
 
 function createPanelWindow() {
+  const wa = screen.getPrimaryDisplay().workArea;
   panelWin = new BrowserWindow({
-    width: PANEL_W,
-    height: PANEL_H,
-    minWidth: Adapt.C.SHEET_MIN_W,
-    maxWidth: Adapt.C.SHEET_MAX_W,
-    minHeight: 380,
+    ...wa,
     hasShadow: false,
     show: false,
     frame: false,
     ...glassWindowOptions(),
-    resizable: true,
+    ...(process.platform === 'darwin' ? { enableLargerThanScreen: true } : {}),
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
     alwaysOnTop: true,
-    skipTaskbar: false,
+    skipTaskbar: true,
     title: 'O AI',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1010,17 +1050,9 @@ function createPanelWindow() {
     if (!quitting) { e.preventDefault(); hidePanel(); }
   });
   panelWin.on('closed', () => { panelWin = null; });
-  // The sheet can be dragged anywhere (its title bar is the drag region). When the drag ends it snaps to a
-  // work-area edge it came near, docks as a column when dropped against the left or right edge, and the spot is
-  // remembered per display (the panel keeps it in localStorage through sheet:bounds / sheet:restore).
-  panelWin.on('move', () => {
-    if (sheetPlacing || !panelWin || panelWin.isDestroyed() || !panelWin.isVisible()) return;
-    clearTimeout(sheetMoveTimer);
-    sheetMoveTimer = setTimeout(onSheetMoved, 160);
-  });
-  panelWin.on('resize', () => { if (!sheetPlacing) { clearTimeout(sheetMoveTimer); sheetMoveTimer = setTimeout(onSheetMoved, 160); } });
-  panelWin.on('show', () => { lastAdaptKey = ''; applyAdapt('sheet open'); });
-  panelWin.on('hide', () => { lastAdaptKey = ''; applyAdapt('sheet closed'); });
+  try { panelWin.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+  panelWin.on('show', () => { lastAdaptKey = ''; applyAdapt('dashboard open'); });
+  panelWin.on('hide', () => { lastAdaptKey = ''; applyAdapt('dashboard closed'); });
   // Open external links in the user's own browser, never inside the panel.
   panelWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
@@ -1039,57 +1071,12 @@ function createPanelWindow() {
   panelWin.webContents.on(HAS_WILL_FRAME_NAVIGATE ? 'will-frame-navigate' : 'did-start-navigation', guardSubFrame);
 }
 
-/** The display the Island is on (the sheet grows out of it) and its id for the per-display memory. */
-function sheetDisplay() {
-  const b = islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null;
-  return b ? screen.getDisplayNearestPoint({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }) : screen.getPrimaryDisplay();
-}
-
-/** The sheet's geometry from renderer/adapt.js: anchored under the capsule, or the user's saved spot, or a dock column. */
-function sheetBounds() {
-  const d = sheetDisplay();
-  const wa = d.workArea;
-  let anchor = null;
-  if (islandWin && !islandWin.isDestroyed() && islandWin.isVisible()) {
-    const r = islandCapsuleScreenRect();
-    anchor = { cx: r.x + r.width / 2, cy: r.y + r.height / 2, height: r.height };
-    // In the menu bar / on the notch the capsule is above the work area: the sheet hangs from the top edge.
-    if (anchor.cy < wa.y) anchor.cy = wa.y - Adapt.C.SHEET_GAP + 2 - anchor.height / 2;
-  }
-  const saved = sheetSaved[String(d.id)] || null;
-  const geo = Adapt.sheetGeometry({ anchor, workArea: wa, want: sheetWant, dock: sheetDock, saved: saved && saved.dock === 'none' ? saved : null });
-  return { ...geo, displayId: d.id };
-}
-
-/** Place the sheet (grows out of the Island, or where the user left it); animated when asked. */
-function positionPanel({ animate = false } = {}) {
+/** The dashboard covers the work area of the display the Island is on. */
+function positionPanel() {
   if (!panelWin || panelWin.isDestroyed()) return;
-  const g = sheetBounds();
-  const target = { x: g.x, y: g.y, width: g.width, height: g.height };
-  sheetPlacing = true;
-  try { panelWin.setBounds(target, animate && process.platform === 'darwin'); } catch (_) { try { panelWin.setBounds(target); } catch (_) {} }
-  setTimeout(() => { sheetPlacing = false; }, 320);
-  if (!panelWin.isDestroyed()) panelWin.webContents.send('sheet:bounds', { ...target, dock: g.dock, narrow: g.narrow, anchored: g.anchored, displayId: g.displayId, save: false });
-  return g;
-}
-
-/** The user dragged or resized the sheet: snap, maybe dock, remember. */
-function onSheetMoved() {
-  if (!panelWin || panelWin.isDestroyed() || !panelWin.isVisible()) return;
-  const b = panelWin.getBounds();
-  const d = screen.getDisplayMatching(b);
-  const wa = d.workArea;
-  const snapped = Adapt.snapToEdges(b, wa);
-  const dock = Adapt.dockFor(snapped, wa);
-  if (dock !== sheetDock) { setSheetDock(dock); if (dock !== 'none') return; }
-  if (snapped.snapped) {
-    sheetPlacing = true;
-    try { panelWin.setBounds({ x: snapped.x, y: snapped.y, width: b.width, height: b.height }, process.platform === 'darwin'); } catch (_) {}
-    setTimeout(() => { sheetPlacing = false; }, 320);
-  }
-  const rec = { x: snapped.x, y: snapped.y, width: b.width, height: b.height, dock: sheetDock };
-  sheetSaved[String(d.id)] = rec;
-  panelWin.webContents.send('sheet:bounds', { ...rec, displayId: d.id, narrow: b.width < Adapt.C.NARROW_W, anchored: false, save: true });
+  const b = islandWin && !islandWin.isDestroyed() ? islandWin.getBounds() : null;
+  const d = b ? screen.getDisplayNearestPoint({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }) : screen.getPrimaryDisplay();
+  try { panelWin.setBounds({ ...d.workArea }); } catch (_) {}
 }
 
 // focus=false shows the panel without taking keyboard focus from whatever the user is doing
@@ -1114,7 +1101,7 @@ function createNotifyWindow() {
     focusable: true,
     fullscreenable: false,
     backgroundColor: '#00000000',
-    roundedCorners: true,
+    roundedCorners: false, // DWM corner rounding outlines transparent windows on Windows 11
     ...win32OverlayOptions(),
     title: 'O needs your OK',
     show: false,
@@ -1184,16 +1171,12 @@ function syncNotify() {
 function showPanel({ focus = true } = {}) {
   if (!panelWin) createPanelWindow();
   clearTimeout(panelHideTimer);
-  const g = positionPanel();
-  const was = panelWin.isVisible();
-  if (focus) {
-    panelWin.show();
-    panelWin.focus();
-  } else if (!panelWin.isVisible()) {
-    panelWin.showInactive();
-  }
-  // The sheet grows out of the Island: the renderer plays the clip-path morph from the capsule's x.
-  broadcast({ type: 'panel', open: true, origin: g && !was ? { x: g.originX == null ? g.width / 2 : g.originX, dir: g.dir || 'down', anchored: !!g.anchored } : null });
+  positionPanel();
+  if (commandBarOpen) closeCommandBar({ notify: true });
+  // showInactive everywhere (never steals focus from the app the user was in); only the user's own ask focuses it.
+  if (!panelWin.isVisible()) panelWin.showInactive();
+  if (focus) panelWin.focus();
+  broadcast({ type: 'panel', open: true });
   // The panel lists every task now: the sidebar's task cards and the badge are done with.
   taskCards.clear();
   unseenDone = 0;
@@ -1202,7 +1185,7 @@ function showPanel({ focus = true } = {}) {
 }
 
 function hidePanel() {
-  broadcast({ type: 'panel', open: false }); // the renderer plays the exit morph first
+  broadcast({ type: 'panel', open: false }); // the renderer fades the layer out first
   clearTimeout(panelHideTimer);
   const doHide = () => { if (panelWin && !panelWin.isDestroyed()) panelWin.hide(); syncNotify(); };
   if (quitting) doHide(); else panelHideTimer = setTimeout(doHide, 200);
@@ -1724,35 +1707,17 @@ function registerIpc() {
   ipcMain.on('island:open', () => openCommandBar());
   ipcMain.on('island:close', () => closeCommandBar());
   // the adaptive Island
-  ipcMain.on('island:hover', (_e, v) => { islandHover = !!v; applyAdapt('hover'); });
+  ipcMain.on('island:hover', (_e, v) => { islandHover = !!v; if (!v) islandDwell = 0; applyAdapt('hover'); });
+  ipcMain.on('island:card', (_e, v) => { islandCardOpen = !!v; islandDwell = 0; applyAdapt('card'); });
   ipcMain.on('island:prefs', (_e, p) => {
     if (!p || typeof p !== 'object') return;
     if (Adapt.LOCKS.includes(p.lock)) islandLock = p.lock;
-    if (Adapt.DOCKS.includes(p.dock)) sheetDock = p.dock;
     lastAdaptKey = '';
     applyAdapt('prefs');
     rebuildTrayMenu();
   });
   ipcMain.handle('ui:morph', (_e, mode, reason) => uiMorph(mode, reason, 'ipc'));
   ipcMain.handle('ui:dock', (_e, edge, offset) => uiDock(edge, offset, 'ipc'));
-  // the sheet
-  ipcMain.on('sheet:fit', (_e, want) => {
-    if (!want || typeof want !== 'object') return;
-    const next = { width: Number(want.width) || 0, height: Number(want.height) || 0 };
-    if (next.width === sheetWant.width && next.height === sheetWant.height) return;
-    sheetWant = next;
-    if (panelVisible() && sheetDock === 'none' && !sheetSaved[String(sheetDisplay().id)]) positionPanel({ animate: true });
-    else if (panelVisible() && sheetDock !== 'none') positionPanel({ animate: true });
-  });
-  ipcMain.on('sheet:restore', (_e, saved) => {
-    if (!saved || typeof saved !== 'object') return;
-    const out = {};
-    for (const [k, v] of Object.entries(saved)) {
-      if (v && typeof v === 'object' && Number.isFinite(Number(v.x)) && Number.isFinite(Number(v.y))) out[String(k)] = { x: Number(v.x), y: Number(v.y), width: Number(v.width) || 0, height: Number(v.height) || 0, dock: Adapt.DOCKS.includes(v.dock) ? v.dock : 'none' };
-    }
-    sheetSaved = out;
-  });
-
   ipcMain.on('panel:toggle', togglePanel);
   ipcMain.on('panel:show', () => showPanel());
   ipcMain.on('panel:hide', hidePanel);
@@ -1760,18 +1725,15 @@ function registerIpc() {
   ipcMain.on('island:menu', () => {
     if (!islandWin || islandWin.isDestroyed()) return;
     Menu.buildFromTemplate([
-      { label: 'Open panel', click: () => showPanel() },
       { label: 'Open action log', click: () => openActionLog() },
       { label: 'Stop all tasks', click: () => stopTask(), enabled: !!(tasks && tasks.activeCount()) },
       { label: 'Island', submenu: [
         { label: 'Auto (adapts to what you are doing)', type: 'radio', checked: islandLock === 'auto', click: () => setIslandLock('auto') },
         { label: 'Dot', type: 'radio', checked: islandLock === 'dot', click: () => setIslandLock('dot') },
         { label: 'Pill', type: 'radio', checked: islandLock === 'pill', click: () => setIslandLock('pill') },
-        { type: 'separator' },
-        { label: 'Dock the sheet left', type: 'radio', checked: sheetDock === 'left', click: () => setSheetDock('left') },
-        { label: 'Dock the sheet right', type: 'radio', checked: sheetDock === 'right', click: () => setSheetDock('right') },
-        { label: 'Sheet floats (grows out of the Island)', type: 'radio', checked: sheetDock === 'none', click: () => setSheetDock('none') },
+        { label: 'Cluster (circle + input)', type: 'radio', checked: islandLock === 'cluster', click: () => setIslandLock('cluster') },
       ] },
+      { label: 'Full dashboard', accelerator: 'CommandOrControl+Shift+Space', click: () => showPanel() },
       { label: 'Position', submenu: islandPositionMenu() },
       { label: 'Hide the Island (the tray icon brings it back)', click: () => toggleIsland() },
       { type: 'separator' },
@@ -2023,7 +1985,6 @@ function registerIpc() {
     try { return await checkClaudeFn(settings.get()); } catch (err) { return { installed: false, error: err.message }; }
   });
   // ---------- one-click setup (main/setup.js): checklist, run, progress ----------
-  let setupSvc = null;
   const getSetup = () => {
     if (setupSvc) return setupSvc;
     let createSetup = null;
@@ -2040,6 +2001,7 @@ function registerIpc() {
     });
     return setupSvc;
   };
+  getSetupSvc = getSetup;
   const noSetup = { ok: false, steps: [], error: 'Setup is unavailable in this build.' };
   ipcMain.handle('setup:status', async () => { const s = getSetup(); if (!s) return noSetup; try { return await s.status(); } catch (err) { return { ...noSetup, error: err.message }; } });
   ipcMain.handle('setup:run', async (_e, step) => {
@@ -2233,6 +2195,7 @@ app.whenReady().then(() => {
   // Cmd/Ctrl+Shift+O everywhere; Windows also tries Alt+Space → Ctrl+Shift+Space → Ctrl+Alt+O (shortcuts.js).
   try {
     const r = shortcuts.registerSummon(globalShortcut, toggleCommandBar);
+    try { globalShortcut.register('CommandOrControl+Shift+Space', togglePanel); } catch (_) {}
     if (process.platform === 'win32') {
       console.log(r.summon ? `[o] command bar shortcut: ${r.summon} (tried ${r.tried.join(', ')})` : `[o] no launcher shortcut free (tried ${r.tried.join(', ')}); Ctrl+Shift+O only`);
     }

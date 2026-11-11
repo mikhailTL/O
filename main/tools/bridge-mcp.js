@@ -25,8 +25,8 @@
 //   swarm_run          objective → swarm job; blocks until done (POST /swarm/run + /jobs poll).
 //   web_run            headless browser task on the isolated display; blocks until done (POST /web/run + /jobs poll).
 //   ui_emit            push A2UI GenUI frames to O's panel (POST /ui on the app, same token as the log).
-//   ui_morph           ask O's own glass UI to take a mode: dot | pill | bar | card | sheet (POST /ui, surface job:o-ui).
-//   ui_dock            move O's UI to an edge: top | bottom (the Island), left | right (the sheet as a column), auto.
+//   ui_morph           ask O's own glass UI to take a mode: dot | pill | cluster | card | full (POST /ui, surface job:o-ui).
+//   ui_dock            move O's cluster to a screen edge: top | bottom | left | right | auto.
 //   schedule_task      save a prompt that starts a task at a time or on repeat (POST /schedule on the app).
 //   list_schedules     the saved schedules.
 //   cancel_schedule    remove one schedule by id.
@@ -516,13 +516,14 @@ const TOOLS = [
   {
     name: 'ui_morph',
     description: 'Change the shape of O\'s own glass UI on the user\'s screen for a while: dot (the ring only, out of the way), pill (ring + one status line), ' +
-      'bar (the command bar), card (the bar with one result or approval card), sheet (the full panel). Use dot when the user is reading, presenting or ' +
-      'watching; pill to show live progress; card when a result needs a look; sheet only when the user asked to see more. The user\'s own choices and approvals override it.',
-    inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['dot', 'pill', 'bar', 'card', 'sheet'] }, reason: { type: 'string', maxLength: 200, description: 'One short clause, shown in the action log.' } }, required: ['mode'], additionalProperties: false },
+      'cluster (the O circle with its input segment and the task chips around it), card (the cluster with one result or approval card open), ' +
+      'full (the whole dashboard as a fullscreen glass layer). Use dot when the user is reading, presenting or watching; pill to show live progress; ' +
+      'card when a result needs a look; full only when the user asked to see everything. The user\'s own choices and approvals override it.',
+    inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['dot', 'pill', 'cluster', 'card', 'full'] }, reason: { type: 'string', maxLength: 200, description: 'One short clause, shown in the action log.' } }, required: ['mode'], additionalProperties: false },
   },
   {
     name: 'ui_dock',
-    description: 'Move O\'s UI to a screen edge: top or bottom put the Island there (offset = px along the edge from centre); left or right dock the sheet as a slim column on that side; auto undoes both.',
+    description: 'Move O\'s cluster to a screen edge for this session: top or bottom centre (offset = px along the edge from centre), left or right (the top corners); auto returns it to the user\'s own position setting.',
     inputSchema: { type: 'object', properties: { edge: { type: 'string', enum: ['top', 'bottom', 'left', 'right', 'auto'] }, offset: { type: 'integer', minimum: -2000, maximum: 2000 } }, required: ['edge'], additionalProperties: false },
   },
   {
@@ -1255,7 +1256,7 @@ async function callTool(name, args) {
       return uiEmit(args);
     case 'ui_morph': {
       const mode = args && typeof args.mode === 'string' ? args.mode : '';
-      if (!['dot', 'pill', 'bar', 'card', 'sheet'].includes(mode)) return textResult('ui_morph needs mode: dot | pill | bar | card | sheet.', true);
+      if (!['dot', 'pill', 'cluster', 'card', 'full'].includes(mode)) return textResult('ui_morph needs mode: dot | pill | cluster | card | full.', true);
       return uiCommand('morph', { mode, reason: String((args && args.reason) || '').slice(0, 200) }, 'ui_morph');
     }
     case 'ui_dock': {

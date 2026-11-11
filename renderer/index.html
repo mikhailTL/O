@@ -10,17 +10,17 @@
 <body>
 
   <div id="stage">
-    <!-- Filtered layer: opaque blobs; the goo filter joins and separates them. -->
+    <!-- Filtered layer: opaque blobs; the goo filter joins and separates them (the circle and the input segment
+         grow a liquid neck when they meet). -->
     <div class="ol-goo" id="goo" aria-hidden="true">
       <div class="ol-blob g-cap g-cap-l"></div>
       <div class="ol-blob g-mid"></div>
       <div class="ol-blob g-cap g-cap-r"></div>
-      <div class="ol-blob g-bar"></div>
-      <div class="ol-blob g-side"></div>
+      <div class="ol-blob g-seg"></div>
     </div>
 
-    <!-- Island: the slim status capsule. -->
-    <button id="island" type="button" aria-label="O status. Open the command bar">
+    <!-- The O circle: the dot, the pill's capsule, the cluster's circle. -->
+    <button id="island" type="button" aria-label="O status. Click to type a task">
       <span class="rim rim-l" aria-hidden="true"></span>
       <span class="rim rim-m" aria-hidden="true"></span>
       <span class="rim rim-r" aria-hidden="true"></span>
@@ -37,21 +37,23 @@
       </span>
     </button>
 
-    <!-- Command bar. -->
-    <div id="bar" role="search">
-      <span class="bar-rim ol-glass" aria-hidden="true"></span>
-      <span class="bar-ring" aria-hidden="true">
-        <svg viewBox="0 0 14 14" width="16" height="16"><circle cx="7" cy="7" r="5.25"/></svg>
-      </span>
-      <input id="input" type="text" autocomplete="off" spellcheck="false" placeholder="Give O a goal or a task…" aria-label="Give O a goal or a task" aria-controls="bubbles">
-      <span class="keys" aria-hidden="true"><span class="kg kg-run"><kbd>↵</kbd>Run</span><span class="kg"><kbd id="mod-key">⌘↵</kbd>Panel</span></span>
-    </div>
-    <button id="side" type="button" aria-label="Open the full panel" title="Open the full panel">
-      <span class="side-rim ol-glass" aria-hidden="true"></span>
-      <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="3"/><path d="M12 4v12"/></svg>
+    <!-- The expand circle (hover): the full dashboard. -->
+    <button id="expand" type="button" aria-label="Open the full dashboard" title="Full dashboard (Ctrl+Shift+Space)">
+      <svg viewBox="0 0 20 20" width="12" height="12" aria-hidden="true"><path d="M11.5 4.5H15.5V8.5M8.5 15.5H4.5V11.5M15.5 4.5 11 9M4.5 15.5 9 11"/></svg>
     </button>
 
-    <div id="bubbles" role="listbox" aria-label="Suggestions, tasks and approvals"></div>
+    <!-- The input segment: one short glass capsule beside the circle. -->
+    <div id="seg" role="search">
+      <span class="seg-rim ol-glass" aria-hidden="true"></span>
+      <input id="input" type="text" autocomplete="off" spellcheck="false" placeholder="Give O a task…" aria-label="Give O a task" aria-controls="chips">
+      <span class="keys" aria-hidden="true"><kbd>↵</kbd></span>
+    </div>
+
+    <!-- Chips: one small capsule per task / approval, arranged around the circle. -->
+    <div id="chips" role="list" aria-label="Tasks and approvals"></div>
+
+    <!-- One result / approval card, anchored to its chip. -->
+    <div id="card" class="ol-glass" role="dialog" aria-live="polite" hidden></div>
   </div>
 
   <span id="measure" aria-hidden="true"></span>

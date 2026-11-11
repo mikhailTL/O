@@ -80,14 +80,14 @@ test('mac and linux auto are unchanged', () => {
 const A = require(path.join(__dirname, '..', '..', 'renderer', 'adapt.js'));
 const disp = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1032 } };
 
-test('adapt: fullscreen window → dot at 60% that lets clicks through, except on hover / near the cursor', () => {
+test('adapt: fullscreen window → dot at 60% that lets clicks through; near the cursor it wakes the cluster', () => {
   const front = { app: 'Code', title: 'main.js', bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
   const d = A.decideMode({ front, display: disp, cursorDist: 500 });
   assert.equal(d.mode, 'dot');
   assert.equal(d.opacity, A.C.DIM_OPACITY);
   assert.equal(d.clickThrough, true);
   const near = A.decideMode({ front, display: disp, cursorDist: 20 });
-  assert.equal(near.mode, 'pill');
+  assert.equal(near.mode, 'cluster');
   assert.equal(near.clickThrough, false);
   assert.equal(A.decideMode({ front, display: disp, hover: true }).clickThrough, false);
 });
@@ -103,108 +103,99 @@ test('adapt: known game/video/presentation apps count as immersive even when win
   assert.equal(d.clickThrough, true);
 });
 
-test('adapt: state → mode: approval → card, task → pill, idle → dot, cursor near → pill, bar/sheet win', () => {
+test('adapt: state → mode: full/typing/card win; approval → card; near → cluster; task → pill; idle → dot', () => {
+  assert.equal(A.decideMode({ fullOpen: true, approvalPending: true }).mode, 'full');
+  assert.equal(A.decideMode({ focused: true, approvalPending: true }).mode, 'cluster');
+  assert.equal(A.decideMode({ cardOpen: true, taskRunning: true }).mode, 'card');
   assert.equal(A.decideMode({ approvalPending: true, taskRunning: true }).mode, 'card');
-  assert.equal(A.decideMode({ taskRunning: true }).mode, 'pill');
+  assert.equal(A.decideMode({ cursorDist: 10, taskRunning: true }).mode, 'cluster');
+  assert.equal(A.decideMode({ taskRunning: true, cursorDist: 999 }).mode, 'pill');
+  assert.equal(A.decideMode({ hasStatus: true, cursorDist: 999 }).mode, 'pill');
   assert.equal(A.decideMode({ cursorDist: 999 }).mode, 'dot');
-  assert.equal(A.decideMode({ cursorDist: 10 }).mode, 'pill');
-  assert.equal(A.decideMode({ hasStatus: true }).mode, 'pill');
-  assert.equal(A.decideMode({ barOpen: true, approvalPending: true }).mode, 'bar');
-  assert.equal(A.decideMode({ sheetOpen: true, taskRunning: true }).mode, 'sheet');
+  assert.equal(A.decideMode({ hover: true }).mode, 'cluster');
 });
 
-test('adapt: a user lock holds (dot stays dot while a task runs) but an approval still shows the card', () => {
+test('adapt: a user lock holds (cluster stays up, dot stays dot) but an approval still shows the card', () => {
   assert.equal(A.decideMode({ lock: 'dot', taskRunning: true, cursorDist: 0 }).mode, 'dot');
+  assert.equal(A.decideMode({ lock: 'cluster', cursorDist: 999 }).mode, 'cluster');
   assert.equal(A.decideMode({ lock: 'pill', cursorDist: 999 }).mode, 'pill');
   assert.equal(A.decideMode({ lock: 'dot', approvalPending: true }).mode, 'card');
   assert.equal(A.decideMode({ lock: 'nonsense', cursorDist: 999 }).mode, 'dot');
 });
 
-test('adapt: a browser in front → the capsule hugs its top centre, clamped to the work area', () => {
+test('adapt: the cluster hugs the active window\'s top edge, just below its title bar, clamped to the work area', () => {
   const home = { cx: 960, cy: 22 };
-  const cap = { width: 220, height: 36 };
+  const cap = { width: 346, height: 36 };
   const p = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Google Chrome', bounds: { x: 200, y: 100, width: 1000, height: 800 } } });
   assert.equal(p.cx, 700);
-  assert.equal(p.cy, 100 + 4 + 18);
-  assert.equal(p.reason, 'browser top-centre');
+  assert.equal(p.cy, 100 + A.C.TITLEBAR_H + A.C.HUG_GAP + 18);
+  assert.equal(p.reason, 'browser top edge');
+  const code = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Code', bounds: { x: 0, y: 0, width: 1920, height: 900 }, titleBarH: 28 } });
+  assert.equal(code.reason, 'active window top edge');
+  assert.equal(code.cy, 28 + A.C.HUG_GAP + 18); // never on the title bar
   const edge = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Safari', bounds: { x: -300, y: 100, width: 500, height: 800 } } });
   assert.ok(edge.cx - cap.width / 2 >= disp.workArea.x);
-});
-
-test('adapt: another window whose title bar the capsule would cover → slide to the nearest free edge', () => {
-  const home = { cx: 960, cy: 22 };
-  const cap = { width: 220, height: 36 };
-  // a window across the whole top: no room left or right → below its title bar
-  const below = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Code', bounds: { x: 0, y: 0, width: 1920, height: 900 } } });
-  assert.equal(below.reason, 'slid below the title bar');
-  assert.ok(below.cy > 36);
-  // a window on the right half: the capsule slides left of it
-  const left = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Code', bounds: { x: 900, y: 0, width: 1020, height: 900 } } });
-  assert.equal(left.reason, 'slid left of the title bar');
-  assert.ok(left.cx + cap.width / 2 <= 900);
-  // a window that does not reach the capsule: the home spot stays
-  const stay = A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'Code', bounds: { x: 0, y: 300, width: 800, height: 600 } } });
-  assert.equal(stay.reason, 'home');
-  assert.equal(stay.cx, 960);
-  // nothing in front: home
+  // nothing in front, or a fullscreen window: the user's own spot
   assert.equal(A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: null }).cx, 960);
+  assert.equal(A.placeIsland({ home, capsule: cap, workArea: disp.workArea, display: disp, front: { app: 'VLC', bounds: disp.bounds } }).reason, 'home');
 });
 
-test('adapt: the sheet grows out of the capsule, 380-560 wide, at most 62% of the work area tall', () => {
+test('adapt: nudge: dwell > 1.5 s on the cluster → a 120-200 px step away from the cursor, at most once per 4 s', () => {
   const wa = disp.workArea;
-  const g = A.sheetGeometry({ anchor: { cx: 960, cy: 22, height: 36 }, workArea: wa, want: { width: 440, height: 9999 }, dock: 'none' });
-  assert.equal(g.width, 440);
-  assert.equal(g.height, Math.floor(wa.height * 0.62));
-  assert.equal(g.x, 960 - 220);
-  assert.equal(g.y, 22 + 18 + A.C.SHEET_GAP);
-  assert.equal(g.anchored, true);
-  assert.equal(g.dir, 'down');
-  assert.equal(g.originX, 220);
-  assert.equal(A.sheetGeometry({ anchor: { cx: 960, cy: 22, height: 36 }, workArea: wa, want: { width: 100 } }).width, 380);
-  assert.equal(A.sheetGeometry({ anchor: { cx: 960, cy: 22, height: 36 }, workArea: wa, want: { width: 900 } }).width, 560);
-  // a bottom capsule: the sheet grows upward
-  const up = A.sheetGeometry({ anchor: { cx: 960, cy: 1010, height: 36 }, workArea: wa, want: { width: 440 } });
-  assert.equal(up.dir, 'up');
-  assert.ok(up.y + up.height <= 1010 - 18);
-  // a saved spot wins over the anchor and is kept on screen
-  const saved = A.sheetGeometry({ anchor: { cx: 960, cy: 22, height: 36 }, workArea: wa, want: { width: 440 }, saved: { x: 5000, y: -50 } });
-  assert.equal(saved.anchored, false);
-  assert.ok(saved.x + saved.width <= wa.x + wa.width && saved.y >= wa.y);
+  const rect = { x: 787, y: 40, width: 346, height: 36 };
+  const base = { now: 10000, dwellSince: 8000, lastNudgeAt: 0, rect, workArea: wa };
+  assert.equal(A.nudge({ ...base, dwellSince: 9000 }), null, 'not yet dwelt long enough');
+  assert.equal(A.nudge({ ...base, dwellSince: 0 }), null, 'not on it');
+  const right = A.nudge({ ...base, cursor: { x: 800, y: 50 } }); // cursor on the left half → step right
+  assert.ok(right.dx >= A.C.NUDGE_MIN_PX && right.dx <= A.C.NUDGE_MAX_PX && right.dy === 0);
+  const left = A.nudge({ ...base, cursor: { x: 1100, y: 50 } });
+  assert.ok(left.dx <= -A.C.NUDGE_MIN_PX && left.dx >= -A.C.NUDGE_MAX_PX);
+  const centre = A.nudge({ ...base, cursor: { x: 960, y: 50 } });
+  assert.equal(Math.abs(centre.dx), A.C.NUDGE_MAX_PX, 'dead centre: the largest step');
+  assert.equal(A.nudge({ ...base, lastNudgeAt: 7000, cursor: { x: 800, y: 50 } }), null, 'one move per 4 s');
+  assert.ok(A.nudge({ ...base, lastNudgeAt: 5000, cursor: { x: 800, y: 50 } }), 'after 4 s it may move again');
+  // against the right edge with the cursor on the left: no room right → it goes left instead
+  const pinned = A.nudge({ ...base, rect: { ...rect, x: wa.width - rect.width - 10 }, cursor: { x: wa.width - rect.width, y: 50 } });
+  assert.ok(pinned.dx < 0);
+  // no room either side: it steps down
+  const tight = A.nudge({ ...base, workArea: { x: 0, y: 0, width: 400, height: 800 }, rect: { x: 20, y: 40, width: 346, height: 36 }, cursor: { x: 100, y: 50 } });
+  assert.deepEqual(tight, { dx: 0, dy: A.C.NUDGE_MIN_PX });
 });
 
-test('adapt: docked left/right is a slim full-height column; under 420 px the tabs collapse (narrow)', () => {
-  const wa = disp.workArea;
-  const l = A.sheetGeometry({ workArea: wa, dock: 'left', want: { width: 440 } });
-  assert.equal(l.x, wa.x + A.C.SHEET_MARGIN);
-  assert.equal(l.width, A.C.DOCK_W);
-  assert.equal(l.height, wa.height - 2 * A.C.SHEET_MARGIN);
-  assert.equal(l.narrow, true);
-  const r = A.sheetGeometry({ workArea: wa, dock: 'right', want: { width: 440 } });
-  assert.equal(r.x + r.width, wa.x + wa.width - A.C.SHEET_MARGIN);
-  assert.equal(A.sheetGeometry({ workArea: wa, dock: 'none', want: { width: 440 } }).narrow, false);
+test('adapt: cluster layout: circle + segment centred on cx, chips stacked in an arc, +N beyond 5, card under its chip', () => {
+  const lay = A.clusterLayout({ cx: 410, top: 12, ih: 36, winW: 820, typing: false, chips: 3 });
+  assert.equal(lay.circle.d, A.C.CIRCLE);
+  assert.equal(lay.seg.w, A.C.SEG_W);
+  assert.equal(lay.seg.x, lay.circle.cx + A.C.CIRCLE / 2 + A.C.SEG_GAP);
+  const clusterW = A.C.CIRCLE + A.C.SEG_GAP + A.C.SEG_W;
+  assert.equal(Math.round((lay.circle.cx - A.C.CIRCLE / 2 + lay.seg.x + lay.seg.w) / 2), 410, 'the cluster is centred on cx');
+  assert.equal(lay.chips.length, 3);
+  assert.equal(lay.chips[0].y, lay.seg.y + A.C.CIRCLE + 12);
+  assert.equal(lay.chips[1].y - lay.chips[0].y, A.C.CHIP_H + A.C.CHIP_GAP);
+  assert.equal(lay.chips[0].x - lay.chips[1].x, A.C.CHIP_ARC, 'a gentle arc');
+  assert.ok(clusterW < 820);
+  // typing grows the segment rightwards and keeps it inside the window
+  const typing = A.clusterLayout({ cx: 410, top: 12, ih: 36, winW: 820, typing: true, chips: 0 });
+  assert.equal(typing.seg.w, A.C.SEG_W_TYPING);
+  assert.ok(typing.seg.x + typing.seg.w <= 820);
+  // more than 5 chips: 4 + a "+N" chip
+  const many = A.clusterLayout({ cx: 410, top: 12, ih: 36, winW: 820, chips: 8 });
+  assert.equal(many.chips.length, A.C.MAX_CHIPS);
+  assert.equal(many.chips[4].more, true);
+  assert.equal(many.chips[4].count, 4);
+  // a card under chip 1 pushes chip 2 down by its height
+  const card = A.clusterLayout({ cx: 410, top: 12, ih: 36, winW: 820, chips: 3, openCard: { index: 1, height: 140 } });
+  assert.ok(card.card && card.card.w === A.C.CARD_W);
+  assert.equal(card.card.y, card.chips[1].y + A.C.CHIP_H + A.C.CHIP_GAP + 2);
+  assert.equal(card.chips[2].y - card.chips[1].y, A.C.CHIP_H + A.C.CHIP_GAP + 140 + A.C.CARD_GAP + 2);
+  assert.ok(card.card.x + card.card.w <= 820);
 });
 
-test('adapt: a dragged sheet snaps to edges within 24 px and docks when dropped against a side at full height', () => {
-  const wa = disp.workArea;
-  const s = A.snapToEdges({ x: 20, y: 300, width: 440, height: 600 }, wa);
-  assert.equal(s.x, A.C.SHEET_MARGIN);
-  assert.equal(s.y, 300);
-  assert.equal(s.snapped, true);
-  const far = A.snapToEdges({ x: 400, y: 300, width: 440, height: 600 }, wa);
-  assert.equal(far.snapped, false);
-  assert.equal(A.dockFor({ x: 12, y: 12, width: 380, height: wa.height - 24 }, wa), 'left');
-  assert.equal(A.dockFor({ x: wa.width - 12 - 380, y: 12, width: 380, height: wa.height - 24 }, wa), 'right');
-  assert.equal(A.dockFor({ x: 12, y: 300, width: 380, height: 500 }, wa), 'none');
-});
-
-test('adapt: the window is only as tall as the mode needs; bar and sheet take the full footprint', () => {
+test('adapt: the window is only as tall as the dot/pill need; cluster, card and full take the full footprint', () => {
   const L = G.layout({ platform: 'win32', display: winDisplay('bottom'), position: 'auto' });
-  const dot = A.modeHeight(L, 'dot');
-  const card = A.modeHeight(L, 'card');
-  assert.ok(dot < card && card < A.modeHeight(L, 'bar'));
-  assert.equal(A.modeHeight(L, 'bar'), L.compact.height);
-  assert.equal(A.modeHeight(L, 'sheet'), L.compact.height);
-  assert.equal(dot, L.top + L.ih + 16);
+  assert.equal(A.modeHeight(L, 'dot'), L.top + L.ih + 16);
+  assert.equal(A.modeHeight(L, 'pill'), L.top + L.ih + 16);
+  for (const m of ['cluster', 'card', 'full']) assert.equal(A.modeHeight(L, m), L.compact.height);
   const up = G.layout({ platform: 'linux', display: winDisplay('bottom', 32), position: 'auto' });
   assert.equal(A.modeHeight(up, 'pill'), up.gap + up.ih + 16);
   const mac = G.layout({ platform: 'darwin', display: macDisplay, position: 'auto', forceNotch: false });
@@ -212,8 +203,8 @@ test('adapt: the window is only as tall as the mode needs; bar and sheet take th
 });
 
 test('adapt: cleanMode / cleanEdge accept only the known words', () => {
-  assert.equal(A.cleanMode('card'), 'card');
-  assert.equal(A.cleanMode('huge'), null);
+  assert.equal(A.cleanMode('cluster'), 'cluster');
+  assert.equal(A.cleanMode('sheet'), null);
   assert.equal(A.cleanEdge('left'), 'left');
   assert.equal(A.cleanEdge('middle'), null);
 });

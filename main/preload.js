@@ -35,18 +35,10 @@ contextBridge.exposeInMainWorld('o', {
   // Adaptive Island (renderer/adapt.js): the cursor is on the glass (cancels click-through), the user's locked
   // mode and sheet dock (kept in the Island's localStorage), and what O itself asks for (ui_morph / ui_dock).
   islandHover: (v) => ipcRenderer.send('island:hover', !!v),
-  islandPrefs: (p) => ipcRenderer.send('island:prefs', p && typeof p === 'object' ? { lock: String(p.lock || 'auto'), dock: String(p.dock || 'none') } : {}),
+  islandCard: (v) => ipcRenderer.send('island:card', !!v), // a chip's card is open (the user opened it)
+  islandPrefs: (p) => ipcRenderer.send('island:prefs', p && typeof p === 'object' ? { lock: String(p.lock || 'auto') } : {}),
   uiMorph: (mode, reason) => ipcRenderer.invoke('ui:morph', String(mode || ''), String(reason || '')),
   uiDock: (edge, offset) => ipcRenderer.invoke('ui:dock', String(edge || ''), Number(offset) || 0),
-  // The sheet (panel window): what size its content wants, the positions the user dragged it to per display
-  // (kept in the panel's localStorage), and where main put it.
-  sheetFit: (want) => ipcRenderer.send('sheet:fit', want && typeof want === 'object' ? { width: Number(want.width) || 0, height: Number(want.height) || 0 } : {}),
-  sheetRestore: (saved) => ipcRenderer.send('sheet:restore', saved && typeof saved === 'object' ? saved : {}),
-  onSheetBounds: (cb) => {
-    const handler = (_e, b) => cb(b);
-    ipcRenderer.on('sheet:bounds', handler);
-    return () => ipcRenderer.removeListener('sheet:bounds', handler);
-  },
 
   // both windows
   onAgentEvent: (cb) => {

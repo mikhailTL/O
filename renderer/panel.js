@@ -281,7 +281,7 @@
         break;
       case 'panel':
         // the sheet grows out of the Island (main sends the capsule's x inside the sheet) and retracts into it
-        if (ev.open) sheetEnter(ev.origin); else sheetExit();
+        if (ev.open) sheetEnter(); else sheetExit();
         break;
       case 'open-settings': // the tray's Set up / Settings item: the Setup screen while something is missing
         if (setupState && setupState.ok === false && (setupState.steps || []).some((r) => INSTALL_STEPS.includes(r.step) && !r.ok)) openSetup(); else openSettings();
@@ -2349,78 +2349,26 @@
   }
   $('autonomy-chip').addEventListener('click', openSettings);
 
-  // ------------------------------------------------------------ the sheet (this window as a glass sheet)
-  // Grows out of the Island: on open the body morphs in from the capsule's x (clip-path + transform only), on
-  // hide it retracts the same way (main hides the window 200 ms later). The content asks main for the size it
-  // wants per view (sheet:fit, width 380-560, height up to 62% of the work area); below 420 px wide the tabs
-  // collapse to icons; the spot the user dragged it to is remembered per display in localStorage.
-  const SHEET_POS_KEY = 'o.sheet.pos';
+  // ------------------------------------------------------------ the full layer (this window covers the work area)
+  // "full" mode: translucent black over the whole work area, the dashboard centred (panel.css). It fades in on
+  // open and out on hide (main hides the window 200 ms later). Esc, the hide button or the O circle close it.
   const reducedMotion = () => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) { return false; } };
-  let sheetAnim = null;
-  function sheetEnter(origin) {
-    document.body.classList.remove('sheet-out');
-    document.body.classList.add('sheet-in');
-    if (sheetAnim) { try { sheetAnim.cancel(); } catch (_) {} sheetAnim = null; }
-    if (!origin || reducedMotion()) { sheetAnim = document.body.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear', fill: 'both' }); return; }
-    const w = Math.max(1, window.innerWidth);
-    const ox = Math.max(0, Math.min(w, Number(origin.x) || w / 2));
-    const up = origin.dir === 'up';
-    const pct = Math.round(ox / w * 100);
-    document.body.style.transformOrigin = `${pct}% ${up ? '100%' : '0%'}`;
-    const r = 28;
-    sheetAnim = document.body.animate([
-      { clipPath: `inset(${up ? '70%' : '0'} ${Math.max(0, 100 - pct - 6)}% ${up ? '0' : '70%'} ${Math.max(0, pct - 6)}% round ${r}px)`, transform: `translateY(${up ? 10 : -10}px) scale(0.96)`, opacity: 0.6 },
-      { clipPath: `inset(0 0 0 0 round ${r}px)`, transform: 'none', opacity: 1 },
-    ], { duration: 240, easing: 'cubic-bezier(0.23,1,0.32,1)', fill: 'both' });
-    sheetAnim.finished.catch(() => {}).then(() => { if (sheetAnim) { sheetAnim = null; document.body.classList.remove('sheet-in'); } });
+  let layerAnim = null;
+  function sheetEnter() {
+    if (layerAnim) { try { layerAnim.cancel(); } catch (_) {} }
+    document.documentElement.classList.add('open');
+    const kf = reducedMotion() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: 'scale(0.985)' }, { opacity: 1, transform: 'none' }];
+    layerAnim = document.body.animate(kf, { duration: 220, easing: 'cubic-bezier(0.23,1,0.32,1)', fill: 'both' });
+    layerAnim.finished.catch(() => {}).then(() => { layerAnim = null; });
   }
   function sheetExit() {
-    if (sheetAnim) { try { sheetAnim.cancel(); } catch (_) {} sheetAnim = null; }
-    document.body.classList.add('sheet-out');
-    const dur = reducedMotion() ? 140 : 200;
-    const kf = reducedMotion() ? [{ opacity: 1 }, { opacity: 0 }] : [{ clipPath: 'inset(0 0 0 0 round 28px)', transform: 'none', opacity: 1 }, { clipPath: 'inset(0 30% 70% 30% round 28px)', transform: 'translateY(-8px) scale(0.97)', opacity: 0 }];
-    sheetAnim = document.body.animate(kf, { duration: dur, easing: 'cubic-bezier(0.77,0,0.175,1)', fill: 'both' });
-    sheetAnim.finished.catch(() => {}).then(() => { sheetAnim = null; });
+    if (layerAnim) { try { layerAnim.cancel(); } catch (_) {} }
+    const kf = reducedMotion() ? [{ opacity: 1 }, { opacity: 0 }] : [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(0.985)' }];
+    layerAnim = document.body.animate(kf, { duration: 180, easing: 'cubic-bezier(0.77,0,0.175,1)', fill: 'both' });
+    layerAnim.finished.catch(() => {}).then(() => { layerAnim = null; document.documentElement.classList.remove('open'); });
   }
-  // what each view wants (px): the sheet is narrow for Home and reading, wider for Settings and chats
-  function sheetWant() {
-    const w = !settingsEl.hidden || !setupEl.hidden ? 520 : (!runsEl.hidden || !goalsEl.hidden || !$('evolve').hidden || !actionlogEl.hidden) ? 480 : document.body.classList.contains('chatting') ? 500 : 440;
-    let h = 9999; // sheets and chats: as tall as the work area allows (62%)
-    if (!document.body.classList.contains('chatting') && w === 440) {
-      // Home: only as tall as its content (title bar + nav + composer + the Home column)
-      const chrome = ['titlebar', 'nav', 'composer'].reduce((n, id) => n + (($(id) && $(id).offsetHeight) || 0), 0);
-      h = Math.max(380, chrome + log.scrollHeight + 12);
-    }
-    return { width: w, height: h };
-  }
-  let fitTimer = null;
-  function sheetFit() {
-    if (!has('sheetFit')) return;
-    clearTimeout(fitTimer);
-    fitTimer = setTimeout(() => o.sheetFit(sheetWant()), 60);
-  }
-  {
-    const mo = new MutationObserver(sheetFit);
-    for (const id of ['settings', 'setup', 'actionlog', 'runs', 'goals', 'evolve', 'drawer']) { const el = $(id); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden'] }); }
-    mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    sheetFit();
-  }
-  function syncNarrow() { document.body.classList.toggle('narrow', window.innerWidth < 420); }
-  window.addEventListener('resize', syncNarrow);
-  syncNarrow();
-  if (has('onSheetBounds')) o.onSheetBounds((b) => {
-    if (!b || typeof b !== 'object') return;
-    document.body.classList.toggle('docked', !!b.dock && b.dock !== 'none');
-    document.body.dataset.dock = b.dock || 'none';
-    syncNarrow();
-    if (!b.save || b.displayId == null) return;
-    try {
-      const all = JSON.parse(localStorage.getItem(SHEET_POS_KEY) || '{}') || {};
-      all[String(b.displayId)] = { x: b.x, y: b.y, width: b.width, height: b.height, dock: b.dock || 'none' };
-      localStorage.setItem(SHEET_POS_KEY, JSON.stringify(all));
-    } catch (_) {}
-  });
-  if (has('sheetRestore')) { try { o.sheetRestore(JSON.parse(localStorage.getItem(SHEET_POS_KEY) || '{}') || {}); } catch (_) {} }
+  // a click on the dark layer outside the dashboard closes it
+  document.addEventListener('mousedown', (e) => { if (e.target === document.documentElement) o.hidePanel(); });
 
   // ------------------------------------------------------------ init
 
