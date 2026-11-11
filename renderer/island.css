@@ -41,6 +41,9 @@ html, body {
 *, *::before, *::after { box-sizing: border-box; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
 button:focus { outline: none; }
+/* Keyboard focus is shown as the glass glow (the mouse never shows it): the island's rim, a chip, the expand
+   circle and the card's buttons. */
+#island:focus-visible, .chip:focus-visible, #expand:focus-visible, #card:focus-visible { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: 2px; }
 
 #stage { position: fixed; inset: 0; --w: 240; opacity: var(--adapt-opacity, 1); transition: opacity 200ms linear; }
 body.faded #stage { opacity: 0.25; }
@@ -326,7 +329,9 @@ body.card .chip.open .c-tip { display: none; }
 .act.quiet { background: transparent; color: var(--ol-text-2); border-color: transparent; box-shadow: none; }
 .act.danger { color: var(--ol-danger); }
 
-/* ------------------------------------------------------------------ reduced motion: crossfades only */
+/* ------------------------------------------------------------------ reduced motion: crossfades only.
+   Chips, the card and the expand circle are POSITIONED by their transform (the spring's inline translate3d),
+   so those keep their transform; only their motion is dropped (liquid.js settles springs instantly). */
 @media (prefers-reduced-motion: reduce) {
   .g-cap, .g-mid, .rim, .g-seg, #seg, #island, #expand { transition: opacity 180ms linear !important; }
   .ring.is-idle .ring-halo, .ring.is-working svg, .chip.running .c-ic svg, .chip.running .c-dot { animation: none; }
@@ -334,5 +339,5 @@ body.card .chip.open .c-tip { display: none; }
   .ring.is-working .ring-arc { opacity: 0; }
   .line.swap { animation: o-fade 180ms linear both; }
   @keyframes o-fade { from { opacity: 0; } to { opacity: 1; } }
-  .act, .chip, #expand { transform: none !important; }
+  .act:active, #expand:active { transform: none; }
 }

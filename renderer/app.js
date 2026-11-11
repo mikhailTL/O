@@ -36,17 +36,21 @@
   let goals = [];
   let checkpoints = [];
   const perms = new Map(); // id -> { id, toolName, summary, taskId, input }
-  const lastTool = new Map(); // taskId -> tool name
+  const lastTool = new Map(); // taskId -> tool name (bounded, see capMap)
   let evolve = null;
   let flash = null; // { k, v, tone, until }
   let setupNeeded = false;
   let pendingStart = null; // { title, at }: a prompt just sent, until the task list shows it
-  const results = new Map(); // taskId -> one-line result (from 'done' events)
+  const results = new Map(); // taskId -> one-line result (from 'done' events; bounded)
+  const MAP_CAP = 200;
+  /** Keep a Map / Set at MAP_CAP entries: the oldest (insertion order) go first. */
+  function capMap(m) { while (m.size > MAP_CAP) m.delete(m.keys().next().value); }
   let mode = 'pill';     // dot | pill | cluster | card | full
   let typing = false;    // the input has keyboard focus (main: commandBarOpen)
   let hovering = false;
   let openKey = null;    // the chip whose card is open
   let cardH = 0;
+  let cardTimer = null;  // a finished task's card closes itself (A3): 20 s, unless the pointer is on it
   // The user's locked mode lives here (localStorage, per machine) and is told to main at boot.
   const prefs = (() => { try { return JSON.parse(localStorage.getItem('o.island.prefs') || '{}') || {}; } catch (_) { return {}; } })();
   function savePrefs(next) {
@@ -198,16 +202,38 @@
     stage.style.setProperty('--line-max', `${Math.min(330, lineRoom(w))}px`);
     const pad = G.C.PAD + w / 2;
     root.style.setProperty('--cx', LY.anchor === 'left' ? `${pad}px` : LY.anchor === 'right' ? `calc(100vw - ${pad}px)` : '50vw');
-    layoutCluster();
-    // The capsule rect (footprint px): main shapes the window to it on Linux and measures the cursor's distance.
-    if (typeof bridge.setIslandShape === 'function') {
-      const r = G.capsuleRect(LY, w);
-      const cdx = clusterOn() ? lastCluster.cdx : 0;
-      bridge.setIslandShape({
-        x: r.x + cdx - SHAPE_PAD, y: r.y - SHAPE_PAD, width: r.width + 2 * SHAPE_PAD, height: r.height + 2 * SHAPE_PAD,
-        attention: lastTone === 'attention',
-      });
+    layoutCluster(); // reports the shape too
+  }
+
+  /**
+   * The solid rect (footprint px) main shapes the Linux window to and measures against: the capsule alone
+   * while compact; the whole cluster (circle + expand + segment + chips + card) while it is up, so the
+   * chips and the card take clicks before the input has focus.
+   */
+  let lastShapeKey = '';
+  function reportShape() {
+    if (typeof bridge.setIslandShape !== 'function') return;
+    const r = G.capsuleRect(LY, lastW);
+    const on = clusterOn();
+    const lay = lastCluster;
+    const cdx = on ? lay.cdx : 0;
+    let x0 = r.x + cdx, y0 = r.y, x1 = r.x + cdx + r.width, y1 = r.y + r.height;
+    const add = (x, y, w, h) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + w); y1 = Math.max(y1, y + h); };
+    if (on && lay.seg) {
+      const drop = G.barDrop(LY);
+      add(x0 - 10 - 22, r.y + drop, 22, r.height); // the expand circle, left of the circle
+      add(lay.seg.x, lay.seg.y + drop, lay.seg.w, lay.seg.h);
+      [...live.keys()].forEach((key, i) => { const c = lay.chips[i]; if (c) add(c.x, c.y + drop, c.w, c.h); });
+      if (openKey && lay.card && !cardEl.hidden) add(lay.card.x, lay.card.y + drop, lay.card.w, cardH || 120);
     }
+    const W = window.innerWidth, H = window.innerHeight;
+    x0 = Math.max(0, Math.floor(x0 - SHAPE_PAD)); y0 = Math.max(0, Math.floor(y0 - SHAPE_PAD));
+    x1 = Math.min(W, Math.ceil(x1 + SHAPE_PAD)); y1 = Math.min(H, Math.ceil(y1 + SHAPE_PAD));
+    const shape = { x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0), attention: lastTone === 'attention' };
+    const key = JSON.stringify(shape);
+    if (key === lastShapeKey) return;
+    lastShapeKey = key;
+    bridge.setIslandShape(shape);
   }
 
   /** Apply a layout from main: CSS variables and body classes, then re-measure the capsule. */
@@ -229,7 +255,12 @@
     if (lineEl) renderIsland();
   }
 
-  setInterval(() => { if (running().length || (flash && flash.until <= Date.now())) renderIsland(); }, 1000);
+  setInterval(() => {
+    if (pendingStart && Date.now() - pendingStart.at >= 8000) { pendingStart = null; changed(); return; }
+    if (running().length || (flash && flash.until <= Date.now())) renderIsland();
+  }, 1000);
+  // Finished chips leave after 15 min even when no event arrives (chipItems' cutoff is re-evaluated).
+  setInterval(() => { if (clusterOn() && live.size) syncChips(); }, 30 * 1000);
 
   // ------------------------------------------------------------ the cluster: circle + segment + chips + card
   const clusterOn = () => mode === 'cluster' || mode === 'card';
@@ -265,7 +296,6 @@
     const el = document.createElement('button');
     el.type = 'button';
     el.className = `chip ${item.kind}`;
-    el.setAttribute('role', 'listitem');
     el.innerHTML = `<span class="c-ic">${ICON[item.kind] || ICON.queued}</span><span class="c-t">${esc(clip(item.label, 28))}</span><span class="c-dot" aria-hidden="true"></span>${item.tip ? `<span class="c-tip">${esc(clip(item.tip, 90))}</span>` : ''}`;
     el.title = `${item.title}${item.tip ? ' — ' + item.tip : ''}`;
     el.addEventListener('mousedown', (e) => e.preventDefault()); // the caret stays in the input
@@ -354,6 +384,7 @@
       L.spring(rec.el, { x: slot.x, y: slot.y + drop, s: 1, o: 1 });
     });
     if (openKey && lay.card && !cardEl.hidden) L.spring(cardEl, { x: lay.card.x, y: lay.card.y + drop, s: 1, o: 1 });
+    reportShape();
   }
 
   // ------------------------------------------------------------ the card
@@ -384,13 +415,15 @@
   function renderCard(item) {
     const spec = cardSpec(item);
     if (!spec) return false;
-    cardEl.innerHTML = `<div class="card-kind">${esc(spec.kind)}</div><div class="card-title">${esc(clip(spec.title, 120))}</div>${spec.body ? `<div class="card-body">${spec.body}</div>` : ''}<div class="card-acts"></div>`;
+    cardEl.innerHTML = `<div class="card-kind">${esc(spec.kind)}</div><div class="card-title" id="card-title">${esc(clip(spec.title, 120))}</div><div class="card-body" id="card-body"${spec.body ? '' : ' hidden'}>${spec.body || ''}</div><div class="card-acts"></div>`;
+    cardEl.dataset.kind = item.kind;
     const acts = cardEl.querySelector('.card-acts');
     for (const a of spec.acts) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'act' + (a.primary ? ' primary' : '') + (a.quiet ? ' quiet' : '') + (a.danger ? ' danger' : '');
       b.textContent = a.label;
+      b.dataset.act = a.label.toLowerCase();
       b.addEventListener('mousedown', (e) => e.preventDefault());
       b.addEventListener('click', (e) => { e.stopPropagation(); a.run(); });
       acts.appendChild(b);
@@ -399,6 +432,21 @@
   }
 
   function toggleCard(key) { if (openKey === key) closeCard(); else openCard(key); }
+
+  /** A finished task's card is information, not a question: it leaves on its own. */
+  const isResultCard = (item) => !!(item && item.t && (item.kind === 'done' || item.kind === 'failed'));
+  const RESULT_CARD_MS = 20000;
+  function armCardTimer(item) {
+    clearTimeout(cardTimer); cardTimer = null;
+    if (!isResultCard(item)) return;
+    const key = openKey;
+    const tick = (ms) => { cardTimer = setTimeout(() => {
+      if (openKey !== key) return;
+      if (cardEl.matches(':hover')) { tick(5000); return; } // the pointer is on it: being read
+      closeCard();
+    }, ms); };
+    tick(RESULT_CARD_MS);
+  }
 
   function openCard(key) {
     const rec = live.get(key);
@@ -413,26 +461,62 @@
     layoutCluster();
     const lay = lastCluster;
     if (first && lay.card) L.spring(cardEl, { x: lay.card.x, y: lay.card.y + G.barDrop(LY), s: 1, o: 1 }, { from: { x: st.x, y: st.y + 10, s: 0.9, o: 0 } });
+    armCardTimer(rec.item);
+    // Keyboard: the dialog takes focus (its primary action, else the card itself), unless the caret is in the
+    // input (a click on a chip, the arrow keys, an approval arriving mid-sentence: typing goes on).
+    if (document.activeElement !== input) {
+      const target = cardEl.querySelector('.act.primary') || cardEl;
+      requestAnimationFrame(() => { if (openKey === key) target.focus({ preventScroll: true }); });
+    }
     if (typeof bridge.islandCard === 'function') bridge.islandCard(true);
   }
 
   function closeCard() {
     if (!openKey) return;
     const rec = live.get(openKey);
+    const hadFocus = cardEl.contains(document.activeElement);
     openKey = null;
     cardH = 0;
+    clearTimeout(cardTimer); cardTimer = null;
     for (const r of live.values()) r.el.classList.remove('open');
     const st = rec ? L.springState(rec.el) : null;
     L.spring(cardEl, { x: st ? st.x : lastCluster.seg.x, y: (st ? st.y : lastCluster.seg.y) + 10, s: 0.9, o: 0 }).then(() => { if (!openKey) cardEl.hidden = true; });
     layoutCluster();
+    if (hadFocus) (typing ? input : rec && live.has(rec.item.key) ? rec.el : island).focus({ preventScroll: true });
     if (typeof bridge.islandCard === 'function') bridge.islandCard(false);
+  }
+
+  /** Enter runs the primary action (Allow / Approve / Open); Esc on an approval is Deny, elsewhere it closes. */
+  cardEl.addEventListener('keydown', (e) => {
+    if (!openKey) return;
+    if (e.key === 'Enter' && e.target === cardEl) { e.preventDefault(); const b = cardEl.querySelector('.act.primary'); if (b) b.click(); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      const deny = cardEl.dataset.kind === 'perm' ? cardEl.querySelector('.act[data-act="deny"]') : null;
+      if (deny) deny.click(); else closeCard();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); cycleCard(e.key === 'ArrowDown' ? 1 : -1); }
+  });
+
+  /** Open the next / previous chip's card (arrow keys). */
+  function cycleCard(dir) {
+    const keys = [...live.keys()].filter((k) => k !== '+more');
+    if (!keys.length) return;
+    const i = keys.indexOf(openKey);
+    openCard(keys[(i + dir + keys.length) % keys.length]);
   }
 
   /** Refresh the open card's words (a status line moved on) without re-springing it. */
   function refreshCard() {
     if (!openKey) return;
     const rec = live.get(openKey);
-    if (rec) { renderCard(rec.item); const h = cardEl.offsetHeight; if (h !== cardH) { cardH = h; layoutCluster(); } }
+    if (!rec) return;
+    const focused = cardEl.contains(document.activeElement) ? (document.activeElement.dataset.act || '') : null;
+    renderCard(rec.item);
+    if (focused !== null) ((focused && cardEl.querySelector(`.act[data-act="${focused}"]`)) || cardEl).focus({ preventScroll: true });
+    const h = cardEl.offsetHeight;
+    if (h !== cardH) { cardH = h; layoutCluster(); }
   }
 
   // ------------------------------------------------------------ modes
@@ -449,9 +533,11 @@
     if (!clusterOn() && typing) blurInput();
     if (!clusterOn() && openKey) closeCard();
     if (m === 'card' && !openKey) {
-      const first = [...live.keys()].find((k) => /^(perm|cp):/.test(k)) || [...live.keys()][0];
-      if (first && first !== '+more') openCard(first);
+      // Only something that waits for the person opens by itself; a finished task's card is opened by a click.
+      const first = [...live.keys()].find((k) => /^(perm|cp):/.test(k));
+      if (first) openCard(first);
     }
+    syncExpand();
   }
 
   /** Main's decision (renderer/adapt.js): mode, opacity and whether clicks pass through. */
@@ -463,6 +549,12 @@
   }
 
   // ------------------------------------------------------------ typing (the segment has focus)
+  /** The expand circle is in the tab order only while it is shown (hover, or typing in the cluster). */
+  function syncExpand() {
+    const shown = (hovering && (mode === 'cluster' || mode === 'card' || mode === 'pill')) || (typing && clusterOn());
+    expand.tabIndex = shown ? 0 : -1;
+  }
+
   function focusInput(opts) {
     if (!clusterOn()) setMode('cluster');
     if (!typing) {
@@ -471,6 +563,7 @@
       if (typeof bridge.islandOpen === 'function' && !(opts && opts.fromMain)) bridge.islandOpen();
       setIgnore(false);
       layoutCluster();
+      syncExpand();
     }
     requestAnimationFrame(() => input.focus());
     setTimeout(() => input.focus(), 60);
@@ -483,6 +576,7 @@
     if (document.activeElement === input) input.blur();
     if (typeof bridge.islandClose === 'function' && !(opts && opts.fromMain)) bridge.islandClose();
     layoutCluster();
+    syncExpand();
   }
 
   // ------------------------------------------------------------ actions
@@ -520,6 +614,7 @@
   function answer(id, allow) {
     if (answered.has(id)) return;
     answered.add(id);
+    capMap(answered);
     bridge.respondPermission(id, allow);
     perms.delete(id);
     changed();
@@ -559,22 +654,25 @@
       case 'permission':
         perms.set(ev.id, { id: ev.id, toolName: ev.toolName, summary: clean(ev.summary || ev.toolName), taskId: ev.taskId || null });
         changed();
-        // an approval opens its card as soon as the cluster is up
-        setTimeout(() => { if (clusterOn() && !openKey && live.has('perm:' + ev.id)) openCard('perm:' + ev.id); }, 120);
+        // an approval opens its card as soon as the cluster is up (over a finished task's card, never over another question)
+        setTimeout(() => {
+          const cur = openKey ? live.get(openKey) : null;
+          if (clusterOn() && (!cur || isResultCard(cur.item)) && live.has('perm:' + ev.id)) openCard('perm:' + ev.id);
+        }, 120);
         break;
       case 'permission-resolved':
         perms.delete(ev.id);
         changed();
         break;
       case 'tool':
-        if (ev.taskId) lastTool.set(ev.taskId, ev.name || '');
+        if (ev.taskId) { lastTool.set(ev.taskId, ev.name || ''); capMap(lastTool); }
         renderIsland();
         break;
       case 'status':
         if (!ev.taskId && ev.text) setFlash(toneLabel(ev.mood), ev.text, toneOf(ev.mood), 4500);
         break;
       case 'done':
-        if (ev.taskId) { results.set(ev.taskId, clip(ev.result || '', 300)); setFlash('Done', taskTitle(ev.taskId) || clip(ev.result, 80) || 'Task finished', 'success', 5000); changed(); }
+        if (ev.taskId) { results.set(ev.taskId, clip(ev.result || '', 300)); capMap(results); setFlash('Done', taskTitle(ev.taskId) || clip(ev.result, 80) || 'Task finished', 'success', 5000); changed(); }
         break;
       case 'error':
         setFlash('Stopped', ev.message || 'The task hit a snag', 'danger', 5000);
@@ -636,13 +734,17 @@
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) { e.preventDefault(); makeGoal(clean(input.value)); return; }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); const text = clean(input.value); if (text) submit(); openFull(); return; }
     if (e.key === 'Enter') { e.preventDefault(); submit(); return; }
-    if (e.key === 'ArrowDown' && live.size) { e.preventDefault(); const keys = [...live.keys()].filter((k) => k !== '+more'); const i = keys.indexOf(openKey); openCard(keys[(i + 1) % keys.length]); }
-    if (e.key === 'ArrowUp' && live.size) { e.preventDefault(); const keys = [...live.keys()].filter((k) => k !== '+more'); const i = keys.indexOf(openKey); openCard(keys[(i - 1 + keys.length) % keys.length]); }
+    if (e.key === 'ArrowDown' && live.size) { e.preventDefault(); cycleCard(1); }
+    if (e.key === 'ArrowUp' && live.size) { e.preventDefault(); cycleCard(-1); }
   });
   // A click on empty glass-free space ends typing (macOS and Windows pass it through instead).
   stage.addEventListener('mousedown', (e) => { if (e.target === stage || e.target === chipsEl) { if (openKey) closeCard(); else blurInput(); } });
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.activeElement !== input) { if (openKey) closeCard(); else blurInput(); } });
-  window.addEventListener('blur', () => { if (typing) blurInput(); });
+  window.addEventListener('blur', () => {
+    if (typing) blurInput();
+    const rec = openKey ? live.get(openKey) : null;
+    if (rec && isResultCard(rec.item)) closeCard();
+  });
   window.addEventListener('resize', () => layoutCluster());
 
   // ------------------------------------------------------------ click-through + hover
@@ -659,6 +761,7 @@
     if (v === hovering) return;
     hovering = v;
     body.classList.toggle('hover', v);
+    syncExpand();
     if (typeof bridge.islandHover === 'function') bridge.islandHover(v);
   }
   window.addEventListener('mousemove', (e) => {
@@ -675,6 +778,7 @@
   body.classList.add(mode);
   setIslandWidth(effectiveWidth());
   renderIsland();
+  syncExpand();
   if (typeof bridge.islandPrefs === 'function') bridge.islandPrefs({ lock: prefs.lock || 'auto' });
   boot();
 })();

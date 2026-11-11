@@ -33,7 +33,7 @@ const DEFAULT_FAST_MODEL = 'haiku'; // a Claude Code model alias; settings.fastM
 // Load every MCP tool up front instead of deferring them behind a ToolSearch step (one model round trip saved on
 // every task). Documented at https://code.claude.com/docs/en/mcp#configure-tool-search ("false: All MCP tools
 // loaded upfront, no deferral"); O_ENABLE_TOOL_SEARCH overrides it (e.g. 'auto' for people with huge MCP setups).
-const TOOL_SEARCH_ENV = { ENABLE_TOOL_SEARCH: process.env.O_ENABLE_TOOL_SEARCH || 'auto' }; // 'auto': ~75 tool schemas are not re-sent on every turn
+const TOOL_SEARCH_ENV = { ENABLE_TOOL_SEARCH: process.env.O_ENABLE_TOOL_SEARCH || 'false' };
 const LOG_CLIP = 2000;
 
 // Permission modes: log = allow everything and record it (default), ask = blocking card, auto = no gating, no record.

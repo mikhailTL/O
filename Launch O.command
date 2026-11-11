@@ -26,7 +26,13 @@ fi
 
 echo "Installing O (first run takes a few minutes)…"
 VLLM="--vllm-url http://127.0.0.1:11434/v1"
-[ -f .o-installed ] || { bash install/install.sh $VLLM && touch .o-installed; } || echo "Installer reported problems above — O will still start; paste any ✗ lines to Claude."
+# The marker is written after the first run whatever the installer reported: a soft step (vLLM not running,
+# screenpipe) must not re-run the whole installer on every launch; the refresh checks below pick up anything
+# that is still missing (app packages, engine packages, Chromium).
+if [ ! -f .o-installed ]; then
+  bash install/install.sh $VLLM || echo "Installer reported problems above — O will still start; paste any ✗ lines to Claude."
+  touch .o-installed
+fi
 
 # Self-update: the latest main before every start (Windows' launcher does the same), then whatever the pull
 # changed gets installed: app packages when package.json moved, engine packages when pyproject did, Playwright's

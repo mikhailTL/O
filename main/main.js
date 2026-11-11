@@ -40,7 +40,6 @@ const IslandGeom = require(path.join(RENDERER, 'islandgeom.js')); // shared with
 const Adapt = require(path.join(RENDERER, 'adapt.js')); // the adaptive rules (modes, placement, the sheet), shared too
 const ISLAND_EXPANDED = { width: IslandGeom.C.EXP_W, height: IslandGeom.C.EXP_H };
 const ISLAND_PROX_MS = 100; // proximity poll (10 Hz), only while the compact Island is on screen
-const CONTEXT_MS = 1200;    // frontmost-window poll: what the user is working in decides the Island's mode and spot
 const BOUNDS_TWEEN_MS = 220; // the window grows/shrinks/slides over this long (ease-out), in step with the glass morph
 const UI_SURFACE = 'job:o-ui'; // GenUI frames on this surface are ui_morph / ui_dock commands from O, not cards
 const UI_REQUEST_MS = 20 * 1000; // how long O's own ui_morph holds before context takes over again
@@ -80,19 +79,11 @@ let rendererIgnore = true; // what the renderer's own hit test wants (macOS/Wind
 let islandMode = 'pill';        // dot | pill | cluster | card | full: what the renderer is showing
 let islandLock = 'auto';        // the user's lock from the right-click menu: auto | dot | pill | cluster
 let islandCardOpen = false;     // the user opened a chip's card in the cluster
-let islandHover = false;        // the cursor is on the glass (cancels click-through)
-let islandDwell = 0;            // when the cursor settled on the cluster (0 = not on it): the nudge rule
-let lastNudgeAt = 0;
-let nudgeOffset = { dx: 0, dy: 0 }; // "actively moving": where the cluster stepped aside to
-let islandClickThrough = false; // the dot over a fullscreen app lets clicks through
-let islandOffset = { dx: 0, dy: 0 }; // where context moved the capsule from its home spot (float layouts)
+let islandHover = false;        // the cursor is on the glass
+let islandOffset = { dx: 0, dy: 0 }; // where ui_dock moved the capsule from its home spot (float layouts)
 let islandEdge = null;          // ui_dock top|bottom: a session override of the position setting
-let frontWin = null;            // { app, title, bounds } of the frontmost window, from the OS
-let frontKey = '';              // last frontWin as a string (debounce)
-let contextTimer = null;
 let setupSvc = null; // main/setup.js service (created lazily by getSetup in the ipc section)
 let getSetupSvc = null;
-let contextBusy = false;
 let uiRequest = null;           // { mode, until, reason }: what O asked for through ui_morph
 let lastAdaptKey = '';
 let boundsTween = null;         // the running window tween { timer }
@@ -478,7 +469,6 @@ function relayoutIsland() {
   islandL = computeIslandLayout();
   sendToIsland({ type: 'island-layout', layout: islandL });
   islandOffset = { dx: 0, dy: 0 };
-  nudgeOffset = { dx: 0, dy: 0 };
   placeIslandWindow({ animate: false });
   applyIslandShape();
   applyIslandLevel();
@@ -541,16 +531,20 @@ function islandProximityTick() {
   // Cursor proximity no longer changes the mode: the cluster woke and shrank as the pointer passed by, which
   // read as glitching. Only a real hover on the glass (renderer mouseenter) or a task changes it.
   cursorDist = d;
-  // "Actively moving": the cursor sits on the cluster without clicking → it steps aside (adapt.nudge).
-  // The step-aside rule is off: stepping away from the cursor read as the UI "running away" and jumping
-  // across the screen. The cluster stays where it is; only O's own ui_dock and the user's drag move it.
-  islandDwell = 0;
 }
 
-/** The whole cluster (circle + segment) in screen px while it is up; the capsule otherwise. */
+/** True while the cluster (circle + segment + chips) is up: the cluster / card modes, or the command bar. */
+function islandClusterUp() { return commandBarOpen || islandMode === 'cluster' || islandMode === 'card'; }
+
+/**
+ * The whole cluster in screen px while it is up; the capsule otherwise. The renderer reports the cluster's
+ * bounding rect (circle, segment, chips, card) as the shape while the cluster is on, so that is used when it
+ * is there; without a report yet, the circle + segment width around the capsule's centre.
+ */
 function islandClusterScreenRect() {
   const r = islandCapsuleScreenRect();
-  if (islandMode !== 'cluster' && islandMode !== 'card') return r;
+  if (!islandClusterUp()) return r;
+  if (islandShape) return r;
   const w = Adapt.C.CIRCLE + Adapt.C.SEG_GAP + Adapt.C.SEG_W;
   return { x: Math.round(r.x + r.width / 2 - w / 2), y: r.y, width: w, height: r.height };
 }
@@ -565,7 +559,7 @@ function setIslandFaded(v) {
 /** Click-through: faded always passes clicks on; otherwise the renderer's hit test decides (macOS/Windows). */
 function applyIslandIgnore() {
   if (!islandWin || islandWin.isDestroyed()) return;
-  const faded = (islandFaded || islandClickThrough) && !commandBarOpen;
+  const faded = islandFaded && !commandBarOpen;
   if (process.platform === 'linux') {
     // No forwarded mouse moves on Linux: faded = an empty input region, otherwise the capsule shape.
     try { islandWin.setIgnoreMouseEvents(faded); } catch (_) {}
@@ -644,9 +638,16 @@ function createIslandWindow() {
       if (process.platform === 'darwin') placeIslandWindow({ animate: false });
     }
     syncIslandProximity();
-    // The frontmost-window poll is off: the Island keeps one spot and one shape unless the user hovers or
+    // There is no frontmost-window poll: the Island keeps one spot and one shape unless the user hovers or
     // clicks it, a task runs, or O asks for a shape itself (ui_morph / ui_dock).
     applyAdapt('ready');
+  });
+  // A renderer reload (crash, devtools) starts with no card open: the mode must not stay stuck in 'card'.
+  islandWin.webContents.on('did-finish-load', () => {
+    islandCardOpen = false;
+    islandShape = null;
+    lastAdaptKey = '';
+    applyAdapt('renderer loaded');
   });
   applyIslandLevel(); // Windows: 'screen-saver' (float mode), the highest level, so the capsule stays over fullscreen apps where DWM allows
   // Not on fullscreen Spaces: a fullscreen app (video, game, presentation) has the screen to itself.
@@ -655,7 +656,7 @@ function createIslandWindow() {
   applyIslandShape();
   // Spotlight behaviour: clicking anywhere else collapses the command bar.
   islandWin.on('blur', () => { if (commandBarOpen) closeCommandBar({ notify: true }); });
-  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; syncIslandProximity(); stopContextPoll(); });
+  islandWin.on('closed', () => { islandWin = null; commandBarOpen = false; syncIslandProximity(); });
   islandWin.on('hide', () => syncIslandProximity());
   islandWin.on('show', () => syncIslandProximity());
   // Displays change (resolution, the menu bar or the Dock, a monitor plugged or unplugged): lay out again.
@@ -671,8 +672,7 @@ function createIslandWindow() {
 function openCommandBar({ notify = false } = {}) {
   if (!islandWin || islandWin.isDestroyed()) createIslandWindow();
   clearTimeout(islandShrinkTimer);
-  commandBarOpen = true;
-  islandMode = 'bar';
+  commandBarOpen = true; // islandMode stays what adapt decided; islandClusterUp() reads the bar from this flag
   syncIslandProximity(); // no fade while the bar is open
   applyIslandIgnore();
   placeIslandWindow(); // grows to the bar's footprint as the glass morphs
@@ -702,144 +702,11 @@ function closeCommandBar({ notify = false } = {}) {
 }
 
 // ---------------------------------------------------------------- the adaptive Island
-// Every CONTEXT_MS main asks the OS for the frontmost window (name, title, bounds) and, with the cursor, the
-// tasks and the approvals, lets renderer/adapt.js decide the mode and the spot. Nothing here ever focuses a
-// window: the Island is shown with showInactive and only the user's own click or shortcut opens the bar.
-
-function startContextPoll() {
-  if (contextTimer) return;
-  contextTimer = setInterval(contextTick, CONTEXT_MS);
-  if (contextTimer.unref) contextTimer.unref();
-  contextTick();
-}
-function stopContextPoll() { if (contextTimer) { clearInterval(contextTimer); contextTimer = null; } stopWinFrontmostFeed(); }
-// Windows frontmost-window feed: one hidden PowerShell process for the app's lifetime, restarted (at most once a
-// minute) if it dies. winFrontmostLine() is the latest "app\ttitle\tx\ty\tw\th" line, '' before the first one.
-let winFront = { child: null, line: '', buf: '', startedAt: 0 };
-function winFrontmostLine() {
-  if (!winFront.child && Date.now() - winFront.startedAt > 60000) startWinFrontmostFeed();
-  return winFront.line;
-}
-function startWinFrontmostFeed() {
-  winFront.startedAt = Date.now();
-  const ps = [
-    '$s=@"',
-    'using System;using System.Runtime.InteropServices;using System.Text;',
-    'public class W{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
-    '[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);',
-    '[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetWindowTextW(IntPtr h,StringBuilder s,int n);',
-    '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);',
-    '[StructLayout(LayoutKind.Sequential)]public struct R{public int L,T,Rt,B;}}',
-    '"@;Add-Type $s;$last="";',
-    'while($true){',
-    '$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;',
-    '$sb=New-Object System.Text.StringBuilder 512;[W]::GetWindowTextW($h,$sb,512)|Out-Null;',
-    '$id=0;[W]::GetWindowThreadProcessId($h,[ref]$id)|Out-Null;$n="";try{$n=(Get-Process -Id $id -ErrorAction Stop).ProcessName}catch{};',
-    '$l="$n`t$($sb.ToString())`t$($r.L)`t$($r.T)`t$($r.Rt-$r.L)`t$($r.B-$r.T)";',
-    'if($l -ne $last){$last=$l;[Console]::Out.WriteLine($l);[Console]::Out.Flush()}',
-    `Start-Sleep -Milliseconds ${CONTEXT_MS}}`,
-  ].join('\n');
-  let child;
-  try {
-    child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (_) { return; }
-  winFront.child = child;
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (d) => {
-    winFront.buf += d;
-    const parts = winFront.buf.split(/\r?\n/);
-    winFront.buf = parts.pop();
-    const last = parts.filter(Boolean).pop();
-    if (last) winFront.line = last.trim();
-  });
-  const gone = () => { if (winFront.child === child) winFront.child = null; };
-  child.on('error', gone);
-  child.on('close', gone);
-  if (child.unref) child.unref();
-}
-function stopWinFrontmostFeed() { try { if (winFront.child) winFront.child.kill(); } catch (_) {} winFront.child = null; }
-
-
-async function contextTick() {
-  if (contextBusy || !islandWin || islandWin.isDestroyed() || !islandWin.isVisible()) return;
-  contextBusy = true;
-  try {
-    const f = await frontmostWindow();
-    const key = f ? `${f.app}|${f.title}|${f.bounds ? [f.bounds.x, f.bounds.y, f.bounds.width, f.bounds.height].join(',') : ''}` : '';
-    if (key !== frontKey) { frontKey = key; frontWin = f; nudgeOffset = { dx: 0, dy: 0 }; applyAdapt('frontmost changed'); }
-  } catch (_) { /* best-effort */ } finally { contextBusy = false; }
-}
-
-/** Run one short OS command with a hard timeout; resolves its stdout or ''. */
-function runCapture(cmd, args, ms = 900) {
-  return new Promise((resolve) => {
-    let out = '';
-    let child;
-    try { child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (_) { resolve(''); return; }
-    const t = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(out); }, ms);
-    child.stdout.on('data', (d) => { out += d; if (out.length > 8192) { try { child.kill(); } catch (_) {} } });
-    child.on('error', () => { clearTimeout(t); resolve(''); });
-    child.on('close', () => { clearTimeout(t); resolve(out); });
-  });
-}
-
-/** The frontmost window as { app, title, bounds } (bounds may be null), or null when the OS will not say. */
-async function frontmostWindow() {
-  const own = /^(O|O AI|Electron|electron)$/i;
-  if (process.platform === 'darwin') {
-    // System Events: the frontmost process and its front window. Needs Automation consent once; fails quietly.
-    const script = [
-      'tell application "System Events"',
-      'set p to first process whose frontmost is true',
-      'set n to name of p',
-      'try',
-      'set w to front window of p',
-      'set {x, y} to position of w',
-      'set {wd, ht} to size of w',
-      'set t to name of w',
-      'return n & tab & t & tab & x & tab & y & tab & wd & tab & ht',
-      'on error',
-      'return n & tab & tab & tab & tab & tab',
-      'end try',
-      'end tell',
-    ].join('\n');
-    const out = await runCapture('osascript', ['-e', script], 1000);
-    const [app, title, x, y, w, h] = String(out).trim().split('\t');
-    if (!app || own.test(app)) return null;
-    const b = [x, y, w, h].map(Number);
-    return { app, title: title || '', bounds: b.every(Number.isFinite) && b[2] > 0 ? { x: b[0], y: b[1], width: b[2], height: b[3] } : null };
-  }
-  if (process.platform === 'win32') {
-    // One long-lived hidden PowerShell loop (user32 GetForegroundWindow / GetWindowRect / GetWindowTextW, the
-    // process name) prints a line every CONTEXT_MS; spawning a fresh powershell.exe per tick would compile the
-    // Add-Type every time and keep a CPU core busy, which once starved the engine's own start-up.
-    const line = winFrontmostLine();
-    if (!line) return null;
-    const [app, title, x, y, w, h] = line.split('\t');
-    if (!app || own.test(app)) return null;
-    const b = [x, y, w, h].map(Number);
-    // GetWindowRect is in physical px; Electron's screen is in DIPs: scale by the display under the window.
-    let bounds = b.every(Number.isFinite) && b[2] > 0 ? { x: b[0], y: b[1], width: b[2], height: b[3] } : null;
-    if (bounds) {
-      try { bounds = screen.screenToDipRect(null, bounds); } catch (_) {}
-    }
-    return { app, title: title || '', bounds };
-  }
-  if (process.platform === 'linux') {
-    // xdotool when present (X11); Wayland and a missing tool give nothing, and the Island keeps its home spot.
-    const id = (await runCapture('xdotool', ['getactivewindow'], 600)).trim();
-    if (!/^\d+$/.test(id)) return null;
-    const [name, geo] = await Promise.all([runCapture('xdotool', ['getwindowname', id], 600), runCapture('xdotool', ['getwindowgeometry', '--shell', id], 600)]);
-    const g = {};
-    for (const line of String(geo).split('\n')) { const m = /^(\w+)=(\d+)/.exec(line); if (m) g[m[1]] = Number(m[2]); }
-    const title = String(name).trim();
-    if (own.test(title)) return null;
-    // xdotool has no process name: the title's last segment is usually the app ("… - Firefox").
-    const app = (title.split(/\s[-–—]\s/).pop() || title).trim();
-    return { app, title, bounds: Number.isFinite(g.WIDTH) && g.WIDTH > 0 ? { x: g.X || 0, y: g.Y || 0, width: g.WIDTH, height: g.HEIGHT || 0 } : null };
-  }
-  return null;
-}
+// On every change main knows about (hover, typing, the dashboard, a card, a task, an approval, a lock, a
+// ui_morph) renderer/adapt.js decides the mode. There is no frontmost-window poll: asking the OS for the active
+// window every second and following it made the Island jump, so the cluster keeps one spot and one shape.
+// Nothing here ever focuses a window: the Island is shown with showInactive and only the user's own click or
+// shortcut opens the bar.
 
 /** Is there a status line worth a pill (a flash, a queue, a goal) beyond "Ready"? The renderer owns the words. */
 function islandHasStatus() {
@@ -853,7 +720,6 @@ function applyAdapt(why) {
   if (!islandWin || islandWin.isDestroyed()) return;
   const L = currentIslandLayout();
   const display = screen.getDisplayMatching(L.compact);
-  const front = frontWin;
   const now = Date.now();
   if (uiRequest && uiRequest.until < now) uiRequest = null;
   const ctx = {
@@ -861,22 +727,15 @@ function applyAdapt(why) {
     approvalPending: pendingPerms.size > 0 || !!(goals && goals.pendingCards && goals.pendingCards().length),
     taskRunning: !!(tasks && tasks.running().length), hasStatus: islandHasStatus(),
     hasChips: !!(tasks && tasks.list().some((t) => t.status === 'running' || t.status === 'queued' || (t.endedAt && Date.now() - t.endedAt < 10 * 60 * 1000))),
-    cursorDist: Infinity, hover: islandHover, front: null, display,
+    cursorDist: Infinity, hover: islandHover,
   };
   let d = Adapt.decideMode(ctx);
   // O's own request (ui_morph) holds for a while unless the user is typing, has the dashboard open or something waits for them.
   if (uiRequest && !ctx.focused && !ctx.fullOpen && !ctx.approvalPending && islandLock === 'auto') d = { mode: uiRequest.mode, opacity: 1, clickThrough: false, reason: 'ui_morph: ' + (uiRequest.reason || '') };
-  // Where: hug the active window's top edge, below its title bar (float layouts only; the menu bar / notch strip
-  // is its own place), plus the step aside the nudge rule took.
+  // Where: the home spot, shifted along the edge by ui_dock (float layouts only; the menu bar / notch strip is
+  // its own place).
   let off = { dx: 0, dy: 0 };
   if (L.mode === 'float' && !ctx.focused) {
-    const capW = (d.mode === 'cluster' || d.mode === 'card') ? Adapt.C.CIRCLE + Adapt.C.SEG_GAP + Adapt.C.SEG_W : (islandShape ? islandShape.width : L.minW);
-    const cap = IslandGeom.capsuleRect(L, capW);
-    const home = { cx: L.compact.x + cap.x + cap.width / 2, cy: L.compact.y + cap.y + cap.height / 2 };
-    // Window-hugging is off for the same reason as the nudge: the cluster keeps its home spot and only
-    // yields to a fullscreen app (mode dot, decideMode) rather than chasing every window change.
-    off = { dx: 0, dy: 0 };
-    void home; void cap;
     if (islandEdge && islandOffsetUser) off.dx += islandOffsetUser;
     // keep the footprint on the display
     const wa = display.workArea;
@@ -888,7 +747,6 @@ function applyAdapt(why) {
   if (key !== lastAdaptKey) {
     lastAdaptKey = key;
     islandMode = d.mode;
-    islandClickThrough = !!d.clickThrough;
     sendToIsland({ type: 'island-mode', mode: d.mode, opacity: d.opacity, clickThrough: d.clickThrough, reason: d.reason + (why ? ` (${why})` : '') });
     applyIslandIgnore();
   }
@@ -1705,8 +1563,8 @@ function registerIpc() {
   ipcMain.on('island:open', () => openCommandBar());
   ipcMain.on('island:close', () => closeCommandBar());
   // the adaptive Island
-  ipcMain.on('island:hover', (_e, v) => { islandHover = !!v; if (!v) islandDwell = 0; applyAdapt('hover'); });
-  ipcMain.on('island:card', (_e, v) => { islandCardOpen = !!v; islandDwell = 0; applyAdapt('card'); });
+  ipcMain.on('island:hover', (_e, v) => { islandHover = !!v; applyAdapt('hover'); });
+  ipcMain.on('island:card', (_e, v) => { islandCardOpen = !!v; applyAdapt('card'); });
   ipcMain.on('island:prefs', (_e, p) => {
     if (!p || typeof p !== 'object') return;
     if (Adapt.LOCKS.includes(p.lock)) islandLock = p.lock;

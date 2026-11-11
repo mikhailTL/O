@@ -278,10 +278,21 @@ class EvolveClock extends EventEmitter {
     this.wasAway = false;
     this.busy = false;
     this.last = null;
+    this.lastError = null; // { message, since, count, at } while the engine cannot be reached; null once a status arrives
     this._timer = null;
   }
 
   enabled() { return this.getSettings().evolveEnabled !== false; }
+
+  /** Record an engine/tick failure: the same message counts up instead of repeating; emits 'error' with the record. */
+  _fail(err) {
+    const message = String((err && err.body && err.body.detail) || (err && err.message) || err || 'engine not reachable').slice(0, 300);
+    const prev = this.lastError;
+    const repeat = !!(prev && prev.message === message);
+    this.lastError = { message, since: repeat ? prev.since : this.now(), count: repeat ? prev.count + 1 : 1, at: this.now(), first: !repeat };
+    this.emit('error', err, this.lastError);
+    return this.lastError;
+  }
 
   /** Due when enabled and the interval for the current presence has passed (or presence just turned away). */
   due() {
@@ -300,7 +311,7 @@ class EvolveClock extends EventEmitter {
       await this.call('POST', '/evolve/tick', { presence: this.isAway() ? 'away' : 'active', force_scan: !!force }, 15000);
       return await this.refresh();
     } catch (err) {
-      this.emit('error', err);
+      this._fail(err);
       return null;
     } finally {
       this.busy = false;
@@ -311,9 +322,10 @@ class EvolveClock extends EventEmitter {
     try {
       const st = await this.call('GET', '/evolve/status', null, 10000);
       this.last = st;
+      if (this.lastError) { const was = this.lastError; this.lastError = null; this.emit('recovered', was); }
       this.emit('status', st);
       return st;
-    } catch (err) { this.emit('error', err); return null; }
+    } catch (err) { this._fail(err); return null; }
   }
 
   check() { if (this.due()) return this.tick(); return null; }

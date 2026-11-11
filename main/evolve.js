@@ -21,15 +21,29 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
   const rolling = new Set();
   let lastStatus = null;
   let lastCheck = 0;
+  let engineError = null; // { message, since, count } while ticks fail; shown in the Evolution view, logged once per message
   const now = () => (c.now ? c.now() : Date.now());
 
   c.on('status', (st) => { onStatus(st).catch(() => {}); });
-  c.on('error', () => {}); // engine not running yet: the next poll retries
+  // A failing tick or status read is logged once per distinct message (not every poll) and shows in status as
+  // engine_error; the next poll retries. Clears, with one line, when the engine answers again.
+  c.on('error', (err, rec) => {
+    const message = String((rec && rec.message) || (err && err.body && err.body.detail) || (err && err.message) || err || 'engine not reachable').slice(0, 300);
+    const changed = !engineError || engineError.message !== message;
+    engineError = { message, since: changed ? now() : engineError.since, count: changed ? 1 : engineError.count + 1 };
+    if (changed) log('note', `Evolution paused: O's engine did not answer (${message})`, { error: message, kind: 'evolve_tick' });
+    broadcast({ type: 'evolve', status: { ...(lastStatus || {}), engine_error: engineError } });
+  });
+  c.on('recovered', (was) => {
+    engineError = null;
+    log('note', `Evolution resumed: the engine answers again (after ${was && was.count ? was.count : 1} failed check${was && was.count === 1 ? '' : 's'})`, { kind: 'evolve_tick' });
+  });
 
   async function onStatus(st) {
     if (!st || typeof st !== 'object') return;
-    lastStatus = st;
-    broadcast({ type: 'evolve', status: st });
+    engineError = null;
+    lastStatus = { ...st, engine_error: null };
+    broadcast({ type: 'evolve', status: lastStatus });
     const up = getUpdater();
     if (!up) return;
     const awaiting = st.awaiting_install || [];
@@ -102,8 +116,8 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
       engineCall('GET', `/evolve/feed?hours=${Math.max(1, Math.min(720, Number(hours) || 48))}`, null, 10000),
       engineCall('GET', '/evolve/proposals', null, 10000),
       ]);
-    } catch (err) { return failed(err); }
-    return { ok: true, feed: f.feed || [], skills: f.skills || [], status: f.status || lastStatus || {}, proposals: p.proposals || [] };
+    } catch (err) { return { ...failed(err), engine_error: engineError }; }
+    return { ok: true, feed: f.feed || [], skills: f.skills || [], status: { ...(f.status || lastStatus || {}), engine_error: engineError }, proposals: p.proposals || [] };
   }
 
   const pid = (id) => encodeURIComponent(String(id || '').slice(0, 128));
@@ -128,7 +142,8 @@ function createEvolveHost({ getSettings, isAway = () => false, isBusy = () => fa
     skill: (id, approve) => post(`/evolve/skills/${pid(id)}/${approve ? 'approve' : 'reject'}`, {}, 600000), // approve fetches + sandbox-tests
     uninstall: (id) => post(`/evolve/skills/${pid(id)}/uninstall`, {}, 30000),
     scanNow: () => c.tick({ force: true }),
-    status: () => lastStatus,
+    status: () => (lastStatus || engineError ? { ...(lastStatus || {}), engine_error: engineError } : null),
+    engineError: () => engineError,
   };
 }
 

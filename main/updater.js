@@ -2,11 +2,18 @@
 // O self-updater (no dependencies).
 //
 // Source: a GitHub repo + branch + sub-folder (settings: updateRepo, updateBranch, updatePath,
-// optional updateToken for private repos). It compares the latest commit on that branch with
-// the commit recorded in <appDir>/.o-install.json, downloads the tarball for that commit,
-// copies the sub-folder's files over the app (never touching node_modules or your settings,
-// which live in the app-data folder), removes files the new version no longer has, runs
-// `npm install` if dependencies changed, then relaunches.
+// optional updateToken for private repos).
+//
+// Two kinds of install:
+//   * a git checkout (<appDir>/.git exists: the launchers and the installers clone O): `check()` compares
+//     `git rev-parse HEAD` with the branch head on GitHub and `apply()` runs `git pull --ff-only`. The
+//     tarball copy is never used here: files written over a checkout leave the tree dirty, after which every
+//     later `git pull --ff-only` (the launchers run one on every start) fails quietly.
+//   * anything else (a downloaded folder): the updater compares the latest commit on that branch with the
+//     commit recorded in <appDir>/.o-install.json, downloads the tarball for that commit, copies the
+//     sub-folder's files over the app (never touching node_modules or your settings, which live in the
+//     app-data folder), removes files the new version no longer has, runs `npm install` if dependencies
+//     changed, then relaunches.
 //
 // Evolve (plan L): `rollback(ref)` installs an earlier tag/commit and pins it, so the update check stops
 // offering the release that was undone until the branch moves past it. `trackEvolve(list)` tells the updater
@@ -202,6 +209,21 @@ function installFiles(appDir, files, sha, extra = {}) {
   };
 }
 
+/** Run git in appDir; resolves { ok, out, err } (never rejects; a missing git is ok:false). */
+function git(appDir, args, ms = 30000) {
+  return new Promise((resolve) => {
+    let out = '', err = '', child;
+    try { child = spawn('git', args, { cwd: appDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }); } catch (e) { resolve({ ok: false, out: '', err: e.message }); return; }
+    const t = setTimeout(() => { try { child.kill(); } catch (_) {} }, ms);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { clearTimeout(t); resolve({ ok: false, out, err: e.message }); });
+    child.on('close', (code) => { clearTimeout(t); resolve({ ok: code === 0, out: out.trim(), err: err.trim() }); });
+  });
+}
+
+const isGitInstall = (appDir) => { try { return fs.existsSync(path.join(appDir, '.git')); } catch (_) { return false; } };
+
 function npmInstall(appDir) {
   return new Promise((resolve) => {
     let tail = '';
@@ -245,10 +267,15 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
   };
   const manifestFile = path.join(appDir, MANIFEST);
   const manifest = () => readJson(manifestFile) || {};
+  const gitInstall = isGitInstall(appDir);
+  let gitHead = null; // a git checkout: HEAD, refreshed by every check / apply
   const installed = () => {
+    if (gitInstall && gitHead) return gitHead;
     const m = readJson(manifestFile);
     return m && m.sha ? m.sha : null;
   };
+  const refreshHead = async () => { const r = await git(appDir, ['rev-parse', 'HEAD'], 10000); gitHead = r.ok && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; return gitHead; };
+  if (gitInstall) refreshHead();
   const writeManifest = (patch) => {
     const m = { ...manifest(), ...patch };
     for (const k of Object.keys(m)) if (m[k] === undefined) delete m[k];
@@ -300,8 +327,18 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
       if (!quiet) emit({ state: 'checking', message: 'Checking for updates…' });
       const c = cfg();
       const sha = await latest(c);
+      if (gitInstall) await refreshHead();
       const have = installed();
       if (have && have === sha) return emit({ state: 'current', sha, message: 'O is up to date.' });
+      if (gitInstall && have) {
+        // Only a checkout that is strictly behind the branch head is offered the pull: a copy with its own
+        // commits or on another branch (HEAD not an ancestor of the head, even after a fetch) is left alone.
+        const behind = async () => (await git(appDir, ['merge-base', '--is-ancestor', have, sha], 10000)).ok;
+        if (!(await behind())) {
+          await git(appDir, ['fetch', '-q', 'origin', c.branch], 60000);
+          if (!(await behind())) return emit({ state: 'current', sha, installed: have, message: 'O is up to date (this copy is not behind the branch).' });
+        }
+      }
       const pin = manifest().pinned;
       if (pin && pin.skip === sha) return emit({ state: 'pinned', sha, installed: have, pinned: pin, message: 'O is staying on the earlier version after an upgrade was undone.' });
       const evolve = tracked.length ? await containedEvolve(c, sha) : [];
@@ -324,6 +361,7 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
     working = true;
     try {
       const c = cfg();
+      if (gitInstall) return await applyGit(c);
       emit({ state: 'downloading', message: 'Downloading the update…' });
       const sha = await latest(c);
       const res = await request(`${api}/repos/${c.repo}/tarball/${sha}`, { headers: ghHeaders(c), timeoutMs: 180000 });
@@ -354,6 +392,57 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
     }
   }
 
+  /** A git checkout updates with `git pull --ff-only`: the tree stays a clean checkout the launchers can pull. */
+  async function applyGit(c) {
+    emit({ state: 'downloading', message: 'Pulling the latest O…' });
+    const prev = (await refreshHead()) || installed();
+    const dirty = await git(appDir, ['status', '--porcelain', '--untracked-files=no'], 15000);
+    if (dirty.ok && dirty.out) return emit({ state: 'manual', message: 'O\'s folder has local changes, so it cannot be pulled over. Commit or discard them (`git status` in O\'s folder), then update again.', output: dirty.out.slice(0, 2000) });
+    const oldPkg = readJson(path.join(appDir, 'package.json'));
+    const pull = await git(appDir, ['pull', '-q', '--ff-only', 'origin', c.branch], 120000);
+    if (!pull.ok) return emit({ state: 'manual', message: 'git pull --ff-only did not go through. Run `git pull --ff-only origin ' + c.branch + '` in O\'s folder and read its message.', output: (pull.err || pull.out).slice(0, 2000) });
+    const sha = (await refreshHead()) || prev;
+    emit({ state: 'installing', message: 'Installing the update…' });
+    const shippedEvolve = (tracked.length ? await containedEvolve(c, sha) : []).map((e) => ({ id: e.id, release: e.release || e.merge_sha || sha, previous: prev || e.previous || '' }));
+    const carry = { sha, previous: prev && prev !== sha ? prev : manifest().previous, updatedAt: new Date().toISOString(), pinned: undefined };
+    if (shippedEvolve.length) carry.evolveShipped = [...(manifest().evolveShipped || []), ...shippedEvolve];
+    writeManifest(carry);
+    const newPkg = readJson(path.join(appDir, 'package.json'));
+    if (depsKey(oldPkg) !== depsKey(newPkg)) {
+      const eo = oldPkg && oldPkg.devDependencies && oldPkg.devDependencies.electron, en = newPkg && newPkg.devDependencies && newPkg.devDependencies.electron;
+      if (eo !== en) return emit({ state: 'manual', sha, message: 'Update pulled. It needs a new Electron: quit O, run `npm install` in O\'s folder, then `npm start`.' });
+      emit({ state: 'installing', message: 'Updating dependencies (npm install)…' });
+      const n = await npmInstall(appDir);
+      if (!n.ok) return emit({ state: 'manual', sha, message: 'Files updated, but `npm install` failed. Quit O, run `npm install` in O\'s folder, then `npm start`.', output: n.output });
+    }
+    emit({ state: 'restarting', sha, version: newPkg && newPkg.version, message: 'Updated! Restarting O…' });
+    setTimeout(relaunch, 1200);
+    return state;
+  }
+
+  /** A git checkout rolls back with `git reset --hard <sha>` (a clean tree only) and pins the undone head. */
+  async function rollbackGit(c, target, { reason, evolveId }) {
+    emit({ state: 'downloading', message: 'Going back to the earlier version…' });
+    const dirty = await git(appDir, ['status', '--porcelain', '--untracked-files=no'], 15000);
+    if (dirty.ok && dirty.out) throw new Error('O\'s folder has local changes; commit or discard them before rolling back.');
+    await git(appDir, ['fetch', '-q', '--tags', 'origin'], 60000);
+    const rev = await git(appDir, ['rev-parse', '--verify', `${target}^{commit}`], 10000);
+    if (!rev.ok) throw new Error('Nothing to roll back to: no earlier version is recorded.');
+    const sha = rev.out;
+    let head = '';
+    try { head = await latest(c); } catch (_) { head = installed() || ''; }
+    const oldPkg = readJson(path.join(appDir, 'package.json'));
+    const reset = await git(appDir, ['reset', '-q', '--hard', sha], 60000);
+    if (!reset.ok) throw new Error('git reset --hard failed: ' + (reset.err || reset.out).slice(0, 300));
+    await refreshHead();
+    writeManifest({ sha, previous: manifest().sha && manifest().sha !== sha ? manifest().sha : manifest().previous, pinned: { ref: target, sha, skip: head, reason: String(reason).slice(0, 300), evolveId: String(evolveId || ''), at: new Date().toISOString() } });
+    const newPkg = readJson(path.join(appDir, 'package.json'));
+    if (depsKey(oldPkg) !== depsKey(newPkg)) await npmInstall(appDir);
+    emit({ state: 'restarting', sha, rolledBack: true, message: 'Went back to the earlier version. Restarting O…' });
+    setTimeout(relaunch, 1200);
+    return state;
+  }
+
   /**
    * Install an earlier release (tag or commit; default: the version installed before the current one) and
    * pin it: the check stops offering the current branch head until the branch moves past it.
@@ -366,6 +455,7 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
     try {
       const c = cfg();
       const target = String(ref || manifest().previous || '').trim();
+      if (gitInstall) return await rollbackGit(c, target, { reason, evolveId });
       emit({ state: 'downloading', message: 'Going back to the earlier version…' });
       const sha = await resolveRef(c, target);
       let head = '';
@@ -386,7 +476,7 @@ function createUpdater({ appDir, getSettings, onEvent, relaunch, isBusy = () => 
   }
 
   return {
-    check, apply, rollback, get state() { return state; }, installedSha: installed,
+    check, apply, rollback, get state() { return state; }, installedSha: installed, isGitInstall: () => gitInstall,
     /** Approved upgrades to look for in the next update: [{id, title, merge_sha, release, previous, by}]. */
     trackEvolve(list) { tracked = (Array.isArray(list) ? list : []).filter((t) => t && typeof t.id === 'string').slice(0, 50); return tracked.length; },
     tracked: () => tracked.slice(),

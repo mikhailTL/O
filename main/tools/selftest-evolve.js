@@ -149,6 +149,24 @@ function fakeGitHub(state) {
     check(clock.due(), 'away: short interval');
     enabled = false;
     check(!clock.due(), 'disabled: never due');
+
+    // engine errors: counted per message, emitted with a record, cleared (with 'recovered') when a status arrives
+    let fail = true;
+    const errs = [];
+    const bad = new EvolveClock({
+      getSettings: () => ({ evolveEnabled: true }), isAway: () => false, now: () => now,
+      call: async (m, p) => { if (fail) { const e = new Error('ECONNREFUSED 127.0.0.1:7777'); throw e; } return p === '/evolve/status' ? { enabled: true } : { ok: true }; },
+      activeMs: 1000, awayMs: 100, firstMs: 50,
+    });
+    bad.on('error', (e, rec) => errs.push(rec));
+    let recovered = null;
+    bad.on('recovered', (was) => { recovered = was; });
+    await bad.tick(); await bad.tick(); await bad.tick();
+    check(errs.length === 3 && errs[0].count === 1 && errs[2].count === 3 && errs[0].first === true && errs[2].first === false, 'tick failures are counted, the first one flagged');
+    check(bad.lastError && /ECONNREFUSED/.test(bad.lastError.message) && bad.lastError.since === errs[0].since, 'clock keeps lastError with when it started');
+    fail = false;
+    await bad.tick();
+    check(bad.lastError === null && recovered && recovered.count === 3, 'a successful status clears the error and emits recovered');
   }
 
   // ---------------------------------------------------------------- updater: rollback, pin, evolve tracking
@@ -242,6 +260,28 @@ function fakeGitHub(state) {
     const bad = createEvolveHost({ getSettings: () => ({}), clock, getUpdater: () => null, engineCall: async () => { const e = new Error('409'); e.status = 409; e.body = { detail: 'cannot approve' }; throw e; } });
     const r2 = await bad.approve('x');
     check(r2.ok === false && r2.error === 'cannot approve', 'engine refusal surfaces as a calm error');
+
+    // engine/tick errors reach the action log once per distinct message and show up in status, not swallowed
+    const logged = [];
+    const sent = [];
+    const eclock = new EventEmitter();
+    eclock.refresh = async () => null; eclock.start = () => {}; eclock.stop = () => {}; eclock.now = () => 5e9;
+    const eh = createEvolveHost({ getSettings: () => ({}), clock: eclock, getUpdater: () => null, engineCall: async () => ({ feed: [], proposals: [] }), log: (k, m, d) => logged.push([k, m, d]), broadcast: (b) => sent.push(b) });
+    check(eh.status() === null && eh.engineError() === null, 'no error before the first tick');
+    eclock.emit('error', new Error('connect ECONNREFUSED'));
+    eclock.emit('error', new Error('connect ECONNREFUSED'));
+    eclock.emit('error', new Error('connect ECONNREFUSED'));
+    check(logged.length === 1 && /engine did not answer \(connect ECONNREFUSED\)/.test(logged[0][1]) && logged[0][2].kind === 'evolve_tick', 'the same engine error is logged once, not every tick');
+    check(eh.engineError().count === 3 && eh.status().engine_error.message === 'connect ECONNREFUSED', 'status carries engine_error with a count');
+    check(sent.length === 3 && sent[2].status.engine_error.count === 3, 'each failure is broadcast with the error for the panel');
+    eclock.emit('error', { body: { detail: 'claude not logged in' } });
+    check(logged.length === 2 && /claude not logged in/.test(logged[1][1]), 'a different message is logged again');
+    const v = await eh.view();
+    check(v.ok && v.status.engine_error && v.status.engine_error.message === 'claude not logged in', 'the Evolution view sees the error');
+    await eh.onStatus({ enabled: true });
+    check(eh.engineError() === null && eh.status().engine_error === null, 'a status from the engine clears the error');
+    eclock.emit('recovered', { count: 4 });
+    check(/Evolution resumed/.test(logged[logged.length - 1][1]), 'recovery is logged once');
   }
 
   // ---------------------------------------------------------------- bridge tools (read-only)

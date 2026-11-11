@@ -44,10 +44,13 @@ VENV="$ROOT/engine/.venv"
 VENV_PY="$VENV/bin/python"
 VENV_PIP="$VENV/bin/pip"
 FAILED=()
+SOFT=()
 
 # ---------- helpers ----------
 ok()   { echo "✓ $1"; }
 fail() { echo "✗ $1 — $2"; FAILED+=("$1"); }
+# soft: optional pieces (vLLM, screenpipe) that are reported but never fail the install
+soft() { echo "○ $1 — $2"; SOFT+=("$1"); }
 
 # run <cmd...> : runs the command, or prints it in DRY mode
 run() {
@@ -198,6 +201,7 @@ step_venv_engine() {
   fi
   run "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
   if run "$VENV_PY" -m pip install -e "$ROOT/engine"; then
+    [ "$DRY" = "1" ] || touch "$VENV/.o-installed" # the launchers compare this with pyproject.toml before re-running pip
     ok "engine venv + pip install -e engine"
   else
     fail "engine venv" "run '$VENV_PY -m pip install -e $ROOT/engine' and read its errors"
@@ -267,16 +271,16 @@ step_vllm_url() {
       ok "vllm (remote URL)"
       return
     fi
-    fail "vllm" "no vLLM URL given; start one with '$VLLM_DOCKER' and run this script again with --vllm-url http://<host>:8000/v1"
+    soft "vllm" "no vLLM URL given; start one with '$VLLM_DOCKER' and run this script again with --vllm-url http://<host>:8000/v1"
     return
   fi
   case "$url" in
     http://*|https://*) ;;
-    *) fail "vllm" "'$url' is not an http(s) URL; pass e.g. --vllm-url http://gpu-box:8000/v1"; return ;;
+    *) soft "vllm" "'$url' is not an http(s) URL; pass e.g. --vllm-url http://gpu-box:8000/v1"; return ;;
   esac
   url="${url%/}"
   if ! set_setting vllmUrl "$url"; then
-    fail "vllm" "could not write vllmUrl to $(settings_file); set Settings → Engine → vLLM URL to $url by hand"
+    soft "vllm" "could not write vllmUrl to $(settings_file); set Settings → Engine → vLLM URL to $url by hand"
     return
   fi
   if [ "$DRY" = "1" ]; then
@@ -285,20 +289,20 @@ step_vllm_url() {
   elif curl -fsS --max-time 10 "$url/models" >/dev/null 2>&1; then
     ok "vllm (remote URL $url saved as vllmUrl, reachable)"
   else
-    fail "vllm" "saved vllmUrl=$url but $url/models did not answer; start the server ($VLLM_DOCKER) and run this script again"
+    soft "vllm" "saved vllmUrl=$url but $url/models did not answer; start the server ($VLLM_DOCKER) and run this script again"
   fi
 }
 
 step_vllm() {
   if [ "$OS" = "Linux" ] && command -v nvidia-smi >/dev/null 2>&1; then
     if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
-      fail "vllm" "skipped: engine venv missing"
+      soft "vllm" "skipped: engine venv missing"
       return
     fi
     if run "$VENV_PY" -m pip install vllm; then
       ok "vllm (local; start it with '$VENV_PY -m vllm.entrypoints.openai.api_server --model <vllmModel> --port 8000')"
     else
-      fail "vllm" "run '$VENV_PY -m pip install vllm' and read its errors, or run this script with --vllm-url pointing at a remote vLLM"
+      soft "vllm" "run '$VENV_PY -m pip install vllm' and read its errors, or run this script with --vllm-url pointing at a remote vLLM"
     fi
     [ -n "$VLLM_URL_ARG" ] && step_vllm_url
   else
@@ -322,7 +326,7 @@ step_screenpipe() {
   if curl -fsSL get.screenpi.pe/cli | sh; then
     ok "screenpipe (open a new terminal if 'screenpipe' is not on PATH yet)"
   else
-    fail "screenpipe" "run 'curl -fsSL get.screenpi.pe/cli | sh'; if it fails, see https://github.com/mediar-ai/screenpipe for the current installer"
+    soft "screenpipe" "run 'curl -fsSL get.screenpi.pe/cli | sh'; if it fails, see https://github.com/mediar-ai/screenpipe for the current installer"
   fi
 }
 
@@ -561,8 +565,11 @@ echo "  (copy exactly: $VENV_PY)"
 echo "If Claude Code was just installed, run 'claude' once in a terminal to log in (your Claude subscription powers O)."
 echo
 
+if [ "${#SOFT[@]}" -gt 0 ]; then
+  echo "Optional pieces not set up (O runs without them; see the ○ lines above): ${SOFT[*]}"
+fi
 if [ "${#FAILED[@]}" -eq 0 ]; then
-  echo "All steps succeeded."
+  echo "All required steps succeeded."
   exit 0
 fi
 

@@ -75,8 +75,12 @@ Ok "Python $(Invoke-Py @('-c', 'import sys; print(sys.version.split()[0])'))"
 # ---- 2. the code -------------------------------------------------------------------------------------------
 if (Test-Path (Join-Path $Dir '.git')) {
   Say "Updating O in $Dir..."
-  git -C $Dir fetch -q --depth=1 origin $Ref
-  git -C $Dir reset -q --hard "origin/$Ref"
+  # A fast-forward pull, never a reset: local changes are kept (and reported), so nothing of the person's is
+  # thrown away by re-running the installer.
+  $dirty = (git -C $Dir status --porcelain --untracked-files=no) -join "`n"
+  if ($dirty) { Warn "O's folder has local changes; they are kept, but the pull may not apply:`n$dirty" }
+  git -C $Dir pull -q --ff-only origin $Ref
+  if ($LASTEXITCODE -ne 0) { Warn "Could not pull the latest O (git pull --ff-only origin $Ref); continuing with the version on disk." }
 } else {
   if (Test-Path $Dir) { Warn "$Dir exists but is not a git checkout; moving it to $Dir.old"; Move-Item $Dir "$Dir.old" -Force }
   Say "Downloading O to $Dir..."
@@ -110,7 +114,15 @@ try {
   & $venvPy -m pip install -q -e engine
   & $venvPy -c 'import o_engine' 2>$null
   if ($LASTEXITCODE -ne 0) { throw 'The engine did not install (import o_engine failed). Scroll up for the pip error.' }
+  # The launchers compare this marker with engine\pyproject.toml before running pip again.
+  New-Item -ItemType File -Force -Path 'engine\.venv\.o-installed' | Out-Null
   Ok 'Engine'
+  # Playwright's Chromium for the engine's browser tools (non-fatal: the engine installs it on first use otherwise).
+  Say 'Installing Chromium for the engine...'
+  try {
+    & $venvPy -m playwright install chromium 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Ok 'Chromium' } else { Warn 'Chromium did not install now; the engine will fetch it when it first needs it.' }
+  } catch { Warn "Chromium did not install now ($($_.Exception.Message)); the engine will fetch it when it first needs it." }
 
   # ---- 5. launcher + shortcuts -----------------------------------------------------------------------------
   $launcher = Join-Path $Dir 'install\windows\launch.cmd'
