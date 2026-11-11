@@ -58,8 +58,8 @@ const STAGEHAND_READ_TOOLS = ['mcp__stagehand__web_observe', 'mcp__stagehand__we
 const STAGEHAND_ACT_TOOLS = ['mcp__stagehand__web_act'];
 const BROWSER_MODES = ['auto', 'link', 'mine', 'separate'];
 const SAFE_TOOLS = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'NotebookRead', 'mcp__o__see_screen', 'mcp__o__ui_emit', 'mcp__o__ui_morph', 'mcp__o__ui_dock', ...ENGINE_TOOLS.filter((t) => t !== 'mcp__o__provision'), ...APP_TOOLS, ...NATIVE_READ_TOOLS, ...STAGEHAND_READ_TOOLS];
-const SAFE_PREFIXES = ['mcp__playwright__'];
-const ALLOWED_TOOLS_FLAG = [...SAFE_TOOLS, 'mcp__o__provision', 'mcp__playwright'];
+const SAFE_PREFIXES = ['mcp__playwright__', 'mcp__sandbox__'];
+const ALLOWED_TOOLS_FLAG = [...SAFE_TOOLS, 'mcp__o__provision', 'mcp__playwright', 'mcp__sandbox'];
 // A goal cycle's browser calls are not pre-allowed: each one reaches the bridge's approve tool, where checkpoint
 // actions (publish, send, delete, ...) are held until the person approves them in O.
 const GOAL_ALLOWED_TOOLS_FLAG = ALLOWED_TOOLS_FLAG.filter((t) => t !== 'mcp__playwright');
@@ -101,6 +101,7 @@ Checkpoints: publishing or posting publicly, sending messages as the user, spend
 Speed: act directly; each step costs the user time and money. To reach a site, use the domain they typed ("open myscs.org" means https://myscs.org/); for a bare name with no domain, one WebSearch at most. Never search browser history, list browser profiles or read browser data files to find a site or anything else. Group every action one observation allows into the same turn instead of observing again between them. On web pages, when the mcp__stagehand__ tools are available, prefer one web_act / web_extract call with a plain-language instruction over many low-level snapshot/click/type steps. After an action reports success, don't take a screenshot or peek at the screen to confirm it unless the task needs verification. Budget: opening, searching or one lookup takes 1-3 tool calls; most tasks fit in about 10; past 20, stop and report what is done and what is left.
 {{BROWSER_RULES}}
 {{INTERNAL_PAGES}}
+{{SANDBOX_RULES}}
 Screen: you can see the user's screen with the mcp__o__see_screen tool (a screenshot of the display under their cursor). Use it whenever they mention what's on their screen ("this", "this page", "this question", "can you see my screen?") instead of saying you can't see it, and take a fresh one when you need to see changes. To act on a web page they're looking at, use your browser tools in that tab.
 Desktop apps: you can operate desktop applications yourself through O's computer-use engine (Linux: an isolated display; macOS: each app's accessibility tree, without the user's mouse or keyboard): mcp__o__computer_run {goal, app} plans and runs it and stores the result as a procedure, mcp__o__computer_replay replays a stored procedure with no model calls, mcp__o__computer_tree and mcp__o__computer_find read the app's accessibility tree. The user's own mouse and keyboard are never touched. If computer_run fails, read its error and call it again with a corrected goal rather than driving the display yourself.${process.platform === 'win32' ? `
 Windows: this PC has no accessibility prompts, so computer_run acts on the real desktop through UI Automation and, when a control has no pattern, by clicking and typing; it can change settings, install programs and work in any app or browser. Also: mcp__o__win_powershell {script} runs PowerShell (prefer it for files, services, scheduled tasks, network, system information), mcp__o__win_open_settings {page} opens a Windows Settings page, mcp__o__win_winget_install {id} installs software, mcp__o__win_set_registry writes registry values. Security controls (Defender, SmartScreen, firewall, UAC, credential stores) are refused by the engine; do not try to route around them.` : ''}
@@ -124,7 +125,8 @@ Your clicks and typing never go through the user's real mouse or keyboard, and t
 
 const BROWSER_RULES = {
   // Default: the user's own browsers natively; O Link (an add-on) adds the Playwright tools when it is connected.
-  auto: NATIVE_BROWSER,
+  auto: `${NATIVE_BROWSER}
+You ALSO have O's own browser: the mcp__playwright__ tools drive a separate, persistent Chromium profile of O's own, invisible by default. For anything that is a web task (open a site, read pages, search, fill forms, multi-step flows), use it FIRST — browser_navigate, then browser_snapshot to read, then click/type by ref — it is faster and more reliable than driving the user's browser from the outside. Use the native tab tools only when the task is about a tab the user already has open or needs their logged-in session; if a site needs a login O's browser doesn't have, ask the user once to sign in there (browser_navigate with headless off is not available; say which site).`,
   autoLinked: `${NATIVE_BROWSER}
 O Link is connected right now, so you also have the mcp__playwright__ tools on the user's own Edge/Chrome, with every tab they have open (browser_tabs lists and selects them). Prefer them for heavy web work in Edge/Chrome (long pages, forms, many steps): read with browser_snapshot and click/type there. New tabs open in the background. Use the native tab tools for other browsers.`,
   // The user's own Edge/Chrome through O's own extension (O Link): every open tab.
@@ -157,8 +159,19 @@ function browserRulesKey(s, { linked = false } = {}) {
   return mode;
 }
 
+const SANDBOX_RULES = `Sandbox Mac: the mcp__sandbox__ tools (screenshot, click, drag, scroll, type, key, status) are a whole macOS virtual machine that belongs to O, not the user's screen. It is your automatic fallback: whenever a task on the user's own screen or browser is blocked, declined, would need the user's approval, would fight them for the mouse and keyboard, or needs an app or login the user's side cannot give you, move the work into the sandbox and finish it there without asking. Nothing you do inside the sandbox needs approval (no payments and no credentials there either). Work it like a screen: screenshot, act, screenshot again to verify. If status says the VM is not running, call it once more after a few seconds; if it stays down, say so in one line and continue with what you can do.`;
 function buildPersona(s, o = {}) {
-  return PERSONA_TEMPLATE.replace('{{BROWSER_RULES}}', BROWSER_RULES[browserRulesKey(s || {}, o)]).replace('{{INTERNAL_PAGES}}', INTERNAL_PAGES);
+  return PERSONA_TEMPLATE.replace('{{BROWSER_RULES}}', BROWSER_RULES[browserRulesKey(s || {}, o)]).replace('{{INTERNAL_PAGES}}', INTERNAL_PAGES)
+    .replace('{{SANDBOX_RULES}}', o.sandbox ? SANDBOX_RULES : '');
+}
+
+/** terminal-mac (github.com/govijr/terminal-mac): O's sandbox macOS VM. Apple silicon only. */
+function findTerminalMac() {
+  if (process.platform !== 'darwin' || process.arch !== 'arm64') return null;
+  const home = require('os').homedir();
+  const cands = [path.join(home, '.local', 'bin', 'terminal-mac'), '/opt/homebrew/bin/terminal-mac', '/usr/local/bin/terminal-mac'];
+  for (const c of cands) { try { fs.accessSync(c, fs.constants.X_OK); return c; } catch (_) {} }
+  return null;
 }
 
 // Env vars that would make a child `claude` think it is nested inside another session.
@@ -228,7 +241,7 @@ function looksLikeLoginProblem(text) {
 // MCP servers O installed itself (evolve skills: engine/o_engine/evolve/installer.py writes this file under the
 // engine's data dir). Re-checked here: only pinned npx/uvx launches with no env or headers get through, and the
 // reserved `o` / `playwright` names never do.
-const RESERVED_MCP = ['o', 'playwright', 'stagehand'];
+const RESERVED_MCP = ['o', 'playwright', 'stagehand', 'sandbox'];
 const PINNED_ARG = /^(?:(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|[A-Za-z0-9][A-Za-z0-9._-]*==\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?)$/;
 function installedSkillServers(userDataDir) {
   const out = {};
@@ -324,6 +337,17 @@ function readsBrowserData(toolName, input) {
 }
 
 /** Locate a local @playwright/mcp CLI, so we don't depend on npx + network at runtime. */
+/** Playwright MCP args for O's own browser: its own persistent profile, headless per the setting, an installed
+ *  Chromium-family browser when none is chosen (so it works without Google Chrome). */
+function ownBrowserArgs(s, profile) {
+  const a = ['--user-data-dir', profile];
+  if (s.browserHeadless) a.push('--headless');
+  if (s.browserPath) a.push('--executable-path', s.browserPath);
+  else if (s.browser) a.push('--browser', s.browser);
+  else { const found = findInstalledBrowser(); if (found) a.push('--executable-path', found); }
+  return a;
+}
+
 function findLocalPlaywrightMcp() {
   const candidates = [];
   try { candidates.push(path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js')); } catch {}
@@ -754,7 +778,12 @@ class OAgent extends EventEmitter {
       let endpoint = null;
       try { endpoint = this.getLinkEndpoint(); } catch { endpoint = null; }
       if (endpoint) { pwArgs = ['--cdp-endpoint', endpoint]; linked = true; }
-      else { pwArgs = []; noBrowser = true; noBrowserNote = ''; }
+      else {
+        // No O Link: O's own browser (a persistent profile of its own, invisible by default) is always there,
+        // so a web task never depends on the native tab tools alone.
+        pwArgs = ownBrowserArgs(s, profile);
+        noBrowserNote = '';
+      }
     } else if (s.browserMode === 'mine') {
       // Work in the user's own, already-open browser (existing tab, their logins) via the
       // Playwright Extension. Input goes through the browser's debugger channel, not the OS
@@ -781,18 +810,7 @@ class OAgent extends EventEmitter {
       // releases and extension 0.5+; ignored by older ones).
       pwEnv.PLAYWRIGHT_MCP_BACKGROUND = '1';
     } else {
-      pwArgs = ['--user-data-dir', profile];
-      if (s.browserHeadless) pwArgs.push('--headless');
-      if (s.browserPath) {
-        pwArgs.push('--executable-path', s.browserPath);
-      } else if (s.browser) {
-        pwArgs.push('--browser', s.browser);
-      } else {
-        // No browser chosen: use an installed Chromium-family browser if we can find one,
-        // so O works out of the box even without Google Chrome.
-        const found = findInstalledBrowser();
-        if (found) pwArgs.push('--executable-path', found);
-      }
+      pwArgs = ownBrowserArgs(s, profile);
     }
 
     const local = findLocalPlaywrightMcp();
@@ -837,10 +855,12 @@ class OAgent extends EventEmitter {
     } catch (_) { userServers = {}; }
     userServers = { ...installedSkillServers(this.userDataDir), ...userServers };
     for (const k of RESERVED_MCP) delete userServers[k];
+    const tmac = s.sandboxVm === false ? null : findTerminalMac();
     const cfg = {
       mcpServers: {
         ...userServers,
         ...(noBrowser ? {} : { playwright }),
+        ...(tmac ? { sandbox: { type: 'stdio', command: tmac, args: ['mcp'] } } : {}),
         o: {
           type: 'stdio',
           command: process.execPath,
@@ -884,11 +904,11 @@ class OAgent extends EventEmitter {
     const cfgText = JSON.stringify(cfg, null, 2);
     fs.writeFileSync(file, cfgText, { mode: 0o600 });
     const sp = path.join(this.userDataDir, `o-persona${tag}.md`);
-    const personaText = buildPersona(s, { linked }) + (noBrowser ? noBrowserNote : '');
+    const personaText = buildPersona(s, { linked, sandbox: !!tmac }) + (noBrowser ? noBrowserNote : '');
     fs.writeFileSync(sp, personaText);
     // What a pre-spawned process was started with: if any of it changed, the warm process is stale.
     const fingerprint = crypto.createHash('sha256').update(cfgText + '\0' + personaText + '\0' + JSON.stringify(s)).digest('hex');
-    return { mcpFile: file, personaFile: sp, noBrowser, linked, fingerprint, stagehand: !!stagehandDir };
+    return { mcpFile: file, personaFile: sp, noBrowser, linked, fingerprint, stagehand: !!stagehandDir, sandbox: !!tmac };
   }
 
   _spawnChild(s, args) {
@@ -1211,4 +1231,4 @@ class OAgent extends EventEmitter {
   }
 }
 
-module.exports = { INTERNAL_PAGES, routeModel, brainConfig, brainEnv, findStagehand, readsBrowserData, agentEnv, TOOL_SEARCH_ENV, DEFAULT_FAST_MODEL, MAX_TURNS_FAST, STAGEHAND_READ_TOOLS, STAGEHAND_ACT_TOOLS, STAGEHAND_MCP, browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };
+module.exports = { INTERNAL_PAGES, routeModel, brainConfig, brainEnv, findTerminalMac, ownBrowserArgs, findStagehand, readsBrowserData, agentEnv, TOOL_SEARCH_ENV, DEFAULT_FAST_MODEL, MAX_TURNS_FAST, STAGEHAND_READ_TOOLS, STAGEHAND_ACT_TOOLS, STAGEHAND_MCP, browserRulesKey, BROWSER_RULES, BROWSER_MODES, NATIVE_READ_TOOLS, NATIVE_ACT_TOOLS, installedSkillServers, RESERVED_MCP, GOAL_ALLOWED_TOOLS_FLAG, ALLOWED_TOOLS_FLAG, OAgent, checkClaude, resolveClaude, findExtension, findInstalledBrowser, childEnv, fullPath, buildPersona, spawnClaude, killTree, genuiFrameProblem, PLAYWRIGHT_EXTENSION_ID, SAFE_TOOLS, APP_TOOLS, ENGINE_TOOLS, PERMISSION_MODES, GENUI_TYPES };

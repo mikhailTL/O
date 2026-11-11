@@ -779,7 +779,7 @@
 
   // ------------------------------------------------------------ settings
 
-  const FIELDS = ['brain', 'brainBaseUrl', 'brainApiKey', 'brainModel', 'theme', 'islandPosition', 'openAtLogin', 'maxParallelTasks', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
+  const FIELDS = ['brain', 'brainBaseUrl', 'brainApiKey', 'brainModel', 'theme', 'islandPosition', 'openAtLogin', 'maxParallelTasks', 'permissionMode', 'browserMode', 'extensionToken', 'browserProfile', 'screenAccess', 'quiet', 'autoUpdateCheck', 'updateRepo', 'updateBranch', 'updatePath', 'updateToken', 'browserHeadless', 'sandboxVm', 'browser', 'browserPath', 'cwd', 'claudePath', 'model',
     'vllmUrl', 'vllmModel', 'screenpipeDb', 'sandboxRoot', 'maxRemediationAttempts', 'enginePython',
     'proxyEnabled', 'proxyPort', 'proxyConcurrency', 'proxyMode',
     'mcpServers', 'highRiskSandbox', 'e2bApiKey', 'dockerImage', 'swarmEnabled', 'cuCandidates', 'cuMaxHeals', 'vllmVisionModel', 'genuiEnabled', 'genuiSandbox',

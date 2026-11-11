@@ -15,6 +15,7 @@ const DEFAULTS = Object.freeze({
   islandMenuSafeLeft: 640, // 200..2000 px
   islandMenuSafeRight: 560, // 200..2000 px
   permissionMode: 'log', // 'log' (record everything, never ask) | 'ask' (blocking card, 60 s) | 'auto'
+  sandboxVm: true, // macOS (Apple silicon): use terminal-mac's VM as O's sandbox Mac when it is installed
   browserHeadless: true, // invisible by default so no window ever pops up over a game
   cwd: os.homedir(),
   claudePath: 'claude',
@@ -203,6 +204,7 @@ function sanitize(obj) {
   }
   if (MODES.includes(obj.permissionMode)) out.permissionMode = obj.permissionMode;
   if (typeof obj.browserHeadless === 'boolean') out.browserHeadless = obj.browserHeadless;
+  if (typeof obj.sandboxVm === 'boolean') out.sandboxVm = obj.sandboxVm;
   if (typeof obj.cwd === 'string' && obj.cwd.trim()) out.cwd = obj.cwd.trim();
   if (typeof obj.claudePath === 'string' && obj.claudePath.trim()) out.claudePath = obj.claudePath.trim();
   if (typeof obj.model === 'string') out.model = obj.model.trim();

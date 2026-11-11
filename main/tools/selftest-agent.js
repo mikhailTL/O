@@ -265,10 +265,11 @@ function ok(cond, label) {
     ok(ba.settings().browserMode === 'auto' && new OAgent({ userDataDir, getSettings: () => ({}) }).settings().browserMode === 'auto', 'agent settings(): browserMode defaults to auto');
 
     let w = wire();
-    ok(!w.cfg.mcpServers.playwright && w.cfg.mcpServers.o && w.f.linked === false, 'auto without O Link: no Playwright server, bridge still wired');
+    ok(w.cfg.mcpServers.playwright && w.cfg.mcpServers.playwright.args.includes('--user-data-dir') && w.cfg.mcpServers.o && w.f.linked === false, 'auto without O Link: O\'s own browser (persistent profile) is wired, bridge too');
+    ok(/O's own browser/.test(w.persona) && /browser_snapshot/.test(w.persona), 'auto without O Link: persona names O\'s own browser');
     ok(/mcp__o__tabs_list/.test(w.persona) && /mcp__o__tab_read/.test(w.persona) && /mcp__o__tab_act/.test(w.persona) && /mcp__o__computer_\*/.test(w.persona), 'auto without O Link: persona names the native tab tools and computer_*');
     ok(!/Connect my Edge/.test(w.persona) && !/NO browser tools/.test(w.persona) && /Never ask the user to install O Link/.test(w.persona) && /sign in themselves/.test(w.persona), 'auto without O Link: never told to install anything; logins are the user\'s');
-    ok(!/mcp__playwright__/.test(w.persona), 'auto without O Link: persona does not mention Playwright tools');
+    ok(/mcp__playwright__/.test(w.persona), 'auto without O Link: persona points at the Playwright tools (O\'s own browser)');
 
     endpoint = 'ws://127.0.0.1:47615/cdp/tok';
     w = wire();
@@ -281,7 +282,7 @@ function ok(cond, label) {
     ok(pw && w.cfg.mcpServers.playwright.args.includes(endpoint) && w.persona.includes(BROWSER_RULES.link), 'link mode with O Link: unchanged link rules and wiring');
     endpoint = null;
     w = wire();
-    ok(!w.cfg.mcpServers.playwright && /mcp__o__tabs_list/.test(w.persona) && !/Connect my Edge/.test(w.persona) && !/NO browser tools/.test(w.persona), 'link mode without O Link: falls back to native tools (no "Connect my Edge")');
+    ok(w.cfg.mcpServers.playwright && w.cfg.mcpServers.playwright.args.includes('--user-data-dir') && /mcp__o__tabs_list/.test(w.persona) && !/Connect my Edge/.test(w.persona) && !/NO browser tools/.test(w.persona), 'link mode without O Link: falls back to native tools + O\'s own browser (no "Connect my Edge")');
 
     bmode = 'separate';
     w = wire();

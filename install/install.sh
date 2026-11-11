@@ -431,6 +431,18 @@ step_macos_ax() {
 # --no-deps plus its runtime dependencies unpinned; setuptools<81 keeps pkg_resources, which it imports.
 OI_SPEC="open-interpreter>=0.4.3,<0.5"
 OI_DEPS="astor git-python google-generativeai html2image html2text inquirer ipykernel jupyter-client litellm matplotlib nltk platformdirs pyperclip pyyaml selenium send2trash shortuuid six tiktoken tokentrim toml webdriver-manager wget yaspin setuptools<81"
+step_sandbox_mac() {
+  # terminal-mac (github.com/govijr/terminal-mac): a macOS VM that is O's own computer, the no-approval fallback
+  # for anything the user's screen can't or shouldn't do. Apple silicon only; optional everywhere.
+  if [ "$(uname)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then return 0; fi
+  if [ -x "$HOME/.local/bin/terminal-mac" ]; then ok "sandbox Mac (terminal-mac)"; return 0; fi
+  if run bash -c 'curl -fsSL https://github.com/govijr/terminal-mac/releases/latest/download/get.sh | bash' && [ -x "$HOME/.local/bin/terminal-mac" ]; then
+    ok "sandbox Mac (terminal-mac installed; O boots it from Setup — the first boot downloads macOS)"
+  else
+    fail "sandbox Mac (optional)" "install later from O's Setup, or: curl -fsSL https://github.com/govijr/terminal-mac/releases/latest/download/get.sh | bash"
+  fi
+}
+
 step_open_interpreter() {
   if [ ! -x "$VENV_PY" ] && [ "$DRY" != "1" ]; then
     fail "open-interpreter" "skipped: engine venv missing"
@@ -537,6 +549,7 @@ step_screenpipe
 step_xvfb
 step_required_packages
 step_macos_ax
+step_sandbox_mac
 step_open_interpreter
 step_ambient
 step_docker

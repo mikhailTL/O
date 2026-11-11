@@ -18,8 +18,10 @@ const IS_MAC = process.platform === 'darwin';
 let childEnv = (extra) => ({ ...process.env, ...extra });
 let checkClaudeFn = async () => ({ installed: false, error: 'agent module missing' });
 let resolveClaude = (p) => p || 'claude';
+let findTerminalMac = () => null;
 try {
   const agent = require('./agent');
+  if (typeof agent.findTerminalMac === 'function') findTerminalMac = agent.findTerminalMac;
   if (typeof agent.childEnv === 'function') childEnv = agent.childEnv;
   if (typeof agent.checkClaude === 'function') checkClaudeFn = agent.checkClaude;
   if (typeof agent.resolveClaude === 'function') resolveClaude = agent.resolveClaude;
@@ -34,8 +36,10 @@ const STEPS = Object.freeze([
   { id: 'venv', label: 'Engine installed' },
   { id: 'engine', label: 'Engine running' },
   { id: 'computer', label: 'Computer use' },
+  { id: 'sandbox', label: 'Sandbox Mac (terminal-mac)' },
   { id: 'permission', label: 'Permission mode' },
 ]);
+const SANDBOX_INSTALL = 'curl -fsSL https://github.com/govijr/terminal-mac/releases/latest/download/get.sh | bash';
 const STEP_IDS = STEPS.map((s) => s.id);
 
 const WINGET_FLAGS = ['--accept-source-agreements', '--accept-package-agreements', '--silent'];
@@ -248,6 +252,20 @@ class Setup extends EventEmitter {
         'Run bash install/install.sh (Xvfb, openbox, python3-gi), then restart O.');
     }
 
+    // Sandbox Mac: terminal-mac's macOS VM, O's own computer for anything the user's screen can't or shouldn't do.
+    // Apple silicon only; everywhere else the row is simply "not on this machine" and counts as fine.
+    if (IS_MAC && process.arch === 'arm64') {
+      const tmac = findTerminalMac();
+      if (s.sandboxVm === false) row('sandbox', true, 'Off (Settings → Sandbox Mac)');
+      else if (!tmac) row('sandbox', false, 'terminal-mac is not installed', `Set up O runs: ${SANDBOX_INSTALL}, then terminal-mac up (the first boot downloads macOS and asks you to click through Setup Assistant once).`);
+      else {
+        const st = await this._sandboxStatus(tmac);
+        row('sandbox', !!st.ready, st.ready ? `Ready (${st.detail || 'VM running'})` : (st.detail || 'VM not running'), 'Set up O runs `terminal-mac up`; finish the guest setup in its window the first time.');
+      }
+    } else {
+      row('sandbox', true, IS_MAC ? 'Not on Intel Macs' : 'macOS only');
+    }
+
     const mode = s.permissionMode || 'log';
     row('permission', true, MODE_LABEL[mode] || mode);
 
@@ -318,6 +336,11 @@ class Setup extends EventEmitter {
         }
       }
 
+      if (want('sandbox') && !by.sandbox.ok) {
+        const r = await this._sandbox();
+        if (r.ok) this._progress('sandbox', 'ok', r.detail); else fail('sandbox', r.detail);
+      }
+
       if (want('permission')) this._progress('permission', 'ok', MODE_LABEL[this._settings().permissionMode] || 'Log everything');
 
       const after = await this.status();
@@ -358,6 +381,37 @@ class Setup extends EventEmitter {
     if (c.installed) { this.log('Claude Code installed with npm', { version: c.version || '' }); return { ok: true, detail: `Claude Code ${c.version || ''}`.trim() }; }
     const tail = (r.err || r.out).trim().split(/\r?\n/).pop() || `npm exited ${r.code}`;
     return { ok: false, detail: `npm install failed: ${tail.slice(0, 200)}` };
+  }
+
+  /** terminal-mac: `status` says whether the default VM is up and its guest helper answers. */
+  async _sandboxStatus(tmac) {
+    const r = await this._exec('sandbox', tmac, ['status', 'default'], { timeout: 20000 });
+    const text = (r.out || r.err || '').trim();
+    let j = null;
+    try { j = JSON.parse(text); } catch (_) { j = null; }
+    const ready = j ? !!(j.ready || j.running || j.state === 'running' || j.status === 'running') : /running|ready/i.test(text);
+    return { ready, detail: j ? (j.state || j.status || (ready ? 'running' : 'stopped')) : text.split(/\r?\n/)[0].slice(0, 120) };
+  }
+
+  async _sandbox() {
+    const step = 'sandbox';
+    let tmac = findTerminalMac();
+    if (!tmac) {
+      this._progress(step, 'running', 'Installing terminal-mac');
+      const r = await this._exec(step, 'bash', ['-lc', SANDBOX_INSTALL], { timeout: 10 * 60 * 1000 });
+      tmac = findTerminalMac();
+      if (!tmac) {
+        const tail = (r.err || r.out).trim().split(/\r?\n/).pop() || `installer exited ${r.code}`;
+        return { ok: false, detail: `terminal-mac did not install: ${tail.slice(0, 200)}` };
+      }
+      this.log('terminal-mac installed', { path: tmac });
+    }
+    this._progress(step, 'running', 'Starting the sandbox Mac (first boot downloads macOS; finish Setup Assistant in its window)');
+    const up = await this._exec(step, tmac, ['up', 'default', '--detach'], { timeout: 30 * 60 * 1000 });
+    const st = await this._sandboxStatus(tmac);
+    if (st.ready) { this.log('Sandbox Mac running'); return { ok: true, detail: `Ready (${st.detail})` }; }
+    const tail = (up.err || up.out).trim().split(/\r?\n/).pop() || '';
+    return { ok: false, detail: `VM started but not ready yet${tail ? ': ' + tail.slice(0, 160) : ''}. Finish the guest setup in the terminal-mac window, then press Check again.` };
   }
 
   async _installPython() {
