@@ -538,8 +538,9 @@ function islandProximityTick() {
   const d = IslandGeom.distanceToRect(p, rect);
   // The capsule no longer fades away from the cursor: coming near it wakes the cluster (adapt.js).
   setIslandFaded(false);
-  const near = d < Adapt.C.NEAR_PX;
-  if (near !== (cursorDist < Adapt.C.NEAR_PX)) { cursorDist = d; applyAdapt('cursor'); } else cursorDist = d;
+  // Cursor proximity no longer changes the mode: the cluster woke and shrank as the pointer passed by, which
+  // read as glitching. Only a real hover on the glass (renderer mouseenter) or a task changes it.
+  cursorDist = d;
   // "Actively moving": the cursor sits on the cluster without clicking → it steps aside (adapt.nudge).
   // The step-aside rule is off: stepping away from the cursor read as the UI "running away" and jumping
   // across the screen. The cluster stays where it is; only O's own ui_dock and the user's drag move it.
@@ -643,7 +644,8 @@ function createIslandWindow() {
       if (process.platform === 'darwin') placeIslandWindow({ animate: false });
     }
     syncIslandProximity();
-    startContextPoll();
+    // The frontmost-window poll is off: the Island keeps one spot and one shape unless the user hovers or
+    // clicks it, a task runs, or O asks for a shape itself (ui_morph / ui_dock).
     applyAdapt('ready');
   });
   applyIslandLevel(); // Windows: 'screen-saver' (float mode), the highest level, so the capsule stays over fullscreen apps where DWM allows
@@ -859,7 +861,7 @@ function applyAdapt(why) {
     approvalPending: pendingPerms.size > 0 || !!(goals && goals.pendingCards && goals.pendingCards().length),
     taskRunning: !!(tasks && tasks.running().length), hasStatus: islandHasStatus(),
     hasChips: !!(tasks && tasks.list().some((t) => t.status === 'running' || t.status === 'queued' || (t.endedAt && Date.now() - t.endedAt < 10 * 60 * 1000))),
-    cursorDist, hover: islandHover, front, display,
+    cursorDist: Infinity, hover: islandHover, front: null, display,
   };
   let d = Adapt.decideMode(ctx);
   // O's own request (ui_morph) holds for a while unless the user is typing, has the dashboard open or something waits for them.
