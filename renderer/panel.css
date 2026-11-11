@@ -165,7 +165,7 @@ code {
 
 /* ---------------------------------------------------------------- goo layer (budding cards) */
 #goo-layer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
-.goo-group { position: absolute; inset: 0; filter: url(#ol-goo); }
+.goo-group { position: absolute; inset: 0; } /* no url() filter: see liquid.css .ol-goo */
 .goo-blob { position: absolute; background: var(--blob); will-change: transform; }
 
 /* ---------------------------------------------------------------- title bar + nav */

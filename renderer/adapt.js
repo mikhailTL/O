@@ -93,7 +93,8 @@
       return out('dot', 'fullscreen or immersive app', { opacity: C.DIM_OPACITY, clickThrough: true });
     }
     if (near) return out('cluster', 'cursor near');
-    if (c.taskRunning) return out('pill', 'task running');
+    // Work in flight keeps the cluster up: the chips are where the user watches a task and reads its result.
+    if (c.taskRunning || c.hasChips) return out('cluster', c.taskRunning ? 'task running' : 'results to show');
     if (c.hasStatus) return out('pill', 'status to show');
     return out('dot', 'idle');
   }
@@ -179,6 +180,8 @@
     const n = Math.max(0, Number(c.chips) || 0);
     const shown = n > C.MAX_CHIPS ? C.MAX_CHIPS - 1 : n;
     const chips = [];
+    // Bottom-anchored layouts (dir 'up') stack the chips above the segment, so they stay inside the window.
+    const up = c.dir === 'up';
     let y = seg.y + C.CIRCLE + 12;
     let card = null;
     for (let i = 0; i < shown + (n > C.MAX_CHIPS ? 1 : 0); i++) {
@@ -191,7 +194,14 @@
       }
     }
     if (c.openCard && !card && c.openCard.index === -1) card = { x: Math.max(4, Math.min(winW - C.CARD_W - 4, seg.x)), y: seg.y + C.CIRCLE + 12, w: C.CARD_W };
-    return { circle, seg, chips, card, cdx, bottom: y };
+    if (up) {
+      // mirror everything below the segment to above it
+      const base = seg.y - 12;
+      const flip = (o, h) => { o.y = base - (o.y - (seg.y + C.CIRCLE + 12)) - h; };
+      for (const ch of chips) flip(ch, ch.h);
+      if (card) flip(card, Number(c.openCard && c.openCard.height) || 120);
+    }
+    return { circle, seg, chips, card, cdx, bottom: y, up };
   }
 
   /** Normalise what a tool or a menu asks for. */

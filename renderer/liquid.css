@@ -33,7 +33,9 @@
 /* The filtered layer. Blobs inside are opaque; the layer's opacity is the glass tint. */
 .ol-goo {
   pointer-events: none;
-  filter: url(#ol-goo);
+  /* No SVG goo filter: Chromium composites `filter: url()` wrongly inside transparent windows (the blobs came
+     out white on Windows and under Xvfb). The blobs are plain rounded shapes; the liquid neck is gone. */
+  filter: none;
   opacity: var(--ol-glass-alpha);
 }
 .ol-blob {

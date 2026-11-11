@@ -443,43 +443,24 @@ function islandBounds(expanded) {
  * the capsule never moves when the window grows into the bar or shrinks to the dot.
  */
 function islandModeBounds(mode) {
+  // One fixed footprint for every mode (the expanded 820x480 of the command bar, top- or bottom-anchored):
+  // the chips arc and the cards float inside it, and the transparent window is never resized. Resizing a
+  // transparent window per frame on Windows made the glass flicker and jump; the CSS morphs do all the motion.
+  void mode;
   const L = currentIslandLayout();
-  const full = L.compact;
-  const h = Adapt.modeHeight(L, mode || islandMode, { barH: 56, bubH: 48, firstGap: 18 });
-  const y = L.dir === 'up' ? full.y + full.height - h : full.y;
+  const full = IslandGeom.expandedBounds(L);
   const off = L.mode === 'float' ? islandOffset : { dx: 0, dy: 0 };
-  return { x: Math.round(full.x + off.dx), y: Math.round(y + off.dy), width: full.width, height: h };
+  return { x: Math.round(full.x + off.dx), y: Math.round(full.y + off.dy), width: full.width, height: full.height };
 }
 
 /** Put the Island window where its mode wants it; animated as a short ease-out tween when asked. */
-function placeIslandWindow({ animate = true } = {}) {
+function placeIslandWindow() {
   if (!islandWin || islandWin.isDestroyed()) return;
   const target = islandModeBounds();
   const cur = islandWin.getBounds();
   if (cur.x === target.x && cur.y === target.y && cur.width === target.width && cur.height === target.height) return;
   if (boundsTween) { clearInterval(boundsTween.timer); boundsTween = null; }
-  if (!animate) { islandWin.setBounds(target); return; }
-  // The same spring the chips use (adapt.C.SPRING: stiffness 260, damping 26): position and size are integrated
-  // every 16 ms from wherever the window is now, so a new target mid-flight just bends the path.
-  const { stiffness: K, damping: D, mass: M } = Adapt.C.SPRING;
-  const st = { x: cur.x, y: cur.y, w: cur.width, h: cur.height, vx: 0, vy: 0, vw: 0, vh: 0 };
-  let lastT = Date.now();
-  const timer = setInterval(() => {
-    if (!islandWin || islandWin.isDestroyed()) { clearInterval(timer); boundsTween = null; return; }
-    const now = Date.now();
-    const dt = Math.min(0.05, (now - lastT) / 1000);
-    lastT = now;
-    let moving = false;
-    for (const [k, v, t] of [['x', 'vx', target.x], ['y', 'vy', target.y], ['w', 'vw', target.width], ['h', 'vh', target.height]]) {
-      const a = (-K * (st[k] - t) - D * st[v]) / M;
-      st[v] += a * dt;
-      st[k] += st[v] * dt;
-      if (Math.abs(st[k] - t) > 0.5 || Math.abs(st[v]) > 2) moving = true; else { st[k] = t; st[v] = 0; }
-    }
-    try { islandWin.setBounds({ x: Math.round(st.x), y: Math.round(st.y), width: Math.round(st.w), height: Math.round(st.h) }); } catch (_) {}
-    if (!moving) { clearInterval(timer); boundsTween = null; }
-  }, 16);
-  boundsTween = { timer };
+  try { islandWin.setBounds(target); } catch (_) {}
 }
 
 /** macOS menu bar / notch: above the menu bar (NSStatusWindowLevel); everywhere else above other windows. */
@@ -560,14 +541,9 @@ function islandProximityTick() {
   const near = d < Adapt.C.NEAR_PX;
   if (near !== (cursorDist < Adapt.C.NEAR_PX)) { cursorDist = d; applyAdapt('cursor'); } else cursorDist = d;
   // "Actively moving": the cursor sits on the cluster without clicking → it steps aside (adapt.nudge).
-  if (d === 0 && !islandCardOpen && (islandMode === 'cluster' || islandMode === 'pill')) {
-    if (!islandDwell) islandDwell = Date.now();
-    const L = currentIslandLayout();
-    if (L.mode === 'float') {
-      const n = Adapt.nudge({ now: Date.now(), dwellSince: islandDwell, lastNudgeAt, cursor: p, rect, workArea: screen.getDisplayMatching(rect).workArea });
-      if (n) { lastNudgeAt = Date.now(); islandDwell = 0; nudgeOffset = { dx: nudgeOffset.dx + n.dx, dy: nudgeOffset.dy + n.dy }; applyAdapt('nudge'); }
-    }
-  } else islandDwell = 0;
+  // The step-aside rule is off: stepping away from the cursor read as the UI "running away" and jumping
+  // across the screen. The cluster stays where it is; only O's own ui_dock and the user's drag move it.
+  islandDwell = 0;
 }
 
 /** The whole cluster (circle + segment) in screen px while it is up; the capsule otherwise. */
@@ -882,6 +858,7 @@ function applyAdapt(why) {
     lock: islandLock, focused: commandBarOpen, fullOpen: panelVisible(), cardOpen: islandCardOpen,
     approvalPending: pendingPerms.size > 0 || !!(goals && goals.pendingCards && goals.pendingCards().length),
     taskRunning: !!(tasks && tasks.running().length), hasStatus: islandHasStatus(),
+    hasChips: !!(tasks && tasks.list().some((t) => t.status === 'running' || t.status === 'queued' || (t.endedAt && Date.now() - t.endedAt < 10 * 60 * 1000))),
     cursorDist, hover: islandHover, front, display,
   };
   let d = Adapt.decideMode(ctx);
@@ -894,8 +871,10 @@ function applyAdapt(why) {
     const capW = (d.mode === 'cluster' || d.mode === 'card') ? Adapt.C.CIRCLE + Adapt.C.SEG_GAP + Adapt.C.SEG_W : (islandShape ? islandShape.width : L.minW);
     const cap = IslandGeom.capsuleRect(L, capW);
     const home = { cx: L.compact.x + cap.x + cap.width / 2, cy: L.compact.y + cap.y + cap.height / 2 };
-    const place = Adapt.placeIsland({ home, capsule: { width: cap.width, height: cap.height }, workArea: display.workArea, display, front });
-    off = { dx: place.cx - home.cx + nudgeOffset.dx, dy: place.cy - home.cy + nudgeOffset.dy };
+    // Window-hugging is off for the same reason as the nudge: the cluster keeps its home spot and only
+    // yields to a fullscreen app (mode dot, decideMode) rather than chasing every window change.
+    off = { dx: 0, dy: 0 };
+    void home; void cap;
     if (islandEdge && islandOffsetUser) off.dx += islandOffsetUser;
     // keep the footprint on the display
     const wa = display.workArea;

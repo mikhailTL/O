@@ -103,13 +103,15 @@ test('adapt: known game/video/presentation apps count as immersive even when win
   assert.equal(d.clickThrough, true);
 });
 
-test('adapt: state → mode: full/typing/card win; approval → card; near → cluster; task → pill; idle → dot', () => {
+test('adapt: state → mode: full/typing/card win; approval → card; near → cluster; task → cluster; status → pill; idle → dot', () => {
   assert.equal(A.decideMode({ fullOpen: true, approvalPending: true }).mode, 'full');
   assert.equal(A.decideMode({ focused: true, approvalPending: true }).mode, 'cluster');
   assert.equal(A.decideMode({ cardOpen: true, taskRunning: true }).mode, 'card');
   assert.equal(A.decideMode({ approvalPending: true, taskRunning: true }).mode, 'card');
   assert.equal(A.decideMode({ cursorDist: 10, taskRunning: true }).mode, 'cluster');
-  assert.equal(A.decideMode({ taskRunning: true, cursorDist: 999 }).mode, 'pill');
+  assert.equal(A.decideMode({ taskRunning: true, cursorDist: 999 }).mode, 'cluster'); // work in flight keeps the chips up
+  assert.equal(A.decideMode({ hasChips: true, cursorDist: 999 }).mode, 'cluster');
+  assert.equal(A.decideMode({ hasStatus: true, cursorDist: 999 }).mode, 'pill');
   assert.equal(A.decideMode({ hasStatus: true, cursorDist: 999 }).mode, 'pill');
   assert.equal(A.decideMode({ cursorDist: 999 }).mode, 'dot');
   assert.equal(A.decideMode({ hover: true }).mode, 'cluster');

@@ -339,7 +339,7 @@
     const lay = A.clusterLayout({
       cx: capCx(on ? dotWidth() : lastW), top: capTop(), ih: LY.ih, winW: window.innerWidth, typing: typing || !!clean(input.value),
       chips: live.has('+more') ? (live.size - 1) + (live.get('+more').item.more || 0) : live.size,
-      openCard: openKey ? { index: openIndex, height: cardH || 120 } : null, drop: 0,
+      openCard: openKey ? { index: openIndex, height: cardH || 120 } : null, drop: 0, dir: LY.dir,
     });
     lastCluster = lay;
     root.style.setProperty('--cdx', on ? `${lay.cdx}px` : '0px');
