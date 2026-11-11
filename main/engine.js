@@ -12,7 +12,7 @@ const path = require('path');
 const fs = require('fs');
 
 const IS_WIN = process.platform === 'win32';
-const HEALTH_TIMEOUT_MS = 20000;
+const HEALTH_TIMEOUT_MS = 90000; // Windows: a cold venv (uiautomation, pyautogui, comtypes) can take well over 20 s to import
 const HEALTH_POLL_MS = 400;
 const CALL_TIMEOUT_MS = 60000;
 const BACKOFF_S = [1, 2, 4, 8, 16];
@@ -309,7 +309,7 @@ class EngineProcess extends EventEmitter {
         }
       } catch (_) { /* not up yet */ }
       if (Date.now() - started > HEALTH_TIMEOUT_MS) {
-        this.lastError = 'engine did not answer /health within 20 s';
+        this.lastError = `engine did not answer /health within ${Math.round(HEALTH_TIMEOUT_MS / 1000)} s`;
         this._log(`engine: ${this.lastError}`, { stderr: this.stderr.slice(-20) });
         killTree(child);
         return;

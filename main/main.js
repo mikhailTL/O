@@ -686,7 +686,53 @@ function startContextPoll() {
   if (contextTimer.unref) contextTimer.unref();
   contextTick();
 }
-function stopContextPoll() { if (contextTimer) { clearInterval(contextTimer); contextTimer = null; } }
+function stopContextPoll() { if (contextTimer) { clearInterval(contextTimer); contextTimer = null; } stopWinFrontmostFeed(); }
+// Windows frontmost-window feed: one hidden PowerShell process for the app's lifetime, restarted (at most once a
+// minute) if it dies. winFrontmostLine() is the latest "app\ttitle\tx\ty\tw\th" line, '' before the first one.
+let winFront = { child: null, line: '', buf: '', startedAt: 0 };
+function winFrontmostLine() {
+  if (!winFront.child && Date.now() - winFront.startedAt > 60000) startWinFrontmostFeed();
+  return winFront.line;
+}
+function startWinFrontmostFeed() {
+  winFront.startedAt = Date.now();
+  const ps = [
+    '$s=@"',
+    'using System;using System.Runtime.InteropServices;using System.Text;',
+    'public class W{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
+    '[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);',
+    '[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetWindowTextW(IntPtr h,StringBuilder s,int n);',
+    '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);',
+    '[StructLayout(LayoutKind.Sequential)]public struct R{public int L,T,Rt,B;}}',
+    '"@;Add-Type $s;$last="";',
+    'while($true){',
+    '$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;',
+    '$sb=New-Object System.Text.StringBuilder 512;[W]::GetWindowTextW($h,$sb,512)|Out-Null;',
+    '$id=0;[W]::GetWindowThreadProcessId($h,[ref]$id)|Out-Null;$n="";try{$n=(Get-Process -Id $id -ErrorAction Stop).ProcessName}catch{};',
+    '$l="$n`t$($sb.ToString())`t$($r.L)`t$($r.T)`t$($r.Rt-$r.L)`t$($r.B-$r.T)";',
+    'if($l -ne $last){$last=$l;[Console]::Out.WriteLine($l);[Console]::Out.Flush()}',
+    `Start-Sleep -Milliseconds ${CONTEXT_MS}}`,
+  ].join('\n');
+  let child;
+  try {
+    child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (_) { return; }
+  winFront.child = child;
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d) => {
+    winFront.buf += d;
+    const parts = winFront.buf.split(/\r?\n/);
+    winFront.buf = parts.pop();
+    const last = parts.filter(Boolean).pop();
+    if (last) winFront.line = last.trim();
+  });
+  const gone = () => { if (winFront.child === child) winFront.child = null; };
+  child.on('error', gone);
+  child.on('close', gone);
+  if (child.unref) child.unref();
+}
+function stopWinFrontmostFeed() { try { if (winFront.child) winFront.child.kill(); } catch (_) {} winFront.child = null; }
+
 
 async function contextTick() {
   if (contextBusy || !islandWin || islandWin.isDestroyed() || !islandWin.isVisible()) return;
@@ -738,23 +784,12 @@ async function frontmostWindow() {
     return { app, title: title || '', bounds: b.every(Number.isFinite) && b[2] > 0 ? { x: b[0], y: b[1], width: b[2], height: b[3] } : null };
   }
   if (process.platform === 'win32') {
-    // One PowerShell call: user32 GetForegroundWindow / GetWindowRect / GetWindowTextW, plus the process name.
-    const ps = [
-      '$s=@"',
-      'using System;using System.Runtime.InteropServices;using System.Text;',
-      'public class W{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
-      '[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);',
-      '[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetWindowTextW(IntPtr h,StringBuilder s,int n);',
-      '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);',
-      '[StructLayout(LayoutKind.Sequential)]public struct R{public int L,T,Rt,B;}}',
-      '"@;Add-Type $s;',
-      '$h=[W]::GetForegroundWindow();$r=New-Object W+R;[W]::GetWindowRect($h,[ref]$r)|Out-Null;',
-      '$sb=New-Object System.Text.StringBuilder 512;[W]::GetWindowTextW($h,$sb,512)|Out-Null;',
-      '$id=0;[W]::GetWindowThreadProcessId($h,[ref]$id)|Out-Null;$n="";try{$n=(Get-Process -Id $id -ErrorAction Stop).ProcessName}catch{};',
-      '"$n`t$($sb.ToString())`t$($r.L)`t$($r.T)`t$($r.Rt-$r.L)`t$($r.B-$r.T)"',
-    ].join('\n');
-    const out = await runCapture('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], 1100);
-    const [app, title, x, y, w, h] = String(out).trim().split('\t');
+    // One long-lived hidden PowerShell loop (user32 GetForegroundWindow / GetWindowRect / GetWindowTextW, the
+    // process name) prints a line every CONTEXT_MS; spawning a fresh powershell.exe per tick would compile the
+    // Add-Type every time and keep a CPU core busy, which once starved the engine's own start-up.
+    const line = winFrontmostLine();
+    if (!line) return null;
+    const [app, title, x, y, w, h] = line.split('\t');
     if (!app || own.test(app)) return null;
     const b = [x, y, w, h].map(Number);
     // GetWindowRect is in physical px; Electron's screen is in DIPs: scale by the display under the window.
@@ -941,7 +976,8 @@ function glassWindowOptions() {
   if (process.platform === 'darwin') { o.vibrancy = 'under-window'; o.visualEffectState = 'active'; }
   else if (process.platform === 'win32') {
     o.thickFrame = false; // no system frame edge on a transparent window
-    if (WIN11) o.backgroundMaterial = 'acrylic'; // Windows 10: the plain transparent window (same look, painted by the renderer)
+    // No DWM backgroundMaterial: acrylic/mica paint the window's whole rectangle, so the sheet's rounded
+    // corners show as a dark square behind the glass. The renderer paints the translucent glass itself.
   }
   return o;
 }
@@ -2209,6 +2245,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', (e) => { if (!quitting) e.preventDefault(); });
 
 app.on('before-quit', () => {
+  stopWinFrontmostFeed();
   quitting = true;
   try { if (chats) chats.flush(); } catch (_) {}
   try { if (link) link.stop(); } catch (_) {}
